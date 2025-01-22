@@ -69,7 +69,12 @@ type FunctionBuildConfig struct {
 	/* Name of the Cloud Build Custom Worker Pool that should be used to build the function. */
 	// +optional
 	WorkerPool *string `json:"workerPool,omitempty"`
+	
+    // +optional
+	ServiceAccount *string `json:"serviceAccount,omitempty"`
+
 }
+
 
 type FunctionEventFilters struct {
 	/* 'Required. The name of a CloudEvents attribute.

@@ -148,6 +148,14 @@ spec:
                     description: Name of the Cloud Build Custom Worker Pool that should
                       be used to build the function.
                     type: string
+                  serviceAccount:
+                    description: The service account for the Cloud Build.
+                    type: string
+
+                  serviceAccount:
+                    description: The service account for the Cloud Build.
+                    type: string
+
                 type: object
               description:
                 description: User-provided description of a function.

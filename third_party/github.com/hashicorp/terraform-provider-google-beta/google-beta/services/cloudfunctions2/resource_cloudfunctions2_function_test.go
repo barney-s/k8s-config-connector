@@ -54,8 +54,94 @@ func TestAccCloudFunctions2Function_update(t *testing.T) {
 	})
 }
 
-func testAccCloudfunctions2function_basic(context map[string]interface{}) string {
+func TestAccCloudFunctions2Function_serviceAccount(t *testing.T) {
+	t.Parallel()
+
+	context := map[string]interface{}{
+		"zip_path":      "./test-fixtures/function-source.zip",
+		"random_suffix": acctest.RandString(t, 10),
+		"project":       envvar.GetTestProjectFromEnv(),
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckCloudfunctions2functionDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccCloudFunctions2Function_basic_with_serviceAccount(context),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckCloudfunctions2function_basic,
+					acctest.CheckResourceAttr("google_cloudfunctions2_function.terraform-test", "build_config.0.service_account", google_service_account.account.email, ""),
+					acctest.CheckResourceAttr("google_cloudfunctions2_function.terraform-test", "service_config.0.service_account_email", "", google_service_account.account.email),
+				),
+				
+			},
+			{
+				ResourceName:            "google_cloudfunctions2_function.terraform-test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"location", "build_config.0.source.0.storage_source.0.object", "build_config.0.source.0.storage_source.0.bucket", "build_config.0.service_account"},
+			},
+		},
+	})
+}
+
+func testAccCloudFunctions2Function_basic_with_serviceAccount(context map[string]interface{}) string {
 	return acctest.Nprintf(`
+resource "google_storage_bucket" "bucket" {
+  name     = "tf-test-cloudfunctions2-function-bucket%{random_suffix}"
+  location = "US"
+  uniform_bucket_level_access = true
+}
+
+resource "google_storage_bucket_object" "object" {
+  name   = "function-source.zip"
+  bucket = google_storage_bucket.bucket.name
+  source = "%{zip_path}"
+}
+
+resource "google_service_account" "account" {
+  account_id = "tf-test-gcf-sa-%{random_suffix}"
+  display_name = "Test Service Account"
+}
+resource "google_cloudfunctions2_function" "terraform-test" {
+  name        = "tf-test-gcf-function%{random_suffix}"
+  location    = "us-central1"
+  description = "a new function"
+  build_config {
+    runtime      = "nodejs12"
+    entry_point  = "helloHttp"
+    source {
+      storage_source {
+        bucket = google_storage_bucket.bucket.name
+        object = google_storage_bucket_object.object.name
+      }
+    }
+  service_account = google_service_account.account.email
+  }
+
+  service_config {
+    max_instance_count  = 1
+    available_memory    = "256Mi"
+    timeout_seconds     = 30
+  }
+  
+}
+
+func testAccCheckCloudfunctions2function_basic(t *testing.T) {
+    acctest.AssertResource(t, "google_cloudfunctions2_function.terraform-test", acctest.CheckAll)
+}
+
+func testAccCheckCloudfunctions2Function_basic_with_serviceAccount(t *testing.T, context map[string]interface{}){
+	acctest.AssertResource(t,"google_cloudfunctions2_function.terraform-test", acctest.CheckResourceAttr("google_cloudfunctions2_function.terraform-test", "build_config.0.service_account", "service_account", google_service_account.account.email))
+    acctest.AssertResource(t,"google_cloudfunctions2_function.terraform-test", acctest.CheckResourceAttr("google_cloudfunctions2_function.terraform-test", "service_config.0.service_account_email", google_service_account.account.email, ""))
+}
+
+func testAccCheckCloudfunctions2functionDestroyProducer(t *testing.T) {
+  acctest.CheckDestroy(t, acctest.TestCheckDestroyFunc(acctest.CheckDestroyCloudFunctions2Function))
+}
+
 resource "google_storage_bucket" "bucket" {
   name     = "tf-test-cloudfunctions2-function-bucket%{random_suffix}"
   location = "US"
