@@ -34,3 +34,13 @@ func (s *GlobalOperationsV1) Get(ctx context.Context, req *pb.GetGlobalOperation
 
 	return lro, nil
 }
+
+func (s *GlobalOperationsV1) Wait(ctx context.Context, req *pb.WaitGlobalOperationRequest) (*pb.Operation, error) {
+	fqn := s.globalOperationFQN(req.Project, req.Operation)
+	lro, err := s.waitOperation(ctx, fqn)
+	if err != nil {
+		return nil, err
+	}
+
+	return lro, nil
+}

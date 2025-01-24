@@ -34,3 +34,13 @@ func (s *RegionalOperationsV1) Get(ctx context.Context, req *pb.GetRegionOperati
 
 	return lro, nil
 }
+
+func (s *RegionalOperationsV1) Wait(ctx context.Context, req *pb.WaitRegionOperationRequest) (*pb.Operation, error) {
+	fqn := s.regionalOperationFQN(req.Project, req.Region, req.Operation)
+	lro, err := s.waitOperation(ctx, fqn)
+	if err != nil {
+		return nil, err
+	}
+
+	return lro, nil
+}
