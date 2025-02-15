@@ -320,7 +320,7 @@ updateTime: string
         <td><code>conditions</code></td>
         <td>
             <p><code class="apitype">list (object)</code></p>
-            <p>{% verbatim %}Conditions represent the latest available observation of the resource's current state.{% endverbatim %}</p>
+            <p>{% verbatim %}Conditions represent the latest available observations of the object's current state.{% endverbatim %}</p>
         </td>
     </tr>
     <tr>
@@ -411,7 +411,7 @@ updateTime: string
         <td><code>externalRef</code></td>
         <td>
             <p><code class="apitype">string</code></p>
-            <p>{% verbatim %}A unique specifier for the CloudIdentityMembership resource in GCP.{% endverbatim %}</p>
+            <p>{% verbatim %}A unique Config Connector specifier for the resource in GCP.{% endverbatim %}</p>
         </td>
     </tr>
     <tr>

@@ -16,7 +16,7 @@ package v1beta1
 
 import (
 	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/apis/k8s/v1alpha1"
+	commonv1alpha1 "github.com/GoogleCloudPlatform/k8s-config-connector/pkg/apis/common/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -46,14 +46,7 @@ type CloudIdentityMembershipSpec struct {
 
 // CloudIdentityMembershipStatus defines the config connector machine state of CloudIdentityMembership
 type CloudIdentityMembershipStatus struct {
-	/* Conditions represent the latest available observation of the resource's current state. */
-	Conditions []v1alpha1.Condition `json:"conditions,omitempty"`
-
-	/* ObservedGeneration is the generation of the resource that was most recently observed by the Config Connector controller. If this is equal to metadata.generation, then that means that the current reported status reflects the most recent desired state of the resource. */
-	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
-
-	// A unique specifier for the CloudIdentityMembership resource in GCP.
-	ExternalRef *string `json:"externalRef,omitempty"`
+	commonv1alpha1.CommonStatus `json:",inline"`
 
 	// ObservedState is the state of the resource as most recently observed in GCP.
 	ObservedState *CloudIdentityMembershipObservedState `json:"observedState,omitempty"`

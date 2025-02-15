@@ -190,8 +190,8 @@ spec:
               machine state of CloudIdentityMembership
             properties:
               conditions:
-                description: Conditions represent the latest available observation
-                  of the resource's current state.
+                description: Conditions represent the latest available observations
+                  of the object's current state.
                 items:
                   properties:
                     lastTransitionTime:
@@ -239,7 +239,7 @@ spec:
                     type: string
                 type: object
               externalRef:
-                description: A unique specifier for the CloudIdentityMembership resource
+                description: A unique Config Connector specifier for the resource
                   in GCP.
                 type: string
               observedGeneration:
