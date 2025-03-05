@@ -82,6 +82,8 @@ func BuildRunnerCmd() *cobra.Command {
 		"", "", "dedicated directory for logging, empty for stdout.")
 	cmd.Flags().DurationVarP(&opts.timeout, "timeout",
 		"t", 5*time.Minute, "Global timeout for commands.")
+	cmd.Flags().IntVarP(&opts.defaultRetries, "retries",
+		"r", 10, "Default number of retries for failed commands.")
 
 	return cmd
 }
@@ -92,6 +94,7 @@ type RunnerOptions struct {
 	command        int64
 	loggingDir     string
 	timeout        time.Duration
+	defaultRetries int // Default number of retries for commands
 }
 
 func (opts *RunnerOptions) validateFlags() error {
@@ -613,10 +616,11 @@ func inferProtoPath(opts *RunnerOptions, branch Branch, workDir string) string {
 	}
 
 	cfg := CommandConfig{
-		Name:    "Search for service",
-		Cmd:     "egrep",
-		Args:    args,
-		WorkDir: workDir,
+		Name:       "Search for service",
+		Cmd:        "egrep",
+		Args:       args,
+		WorkDir:    workDir,
+		MaxRetries: 2,
 	}
 	output, errOutput, err := executeCommand(opts, cfg)
 	if err != nil {
@@ -635,10 +639,11 @@ func inferProtoPath(opts *RunnerOptions, branch Branch, workDir string) string {
 			}
 
 			cfg = CommandConfig{
-				Name:    "Search for any service",
-				Cmd:     "egrep",
-				Args:    args,
-				WorkDir: workDir,
+				Name:       "Search for any service",
+				Cmd:        "egrep",
+				Args:       args,
+				WorkDir:    workDir,
+				MaxRetries: 2,
 			}
 			output, errOutput, err = executeCommand(opts, cfg)
 			if err != nil {

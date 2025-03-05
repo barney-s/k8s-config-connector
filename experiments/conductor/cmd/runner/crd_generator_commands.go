@@ -187,7 +187,8 @@ func generateTypesAndMapper(opts *RunnerOptions, branch Branch) {
 				"--api-version", fmt.Sprintf("%s.cnrm.cloud.google.com/v1alpha1", branch.Group),
 				"--resource", fmt.Sprintf("%s:%s", branch.Kind, branch.Proto),
 			},
-			WorkDir: controllerBuilderDir,
+			WorkDir:    controllerBuilderDir,
+			MaxRetries: 2,
 		}
 		_, _, err := executeCommand(opts, cfg)
 		if err != nil {
@@ -211,7 +212,8 @@ func generateTypesAndMapper(opts *RunnerOptions, branch Branch) {
 				"--service", branch.Package,
 				"--api-version", fmt.Sprintf("%s.cnrm.cloud.google.com/v1alpha1", branch.Group),
 			},
-			WorkDir: controllerBuilderDir,
+			WorkDir:    controllerBuilderDir,
+			MaxRetries: 2,
 		}
 		_, _, err := executeCommand(opts, cfg)
 		if err != nil {
@@ -228,7 +230,8 @@ func generateTypesAndMapper(opts *RunnerOptions, branch Branch) {
 				"-w",
 				mapperDir,
 			},
-			WorkDir: workDir,
+			WorkDir:    workDir,
+			MaxRetries: 2,
 		}
 		_, _, err = executeCommand(opts, cfg)
 		if err != nil {
@@ -258,9 +261,10 @@ func generateCRD(opts *RunnerOptions, branch Branch) {
 
 	// Generate CRDs
 	cfg := CommandConfig{
-		Name:    "Generate CRDs",
-		Cmd:     filepath.Join(workDir, "dev", "tasks", "generate-crds"),
-		WorkDir: workDir,
+		Name:       "Generate CRDs",
+		Cmd:        filepath.Join(workDir, "dev", "tasks", "generate-crds"),
+		WorkDir:    workDir,
+		MaxRetries: 2,
 	}
 	_, _, err := executeCommand(opts, cfg)
 	if err != nil {
