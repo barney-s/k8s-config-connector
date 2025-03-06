@@ -1,4 +1,3 @@
-
 - exec: gcloud pubsub topics create test-topic-${uniqueId} --project=${projectId}
 - exec: gcloud asset feeds create test-${uniqueId} --pubsub-topic=projects/${projectId}/topics/test-topic-${uniqueId} --project=${projectId}
 - exec: gcloud asset feeds describe test-${uniqueId} --project=${projectId}
