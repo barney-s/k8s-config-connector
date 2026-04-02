@@ -22,6 +22,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('search').addEventListener('input', renderTable);
     document.getElementById('filter-state').addEventListener('change', renderTable);
+    document.getElementById('filter-gcptests').addEventListener('change', renderTable);
+    document.getElementById('filter-mockgcp').addEventListener('change', renderTable);
 
     document.querySelectorAll('th[data-sort]').forEach(th => {
         th.addEventListener('click', () => {
@@ -72,6 +74,8 @@ function updateSortIcons() {
 function renderTable() {
     const searchVal = document.getElementById('search').value.toLowerCase();
     const stateVal = document.getElementById('filter-state').value;
+    const gcpTestsVal = document.getElementById('filter-gcptests').value;
+    const mockgcpVal = document.getElementById('filter-mockgcp').value;
 
     let filteredData = resourceData.filter(row => {
         const matchesSearch = 
@@ -81,7 +85,17 @@ function renderTable() {
         
         const matchesState = stateVal === 'All' || row.state === stateVal;
 
-        return matchesSearch && matchesState;
+        const hasGcpTests = !!row.gcpTestLocation;
+        const matchesGcpTests = gcpTestsVal === 'All' || 
+                                (gcpTestsVal === 'Present' && hasGcpTests) || 
+                                (gcpTestsVal === 'Missing' && !hasGcpTests);
+
+        const hasMockgcp = !!row.mockgcpLocation;
+        const matchesMockgcp = mockgcpVal === 'All' || 
+                               (mockgcpVal === 'Present' && hasMockgcp) || 
+                               (mockgcpVal === 'Missing' && !hasMockgcp);
+
+        return matchesSearch && matchesState && matchesGcpTests && matchesMockgcp;
     });
 
     filteredData.sort((a, b) => {
@@ -95,6 +109,11 @@ function renderTable() {
         if (valA > valB) return currentSort.direction === 'asc' ? 1 : -1;
         return 0;
     });
+
+    const rowCountEl = document.getElementById('row-count');
+    if (rowCountEl) {
+        rowCountEl.textContent = filteredData.length;
+    }
 
     const tbody = document.getElementById('table-body');
     tbody.innerHTML = '';
@@ -116,6 +135,14 @@ function renderTable() {
 
         const depsHtml = row.dependencies.map(d => `<span class="dependency-tag">${d}</span>`).join('') || '-';
 
+        const gcpTestHtml = row.gcpTestLocation ? 
+            `<a href="https://github.com/GoogleCloudPlatform/k8s-config-connector/tree/master/${row.gcpTestLocation}" target="_blank" title="${row.gcpTestLocation}">✅</a>` : 
+            `<span title="Missing GCP Tests">❌</span>`;
+
+        const mockgcpHtml = row.mockgcpLocation ? 
+            `<a href="https://github.com/GoogleCloudPlatform/k8s-config-connector/tree/master/${row.mockgcpLocation}" target="_blank" title="${row.mockgcpLocation}">✅</a>` : 
+            `<span title="Missing MockGCP">❌</span>`;
+
         tr.innerHTML = `
             <td><strong>${row.kind}</strong></td>
             <td>${row.group}</td>
@@ -128,9 +155,11 @@ function renderTable() {
             </td>
             <td><span class="badge ${stateClass}">${row.state}</span></td>
             <td>${stepsHtml}</td>
-            <td>${depsHtml}</td>
+            <td style="text-align: center;">${gcpTestHtml}</td>
+            <td style="text-align: center;">${mockgcpHtml}</td>
             <td>${row.mocksLastRefreshed}</td>
             <td style="color: #d93025; font-size: 11px;">${row.notes || ''}</td>
+            <td>${depsHtml}</td>
         `;
         tbody.appendChild(tr);
     });
