@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchData();
 
     document.getElementById('search').addEventListener('input', renderTable);
+    document.getElementById('filter-version').addEventListener('change', renderTable);
     document.getElementById('filter-state').addEventListener('change', renderTable);
     document.getElementById('filter-gcptests').addEventListener('change', renderTable);
     document.getElementById('filter-mockgcp').addEventListener('change', renderTable);
@@ -73,6 +74,7 @@ function updateSortIcons() {
 
 function renderTable() {
     const searchVal = document.getElementById('search').value.toLowerCase();
+    const versionVal = document.getElementById('filter-version').value;
     const stateVal = document.getElementById('filter-state').value;
     const gcpTestsVal = document.getElementById('filter-gcptests').value;
     const mockgcpVal = document.getElementById('filter-mockgcp').value;
@@ -83,6 +85,7 @@ function renderTable() {
             row.group.toLowerCase().includes(searchVal) ||
             row.dependencies.some(d => d.toLowerCase().includes(searchVal));
         
+        const matchesVersion = versionVal === 'All' || row.version === versionVal;
         const matchesState = stateVal === 'All' || row.state === stateVal;
 
         const hasGcpTests = !!row.gcpTestLocation;
@@ -95,7 +98,7 @@ function renderTable() {
                                (mockgcpVal === 'Present' && hasMockgcp) || 
                                (mockgcpVal === 'Missing' && !hasMockgcp);
 
-        return matchesSearch && matchesState && matchesGcpTests && matchesMockgcp;
+        return matchesSearch && matchesVersion && matchesState && matchesGcpTests && matchesMockgcp;
     });
 
     filteredData.sort((a, b) => {

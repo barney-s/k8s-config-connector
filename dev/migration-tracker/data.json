@@ -30,7 +30,7 @@
   {
     "group": "apigateway",
     "kind": "APIGatewayAPIConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -58,7 +58,7 @@
   {
     "group": "apigateway",
     "kind": "APIGatewayGateway",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -86,7 +86,7 @@
   {
     "group": "apikeys",
     "kind": "APIKeysKey",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -201,7 +201,7 @@
   {
     "group": "accesscontextmanager",
     "kind": "AccessContextManagerAccessLevelCondition",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -255,7 +255,7 @@
   {
     "group": "accesscontextmanager",
     "kind": "AccessContextManagerGCPUserAccessBinding",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -453,7 +453,7 @@
   {
     "group": "apigee",
     "kind": "ApigeeAddonsConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -650,7 +650,7 @@
   {
     "group": "apigee",
     "kind": "ApigeeNATAddress",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -705,7 +705,7 @@
   {
     "group": "apigee",
     "kind": "ApigeeSyncAuthorization",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -731,7 +731,7 @@
   {
     "group": "appengine",
     "kind": "AppEngineDomainMapping",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -757,7 +757,7 @@
   {
     "group": "appengine",
     "kind": "AppEngineFirewallRule",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -783,7 +783,7 @@
   {
     "group": "appengine",
     "kind": "AppEngineFlexibleAppVersion",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -811,7 +811,7 @@
   {
     "group": "appengine",
     "kind": "AppEngineServiceSplitTraffic",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -837,7 +837,7 @@
   {
     "group": "appengine",
     "kind": "AppEngineStandardAppVersion",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -1066,7 +1066,7 @@
   {
     "group": "backupdr",
     "kind": "BackupDRManagementServer",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -1095,7 +1095,7 @@
   {
     "group": "batch",
     "kind": "BatchJob",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -1127,7 +1127,7 @@
   {
     "group": "beyondcorp",
     "kind": "BeyondCorpAppConnection",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -1155,7 +1155,7 @@
   {
     "group": "beyondcorp",
     "kind": "BeyondCorpAppConnector",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -1183,7 +1183,7 @@
   {
     "group": "beyondcorp",
     "kind": "BeyondCorpAppGateway",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -1324,7 +1324,7 @@
   {
     "group": "bigquerydatapolicy",
     "kind": "BigQueryDataPolicyDataPolicy",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -1414,7 +1414,7 @@
   {
     "group": "bigquery",
     "kind": "BigQueryDatasetAccess",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -1502,7 +1502,7 @@
   {
     "group": "bigqueryreservation",
     "kind": "BigQueryReservationCapacityCommitment",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -1703,7 +1703,7 @@
   {
     "group": "bigtable",
     "kind": "BigtableLogicalView",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -1731,7 +1731,7 @@
   {
     "group": "bigtable",
     "kind": "BigtableMaterializedView",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -1983,7 +1983,7 @@
   {
     "group": "cloudasset",
     "kind": "CloudAssetFolderFeed",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2011,7 +2011,7 @@
   {
     "group": "cloudasset",
     "kind": "CloudAssetOrganizationFeed",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2037,7 +2037,7 @@
   {
     "group": "cloudasset",
     "kind": "CloudAssetProjectFeed",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2152,7 +2152,7 @@
   {
     "group": "cloudfunctions2",
     "kind": "CloudFunctions2Function",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2238,7 +2238,7 @@
   {
     "group": "cloudiot",
     "kind": "CloudIOTDevice",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2264,7 +2264,7 @@
   {
     "group": "cloudiot",
     "kind": "CloudIOTDeviceRegistry",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2372,7 +2372,7 @@
   {
     "group": "colab",
     "kind": "ColabRuntime",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -2401,7 +2401,7 @@
   {
     "group": "colab",
     "kind": "ColabRuntimeTemplate",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -2493,7 +2493,7 @@
   {
     "group": "compute",
     "kind": "ComputeAutoscaler",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2549,7 +2549,7 @@
   {
     "group": "compute",
     "kind": "ComputeBackendBucketSignedURLKey",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2611,7 +2611,7 @@
   {
     "group": "compute",
     "kind": "ComputeBackendServiceSignedURLKey",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2663,7 +2663,7 @@
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
-    "sortOrder": 456,
+    "sortOrder": 453,
     "downstreamCount": 4,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computedisk",
     "mockgcpLocation": "mockgcp/mockcompute"
@@ -2671,7 +2671,7 @@
   {
     "group": "compute",
     "kind": "ComputeDiskResourcePolicyAttachment",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2692,7 +2692,7 @@
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
-    "sortOrder": 453,
+    "sortOrder": 454,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1alpha1/computediskresourcepolicyattachment",
     "mockgcpLocation": "mockgcp/mockcompute"
@@ -2877,7 +2877,7 @@
   {
     "group": "compute",
     "kind": "ComputeGlobalNetworkEndpoint",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -2905,7 +2905,7 @@
   {
     "group": "compute",
     "kind": "ComputeGlobalNetworkEndpointGroup",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3032,7 +3032,7 @@
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
-    "sortOrder": 454,
+    "sortOrder": 456,
     "downstreamCount": 4,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeimage",
     "mockgcpLocation": "mockgcp/mockcompute"
@@ -3131,7 +3131,7 @@
   {
     "group": "compute",
     "kind": "ComputeInstanceGroupNamedPort",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3218,7 +3218,7 @@
   {
     "group": "compute",
     "kind": "ComputeMachineImage",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3300,7 +3300,7 @@
   {
     "group": "compute",
     "kind": "ComputeNetworkAttachment",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -3328,7 +3328,7 @@
   {
     "group": "compute",
     "kind": "ComputeNetworkEdgeSecurityService",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -3357,7 +3357,7 @@
   {
     "group": "compute",
     "kind": "ComputeNetworkEndpoint",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3473,7 +3473,7 @@
   {
     "group": "compute",
     "kind": "ComputeNetworkFirewallPolicyRule",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3530,7 +3530,7 @@
   {
     "group": "compute",
     "kind": "ComputeNetworkPeeringRoutesConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3614,7 +3614,7 @@
   {
     "group": "compute",
     "kind": "ComputeOrganizationSecurityPolicy",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3640,7 +3640,7 @@
   {
     "group": "compute",
     "kind": "ComputeOrganizationSecurityPolicyAssociation",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3666,7 +3666,7 @@
   {
     "group": "compute",
     "kind": "ComputeOrganizationSecurityPolicyRule",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3720,7 +3720,7 @@
   {
     "group": "compute",
     "kind": "ComputePerInstanceConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3775,7 +3775,7 @@
   {
     "group": "compute",
     "kind": "ComputeRegionAutoscaler",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3803,7 +3803,7 @@
   {
     "group": "compute",
     "kind": "ComputeRegionDiskResourcePolicyAttachment",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3862,7 +3862,7 @@
   {
     "group": "compute",
     "kind": "ComputeRegionPerInstanceConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -3890,7 +3890,7 @@
   {
     "group": "compute",
     "kind": "ComputeRegionSSLPolicy",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -4704,7 +4704,7 @@
   {
     "group": "containeranalysis",
     "kind": "ContainerAnalysisOccurrence",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5022,7 +5022,7 @@
   {
     "group": "dns",
     "kind": "DNSResponsePolicy",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5050,7 +5050,7 @@
   {
     "group": "dns",
     "kind": "DNSResponsePolicyRule",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5078,7 +5078,7 @@
   {
     "group": "datacatalog",
     "kind": "DataCatalogEntry",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5106,7 +5106,7 @@
   {
     "group": "datacatalog",
     "kind": "DataCatalogEntryGroup",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5162,7 +5162,7 @@
   {
     "group": "datacatalog",
     "kind": "DataCatalogTag",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5190,7 +5190,7 @@
   {
     "group": "datacatalog",
     "kind": "DataCatalogTagTemplate",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5365,7 +5365,7 @@
   {
     "group": "dataplex",
     "kind": "DataplexEntryGroup",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5393,7 +5393,7 @@
   {
     "group": "dataplex",
     "kind": "DataplexEntryType",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5421,7 +5421,7 @@
   {
     "group": "dataplex",
     "kind": "DataplexLake",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5450,7 +5450,7 @@
   {
     "group": "dataplex",
     "kind": "DataplexTask",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5481,7 +5481,7 @@
   {
     "group": "dataplex",
     "kind": "DataplexZone",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5537,7 +5537,7 @@
   {
     "group": "dataproc",
     "kind": "DataprocBatch",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5601,7 +5601,7 @@
   {
     "group": "dataproc",
     "kind": "DataprocJob",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5661,7 +5661,7 @@
   {
     "group": "datastore",
     "kind": "DatastoreIndex",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5689,7 +5689,7 @@
   {
     "group": "datastream",
     "kind": "DatastreamConnectionProfile",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5719,7 +5719,7 @@
   {
     "group": "datastream",
     "kind": "DatastreamPrivateConnection",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5748,7 +5748,7 @@
   {
     "group": "datastream",
     "kind": "DatastreamRoute",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -5776,7 +5776,7 @@
   {
     "group": "datastream",
     "kind": "DatastreamStream",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5804,7 +5804,7 @@
   {
     "group": "deploymentmanager",
     "kind": "DeploymentManagerDeployment",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5832,7 +5832,7 @@
   {
     "group": "dialogflow",
     "kind": "DialogflowAgent",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5858,7 +5858,7 @@
   {
     "group": "dialogflowcx",
     "kind": "DialogflowCXAgent",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5886,7 +5886,7 @@
   {
     "group": "dialogflowcx",
     "kind": "DialogflowCXEntityType",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5912,7 +5912,7 @@
   {
     "group": "dialogflowcx",
     "kind": "DialogflowCXFlow",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5938,7 +5938,7 @@
   {
     "group": "dialogflowcx",
     "kind": "DialogflowCXIntent",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5964,7 +5964,7 @@
   {
     "group": "dialogflowcx",
     "kind": "DialogflowCXPage",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -5990,7 +5990,7 @@
   {
     "group": "dialogflowcx",
     "kind": "DialogflowCXWebhook",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6016,7 +6016,7 @@
   {
     "group": "dialogflow",
     "kind": "DialogflowEntityType",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6044,7 +6044,7 @@
   {
     "group": "dialogflow",
     "kind": "DialogflowFulfillment",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6072,7 +6072,7 @@
   {
     "group": "dialogflow",
     "kind": "DialogflowIntent",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6100,7 +6100,7 @@
   {
     "group": "discoveryengine",
     "kind": "DiscoveryEngineDataStore",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -6128,7 +6128,7 @@
   {
     "group": "documentai",
     "kind": "DocumentAIProcessor",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -6157,7 +6157,7 @@
   {
     "group": "documentai",
     "kind": "DocumentAIProcessorDefaultVersion",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6386,7 +6386,7 @@
   {
     "group": "eventarc",
     "kind": "EventarcChannel",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -6415,7 +6415,7 @@
   {
     "group": "eventarc",
     "kind": "EventarcGoogleChannelConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -6533,7 +6533,7 @@
   {
     "group": "filestore",
     "kind": "FilestoreSnapshot",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6561,7 +6561,7 @@
   {
     "group": "firebase",
     "kind": "FirebaseAndroidApp",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6589,7 +6589,7 @@
   {
     "group": "firebasedatabase",
     "kind": "FirebaseDatabaseInstance",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6617,7 +6617,7 @@
   {
     "group": "firebasehosting",
     "kind": "FirebaseHostingChannel",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6643,7 +6643,7 @@
   {
     "group": "firebasehosting",
     "kind": "FirebaseHostingSite",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6671,7 +6671,7 @@
   {
     "group": "firebase",
     "kind": "FirebaseProject",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6697,7 +6697,7 @@
   {
     "group": "firebasestorage",
     "kind": "FirebaseStorageBucket",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6725,7 +6725,7 @@
   {
     "group": "firebase",
     "kind": "FirebaseWebApp",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -6779,7 +6779,7 @@
   {
     "group": "firestore",
     "kind": "FirestoreDocument",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -6807,7 +6807,7 @@
   {
     "group": "firestore",
     "kind": "FirestoreField",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -6887,7 +6887,7 @@
   {
     "group": "gkebackup",
     "kind": "GKEBackupBackup",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -6915,7 +6915,7 @@
   {
     "group": "gkebackup",
     "kind": "GKEBackupBackupPlan",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -6944,7 +6944,7 @@
   {
     "group": "gkebackup",
     "kind": "GKEBackupRestore",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -6973,7 +6973,7 @@
   {
     "group": "gkebackup",
     "kind": "GKEBackupRestorePlan",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -7087,7 +7087,7 @@
   {
     "group": "healthcare",
     "kind": "HealthcareConsentStore",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -7113,7 +7113,7 @@
   {
     "group": "healthcare",
     "kind": "HealthcareDICOMStore",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -7139,7 +7139,7 @@
   {
     "group": "healthcare",
     "kind": "HealthcareDataset",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -7167,7 +7167,7 @@
   {
     "group": "healthcare",
     "kind": "HealthcareFHIRStore",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -7193,7 +7193,7 @@
   {
     "group": "healthcare",
     "kind": "HealthcareHL7V2Store",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -7664,7 +7664,7 @@
   {
     "group": "identityplatform",
     "kind": "IdentityPlatformDefaultSupportedIDPConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -7692,7 +7692,7 @@
   {
     "group": "identityplatform",
     "kind": "IdentityPlatformInboundSAMLConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -7746,7 +7746,7 @@
   {
     "group": "identityplatform",
     "kind": "IdentityPlatformProjectDefaultConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -7800,7 +7800,7 @@
   {
     "group": "identityplatform",
     "kind": "IdentityPlatformTenantDefaultSupportedIDPConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -7828,7 +7828,7 @@
   {
     "group": "identityplatform",
     "kind": "IdentityPlatformTenantInboundSAMLConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -7940,7 +7940,7 @@
   {
     "group": "kms",
     "kind": "KMSCryptoKeyVersion",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -8048,7 +8048,7 @@
   {
     "group": "kms",
     "kind": "KMSKeyRingImportJob",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -8074,7 +8074,7 @@
   {
     "group": "kms",
     "kind": "KMSSecretCiphertext",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -8278,7 +8278,7 @@
   {
     "group": "mlengine",
     "kind": "MLEngineModel",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -8450,7 +8450,7 @@
   {
     "group": "metastore",
     "kind": "MetastoreFederation",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -8478,7 +8478,7 @@
   {
     "group": "metastore",
     "kind": "MetastoreService",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -8757,7 +8757,7 @@
   {
     "group": "netapp",
     "kind": "NetAppBackupPolicy",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -8813,7 +8813,7 @@
   {
     "group": "networkconnectivity",
     "kind": "NetworkConnectivityInternalRange",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -8842,7 +8842,7 @@
   {
     "group": "networkconnectivity",
     "kind": "NetworkConnectivityServiceConnectionPolicy",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -8900,7 +8900,7 @@
   {
     "group": "networkmanagement",
     "kind": "NetworkManagementConnectivityTest",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -9016,7 +9016,7 @@
   {
     "group": "networkservices",
     "kind": "NetworkServicesEdgeCacheKeyset",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -9044,7 +9044,7 @@
   {
     "group": "networkservices",
     "kind": "NetworkServicesEdgeCacheOrigin",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -9072,7 +9072,7 @@
   {
     "group": "networkservices",
     "kind": "NetworkServicesEdgeCacheService",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -9242,7 +9242,7 @@
   {
     "group": "networkservices",
     "kind": "NetworkServicesServiceBinding",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -9360,7 +9360,7 @@
   {
     "group": "notebooks",
     "kind": "NotebooksEnvironment",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -9444,7 +9444,7 @@
   {
     "group": "osconfig",
     "kind": "OSConfigPatchDeployment",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -9472,7 +9472,7 @@
   {
     "group": "oslogin",
     "kind": "OSLoginSSHPublicKey",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -9524,7 +9524,7 @@
   {
     "group": "orgpolicy",
     "kind": "OrgPolicyPolicy",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -9553,7 +9553,7 @@
   {
     "group": "parametermanager",
     "kind": "ParameterManagerParameter",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -9786,7 +9786,7 @@
   {
     "group": "pubsublite",
     "kind": "PubSubLiteSubscription",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -9814,7 +9814,7 @@
   {
     "group": "pubsublite",
     "kind": "PubSubLiteTopic",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -9958,7 +9958,7 @@
   {
     "group": "recaptchaenterprise",
     "kind": "ReCAPTCHAEnterpriseFirewallPolicy",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -10420,7 +10420,7 @@
   {
     "group": "securitycenter",
     "kind": "SecurityCenterNotificationConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -10446,7 +10446,7 @@
   {
     "group": "securitycenter",
     "kind": "SecurityCenterSource",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -10641,7 +10641,7 @@
   {
     "group": "servicenetworking",
     "kind": "ServiceNetworkingPeeredDNSDomain",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -10669,7 +10669,7 @@
   {
     "group": "serviceusage",
     "kind": "ServiceUsageConsumerQuotaOverride",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -10810,7 +10810,7 @@
   {
     "group": "spanner",
     "kind": "SpannerInstanceConfig",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -11034,7 +11034,7 @@
   {
     "group": "storage",
     "kind": "StorageFolder",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -11063,7 +11063,7 @@
   {
     "group": "storage",
     "kind": "StorageHMACKey",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -11119,7 +11119,7 @@
   {
     "group": "storagetransfer",
     "kind": "StorageTransferAgentPool",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -11175,7 +11175,7 @@
   {
     "group": "tpu",
     "kind": "TPUNode",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -11315,7 +11315,7 @@
   {
     "group": "cloudtasks",
     "kind": "TasksQueue",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -11343,7 +11343,7 @@
   {
     "group": "vmwareengine",
     "kind": "VMwareEngineExternalAccessRule",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -11400,7 +11400,7 @@
   {
     "group": "vmwareengine",
     "kind": "VMwareEngineNetwork",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -11428,7 +11428,7 @@
   {
     "group": "vmwareengine",
     "kind": "VMwareEngineNetworkPeering",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -11458,7 +11458,7 @@
   {
     "group": "vmwareengine",
     "kind": "VMwareEngineNetworkPolicy",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -11487,7 +11487,7 @@
   {
     "group": "vmwareengine",
     "kind": "VMwareEnginePrivateCloud",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -11604,7 +11604,7 @@
   {
     "group": "vertexai",
     "kind": "VertexAIFeaturestore",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -11633,7 +11633,7 @@
   {
     "group": "vertexai",
     "kind": "VertexAIFeaturestoreEntityType",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -11659,7 +11659,7 @@
   {
     "group": "vertexai",
     "kind": "VertexAIFeaturestoreEntityTypeFeature",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -11713,7 +11713,7 @@
   {
     "group": "vertexai",
     "kind": "VertexAIIndexEndpoint",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -11770,7 +11770,7 @@
   {
     "group": "vertexai",
     "kind": "VertexAITensorboard",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
@@ -11798,7 +11798,7 @@
   {
     "group": "workflowexecutions",
     "kind": "WorkflowsExecution",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [
@@ -11826,7 +11826,7 @@
   {
     "group": "workflows",
     "kind": "WorkflowsWorkflow",
-    "version": "v1beta1",
+    "version": "v1alpha1",
     "controllerType": "Direct",
     "defaultController": "Direct",
     "supportedControllers": [

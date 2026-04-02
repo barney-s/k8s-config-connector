@@ -57,9 +57,10 @@ def build_dependency_graph(crds_dir="../../config/crds/resources"):
     known_kinds = {}
     dependencies = defaultdict(set)
     crd_docs = []
+    kind_versions = {}
     
     if not os.path.exists(crds_dir):
-        return dependencies, known_kinds
+        return dependencies, known_kinds, kind_versions
         
     for filename in os.listdir(crds_dir):
         if not filename.endswith(".yaml"):
@@ -80,6 +81,16 @@ def build_dependency_graph(crds_dir="../../config/crds/resources"):
         kind = doc["spec"]["names"]["kind"]
         group = doc["spec"]["group"]
         
+        versions = [v["name"] for v in doc.get("spec", {}).get("versions", [])]
+        best_v = versions[0] if versions else "v1beta1"
+        has_beta = any("beta" in v for v in versions)
+        has_alpha = any("alpha" in v for v in versions)
+        if has_beta:
+            best_v = next(v for v in versions if "beta" in v)
+        elif has_alpha:
+            best_v = next(v for v in versions if "alpha" in v)
+        kind_versions[kind] = best_v
+
         for version in doc["spec"]["versions"]:
             if "schema" in version and "openAPIV3Schema" in version["schema"]:
                 refs = find_refs(version["schema"]["openAPIV3Schema"])
@@ -110,9 +121,19 @@ def build_dependency_graph(crds_dir="../../config/crds/resources"):
                     if matched_kind and matched_kind in known_kinds and matched_kind != kind:
                         dependencies[kind].add(matched_kind)
 
-    return dependencies, known_kinds
+    return dependencies, known_kinds, kind_versions
 
-def parse_data(config_file_path, apis_dir, crds_dir):
+def parse_data(config_file_path, apis_dir, crds_dir, data_file_path='data.json'):
+    existing_data = {}
+    if os.path.exists(data_file_path):
+        with open(data_file_path, 'r') as f:
+            try:
+                loaded = json.load(f)
+                for r in loaded:
+                    existing_data[r['kind']] = r
+            except Exception:
+                pass
+
     resources = {}
     
     with open(config_file_path, 'r') as f:
@@ -133,7 +154,11 @@ def parse_data(config_file_path, apis_dir, crds_dir):
             group = group_full.split('.')[0]
             kind = kind_match.group(1)
             
-            resources[kind] = create_default_resource(kind, group)
+            if kind in existing_data:
+                resources[kind] = existing_data[kind]
+                resources[kind]['group'] = group
+            else:
+                resources[kind] = create_default_resource(kind, group)
             
             if default_ctrl_match:
                 resources[kind]['defaultController'] = default_ctrl_match.group(1)
@@ -145,16 +170,17 @@ def parse_data(config_file_path, apis_dir, crds_dir):
                 resources[kind]['supportedControllers'] = supported
                 if 'Direct' in supported:
                     resources[kind]['state'] = 'Completed'
-                    resources[kind]['steps'] = {
+                    if 'steps' not in resources[kind]: resources[kind]['steps'] = {}
+                    resources[kind]['steps'].update({
                         "gen-types": True,
                         "identity-reference": True,
                         "mapper-fuzzer": True,
                         "mocks": True,
                         "controller": True,
                         "tests": True
-                    }
+                    })
 
-    dependencies, known_kinds = build_dependency_graph(crds_dir)
+    dependencies, known_kinds, kind_versions = build_dependency_graph(crds_dir)
     implemented_types = get_implemented_types(apis_dir)
 
     # Calculate topological sort order and downstream count
@@ -209,6 +235,9 @@ def parse_data(config_file_path, apis_dir, crds_dir):
         res['sortOrder'] = topo_order.get(kind, 9999)
         res['downstreamCount'] = downstream_counts.get(kind, 0)
         
+        if kind in kind_versions:
+            res['version'] = kind_versions[kind]
+        
         if kind in dependencies:
             valid_deps = [dep for dep in dependencies[kind] if dep in resources]
             res['dependencies'] = sorted(valid_deps)
@@ -223,7 +252,8 @@ def parse_data(config_file_path, apis_dir, crds_dir):
             
             if not has_reference:
                 res['notes'] = 'Missing _reference.go'
-                res['steps']['identity-reference'] = False
+                if 'steps' in res:
+                    res['steps']['identity-reference'] = False
 
     return list(resources.values())
 
@@ -246,15 +276,18 @@ def create_default_resource(kind, group="unknown"):
             "tests": False
         },
         "mocksLastRefreshed": "Never",
-        "notes": ""
+        "notes": "",
+        "gcpTestLocation": "",
+        "mockgcpLocation": ""
     }
 
 if __name__ == "__main__":
     config_path = '../../pkg/controller/resourceconfig/static_config.go'
     apis_dir = '../../apis'
     crds_dir = '../../config/crds/resources'
-    data = parse_data(config_path, apis_dir, crds_dir)
+    data_path = 'data.json'
+    data = parse_data(config_path, apis_dir, crds_dir, data_path)
     data = sorted(data, key=lambda x: x['kind'])
-    with open('data.json', 'w') as f:
+    with open(data_path, 'w') as f:
         json.dump(data, f, indent=2)
     print(f"Generated data.json with {len(data)} resources.")
