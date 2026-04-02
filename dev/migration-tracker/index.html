@@ -38,6 +38,19 @@
                 <option value="PR Sent">PR Sent</option>
                 <option value="Completed">Completed</option>
             </select>
+            <select id="filter-gcptests">
+                <option value="All">GCP Tests: All</option>
+                <option value="Present">GCP Tests: Present</option>
+                <option value="Missing">GCP Tests: Missing</option>
+            </select>
+            <select id="filter-mockgcp">
+                <option value="All">MockGCP: All</option>
+                <option value="Present">MockGCP: Present</option>
+                <option value="Missing">MockGCP: Missing</option>
+            </select>
+            <div style="margin-left: auto; align-self: center; font-size: 14px; color: var(--text-muted);">
+                Showing <strong id="row-count">-</strong> resources
+            </div>
         </div>
 
         <div class="table-container">
@@ -52,9 +65,11 @@
                         <th data-sort="controllerType">Controller <span class="sort-icon"></span></th>
                         <th data-sort="state">State <span class="sort-icon"></span></th>
                         <th>Migration Steps</th>
-                        <th>Dependencies</th>
+                        <th data-sort="gcpTestLocation">GCP Tests <span class="sort-icon"></span></th>
+                        <th data-sort="mockgcpLocation">MockGCP <span class="sort-icon"></span></th>
                         <th data-sort="mocksLastRefreshed">Mocks Refreshed <span class="sort-icon"></span></th>
                         <th>Notes</th>
+                        <th>Dependencies</th>
                     </tr>
                 </thead>
                 <tbody id="table-body">
