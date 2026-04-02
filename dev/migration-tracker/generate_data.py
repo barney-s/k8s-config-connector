@@ -231,6 +231,9 @@ def parse_data(config_file_path, apis_dir, crds_dir, data_file_path='data.json')
             topo_order[node] = order_index
             order_index += 1
 
+    repo_root = "../../"
+    base_test_dir = os.path.join(repo_root, "pkg/test/resourcefixture/testdata/basic")
+
     for kind, res in resources.items():
         res['sortOrder'] = topo_order.get(kind, 9999)
         res['downstreamCount'] = downstream_counts.get(kind, 0)
@@ -254,6 +257,51 @@ def parse_data(config_file_path, apis_dir, crds_dir, data_file_path='data.json')
                 res['notes'] = 'Missing _reference.go'
                 if 'steps' in res:
                     res['steps']['identity-reference'] = False
+
+        kind_lower = kind.lower()
+        group_lower = res['group'].lower()
+        
+        # Determine gcpTestLocation
+        gcp_test_dir = ""
+        version = res.get('version', 'v1beta1')
+        preferred_path = os.path.join(base_test_dir, group_lower, version, kind_lower)
+        if os.path.isdir(preferred_path):
+            gcp_test_dir = os.path.relpath(preferred_path, repo_root)
+        else:
+            if os.path.exists(base_test_dir):
+                for root, dirs, files in os.walk(base_test_dir):
+                    if os.path.basename(root) == kind_lower:
+                        gcp_test_dir = os.path.relpath(root, repo_root)
+                        break
+        res['gcpTestLocation'] = gcp_test_dir
+
+        # Determine mockgcpLocation
+        mock_dir = ""
+        expected_mock_dir = os.path.join(repo_root, "mockgcp", f"mock{group_lower}")
+        if os.path.isdir(expected_mock_dir):
+            if kind_lower.startswith(group_lower):
+                suffix = kind_lower[len(group_lower):]
+            else:
+                suffix = kind_lower
+            if not suffix:
+                suffix = kind_lower
+            
+            found = False
+            for fname in os.listdir(expected_mock_dir):
+                if not fname.endswith(".go") or fname in ("service.go", "normalize.go", "register.go", "utils.go", "filter.go", "operations.go"):
+                    continue
+                name_part = fname[:-3]
+                name_part = re.sub(r'v[0-9]+(alpha[0-9]*|beta[0-9]*)?', '', name_part)
+                name_part = name_part.replace('_', '')
+                
+                if suffix == name_part or name_part == suffix + "s" or name_part == suffix + "es" or suffix.endswith(name_part):
+                    found = True
+                    break
+            
+            if found:
+                mock_dir = os.path.relpath(expected_mock_dir, repo_root)
+                
+        res['mockgcpLocation'] = mock_dir
 
     return list(resources.values())
 

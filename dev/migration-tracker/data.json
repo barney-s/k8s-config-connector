@@ -53,7 +53,7 @@
     "sortOrder": 114,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockapigateway"
+    "mockgcpLocation": ""
   },
   {
     "group": "apigateway",
@@ -81,7 +81,7 @@
     "sortOrder": 115,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockapigateway"
+    "mockgcpLocation": ""
   },
   {
     "group": "apikeys",
@@ -224,7 +224,7 @@
     "sortOrder": 119,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/accesscontextmanager/v1alpha1/accesscontextmanageraccesslevelcondition",
-    "mockgcpLocation": "mockgcp/mockaccesscontextmanager"
+    "mockgcpLocation": ""
   },
   {
     "group": "accesscontextmanager",
@@ -276,7 +276,7 @@
     "sortOrder": 120,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/accesscontextmanager/v1alpha1/accesscontextmanagergcpuseraccessbinding",
-    "mockgcpLocation": "mockgcp/mockaccesscontextmanager"
+    "mockgcpLocation": ""
   },
   {
     "group": "accesscontextmanager",
@@ -307,7 +307,7 @@
     "sortOrder": 121,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/accesscontextmanager/v1beta1/accesscontextmanagerserviceperimeter",
-    "mockgcpLocation": "mockgcp/mockaccesscontextmanager"
+    "mockgcpLocation": ""
   },
   {
     "group": "accesscontextmanager",
@@ -333,7 +333,7 @@
     "sortOrder": 122,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/accesscontextmanager/v1beta1/accesscontextmanagerserviceperimeterresource",
-    "mockgcpLocation": "mockgcp/mockaccesscontextmanager"
+    "mockgcpLocation": ""
   },
   {
     "group": "alloydb",
@@ -361,7 +361,7 @@
     "sortOrder": 123,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/alloydb/v1beta1/alloydbbackup",
-    "mockgcpLocation": "mockgcp/mockalloydb"
+    "mockgcpLocation": ""
   },
   {
     "group": "alloydb",
@@ -474,7 +474,7 @@
     "sortOrder": 127,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/apigee/v1alpha1/apigeeaddonsconfig",
-    "mockgcpLocation": "mockgcp/mockapigee"
+    "mockgcpLocation": ""
   },
   {
     "group": "apigee",
@@ -671,7 +671,7 @@
     "sortOrder": 131,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockapigee"
+    "mockgcpLocation": ""
   },
   {
     "group": "apigee",
@@ -726,7 +726,7 @@
     "sortOrder": 132,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockapigee"
+    "mockgcpLocation": ""
   },
   {
     "group": "appengine",
@@ -1260,7 +1260,7 @@
     "sortOrder": 72,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/bigqueryanalyticshub/v1beta1/bigqueryanalyticshubdataexchange",
-    "mockgcpLocation": "mockgcp/mockbigqueryanalyticshub"
+    "mockgcpLocation": ""
   },
   {
     "group": "bigqueryanalyticshub",
@@ -1289,7 +1289,7 @@
     "sortOrder": 155,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/bigqueryanalyticshub/v1beta1/bigqueryanalyticshublisting",
-    "mockgcpLocation": "mockgcp/mockbigqueryanalyticshub"
+    "mockgcpLocation": ""
   },
   {
     "group": "bigqueryconnection",
@@ -1379,7 +1379,7 @@
     "sortOrder": 158,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/bigquerydatatransfer/v1beta1/bigquerydatatransferconfig",
-    "mockgcpLocation": "mockgcp/mockbigquerydatatransfer"
+    "mockgcpLocation": ""
   },
   {
     "group": "bigquery",
@@ -1437,7 +1437,7 @@
     "sortOrder": 159,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockbigquery"
+    "mockgcpLocation": ""
   },
   {
     "group": "bigquery",
@@ -1467,7 +1467,7 @@
     "sortOrder": 160,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/bigquery/v1beta1/bigqueryjob",
-    "mockgcpLocation": "mockgcp/mockbigquery"
+    "mockgcpLocation": ""
   },
   {
     "group": "bigqueryreservation",
@@ -1497,7 +1497,7 @@
     "sortOrder": 161,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/bigqueryreservation/v1beta1/bigqueryreservationassignment",
-    "mockgcpLocation": "mockgcp/mockbigqueryreservation"
+    "mockgcpLocation": ""
   },
   {
     "group": "bigqueryreservation",
@@ -1525,7 +1525,7 @@
     "sortOrder": 162,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/bigqueryreservation/v1alpha1/bigqueryreservationcapacitycommitment",
-    "mockgcpLocation": "mockgcp/mockbigqueryreservation"
+    "mockgcpLocation": ""
   },
   {
     "group": "bigqueryreservation",
@@ -1670,7 +1670,7 @@
     "sortOrder": 167,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/bigtable/v1beta1/bigtablegcpolicy",
-    "mockgcpLocation": "mockgcp/mockbigtable"
+    "mockgcpLocation": ""
   },
   {
     "group": "bigtable",
@@ -2090,7 +2090,7 @@
     "sortOrder": 181,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/cloudbuild/v1beta1/cloudbuildtrigger",
-    "mockgcpLocation": "mockgcp/mockcloudbuild"
+    "mockgcpLocation": ""
   },
   {
     "group": "cloudbuild",
@@ -2339,7 +2339,7 @@
     "sortOrder": 194,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/cloudidentity/v1beta1/cloudidentitymembership",
-    "mockgcpLocation": "mockgcp/mockcloudidentity"
+    "mockgcpLocation": ""
   },
   {
     "group": "cloudscheduler",
@@ -2488,7 +2488,7 @@
     "sortOrder": 48,
     "downstreamCount": 2,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeaddress",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2516,7 +2516,7 @@
     "sortOrder": 198,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2544,7 +2544,7 @@
     "sortOrder": 18,
     "downstreamCount": 7,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computebackendbucket",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2573,7 +2573,7 @@
     "sortOrder": 199,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2635,7 +2635,7 @@
     "sortOrder": 200,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2663,7 +2663,7 @@
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
-    "sortOrder": 453,
+    "sortOrder": 456,
     "downstreamCount": 4,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computedisk",
     "mockgcpLocation": "mockgcp/mockcompute"
@@ -2692,10 +2692,10 @@
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
-    "sortOrder": 454,
+    "sortOrder": 453,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1alpha1/computediskresourcepolicyattachment",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2749,7 +2749,7 @@
     "sortOrder": 202,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computefirewall",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2777,7 +2777,7 @@
     "sortOrder": 30,
     "downstreamCount": 4,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computefirewallpolicy",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2805,7 +2805,7 @@
     "sortOrder": 203,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computefirewallpolicyassociation",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2833,7 +2833,7 @@
     "sortOrder": 204,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computefirewallpolicyrule",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2872,7 +2872,7 @@
     "sortOrder": 79,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeforwardingrule",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2900,7 +2900,7 @@
     "sortOrder": 205,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2928,7 +2928,7 @@
     "sortOrder": 206,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2954,7 +2954,7 @@
     "sortOrder": 13,
     "downstreamCount": 11,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computehttphealthcheck",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -2980,7 +2980,7 @@
     "sortOrder": 207,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computehttpshealthcheck",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3006,7 +3006,7 @@
     "sortOrder": 12,
     "downstreamCount": 12,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computehealthcheck",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3032,7 +3032,7 @@
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
-    "sortOrder": 456,
+    "sortOrder": 455,
     "downstreamCount": 4,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeimage",
     "mockgcpLocation": "mockgcp/mockcompute"
@@ -3095,7 +3095,7 @@
     "sortOrder": 15,
     "downstreamCount": 10,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeinstancegroup",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3126,7 +3126,7 @@
     "sortOrder": 80,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeinstancegroupmanager",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3154,7 +3154,7 @@
     "sortOrder": 208,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3213,7 +3213,7 @@
     "sortOrder": 32,
     "downstreamCount": 4,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeinterconnectattachment",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3241,7 +3241,7 @@
     "sortOrder": 210,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1alpha1/computemachineimage",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3269,7 +3269,7 @@
     "sortOrder": 211,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computemanagedsslcertificate",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3382,7 +3382,7 @@
     "sortOrder": 214,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3411,7 +3411,7 @@
     "sortOrder": 14,
     "downstreamCount": 11,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computenetworkendpointgroup",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3439,7 +3439,7 @@
     "sortOrder": 215,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computenetworkfirewallpolicy",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3468,7 +3468,7 @@
     "sortOrder": 216,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computenetworkfirewallpolicyassociation",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3497,7 +3497,7 @@
     "sortOrder": 217,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1alpha1/computenetworkfirewallpolicyrule",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3525,7 +3525,7 @@
     "sortOrder": 218,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computenetworkpeering",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3554,7 +3554,7 @@
     "sortOrder": 219,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3635,7 +3635,7 @@
     "sortOrder": 221,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1alpha1/computeorganizationsecuritypolicy",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3661,7 +3661,7 @@
     "sortOrder": 222,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3687,7 +3687,7 @@
     "sortOrder": 223,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3715,7 +3715,7 @@
     "sortOrder": 224,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computepacketmirroring",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3744,7 +3744,7 @@
     "sortOrder": 225,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3770,7 +3770,7 @@
     "sortOrder": 226,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeprojectmetadata",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3798,7 +3798,7 @@
     "sortOrder": 227,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3824,10 +3824,10 @@
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
-    "sortOrder": 455,
+    "sortOrder": 454,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1alpha1/computeregiondiskresourcepolicyattachment",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3885,7 +3885,7 @@
     "sortOrder": 229,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3913,7 +3913,7 @@
     "sortOrder": 230,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3939,7 +3939,7 @@
     "sortOrder": 231,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computereservation",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -3965,7 +3965,7 @@
     "sortOrder": 232,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeresourcepolicy",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4021,7 +4021,7 @@
     "sortOrder": 22,
     "downstreamCount": 6,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computerouter",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4052,7 +4052,7 @@
     "sortOrder": 82,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computerouterinterface",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4081,7 +4081,7 @@
     "sortOrder": 234,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computerouternat",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4110,7 +4110,7 @@
     "sortOrder": 235,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computerouterpeer",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4136,7 +4136,7 @@
     "sortOrder": 236,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computesslcertificate",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4162,7 +4162,7 @@
     "sortOrder": 33,
     "downstreamCount": 4,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computesslpolicy",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4188,7 +4188,7 @@
     "sortOrder": 10,
     "downstreamCount": 13,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computesecuritypolicy",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4216,7 +4216,7 @@
     "sortOrder": 49,
     "downstreamCount": 2,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeserviceattachment",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4242,7 +4242,7 @@
     "sortOrder": 237,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computesharedvpchostproject",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4270,7 +4270,7 @@
     "sortOrder": 238,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computesharedvpcserviceproject",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4298,7 +4298,7 @@
     "sortOrder": 34,
     "downstreamCount": 4,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computesnapshot",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4326,7 +4326,7 @@
     "sortOrder": 9,
     "downstreamCount": 23,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computesubnetwork",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4382,7 +4382,7 @@
     "sortOrder": 51,
     "downstreamCount": 2,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computetargethttpproxy",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4411,7 +4411,7 @@
     "sortOrder": 52,
     "downstreamCount": 2,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computetargethttpsproxy",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4441,7 +4441,7 @@
     "sortOrder": 239,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computetargetinstance",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4470,7 +4470,7 @@
     "sortOrder": 240,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computetargetpool",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4528,7 +4528,7 @@
     "sortOrder": 54,
     "downstreamCount": 2,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computetargettcpproxy",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4585,7 +4585,7 @@
     "sortOrder": 26,
     "downstreamCount": 5,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computeurlmap",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "compute",
@@ -4644,7 +4644,7 @@
     "sortOrder": 55,
     "downstreamCount": 2,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/compute/v1beta1/computevpntunnel",
-    "mockgcpLocation": "mockgcp/mockcompute"
+    "mockgcpLocation": ""
   },
   {
     "group": "configcontroller",
@@ -4727,7 +4727,7 @@
     "sortOrder": 244,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockcontaineranalysis"
+    "mockgcpLocation": ""
   },
   {
     "group": "containerattached",
@@ -4987,7 +4987,7 @@
     "sortOrder": 250,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/dns/v1beta1/dnspolicy",
-    "mockgcpLocation": "mockgcp/mockdns"
+    "mockgcpLocation": ""
   },
   {
     "group": "dns",
@@ -5045,7 +5045,7 @@
     "sortOrder": 252,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockdns"
+    "mockgcpLocation": ""
   },
   {
     "group": "dns",
@@ -5073,7 +5073,7 @@
     "sortOrder": 253,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockdns"
+    "mockgcpLocation": ""
   },
   {
     "group": "datacatalog",
@@ -5241,7 +5241,7 @@
     "sortOrder": 86,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/datacatalog/v1beta1/datacatalogtaxonomy",
-    "mockgcpLocation": "mockgcp/mockdatacatalog"
+    "mockgcpLocation": ""
   },
   {
     "group": "datafusion",
@@ -5301,7 +5301,7 @@
     "sortOrder": 258,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/dataflow/v1beta1/dataflowflextemplatejob",
-    "mockgcpLocation": "mockgcp/mockdataflow"
+    "mockgcpLocation": ""
   },
   {
     "group": "dataflow",
@@ -5799,7 +5799,7 @@
     "sortOrder": 272,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockdatastream"
+    "mockgcpLocation": ""
   },
   {
     "group": "deploymentmanager",
@@ -6178,7 +6178,7 @@
     "sortOrder": 286,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockdocumentai"
+    "mockgcpLocation": ""
   },
   {
     "group": "documentai",
@@ -6207,7 +6207,7 @@
     "sortOrder": 287,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/documentai/v1beta1/documentaiprocessorversion",
-    "mockgcpLocation": "mockgcp/mockdocumentai"
+    "mockgcpLocation": ""
   },
   {
     "group": "edgecontainer",
@@ -6471,7 +6471,7 @@
     "sortOrder": 294,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/eventarc/v1beta1/eventarctrigger",
-    "mockgcpLocation": "mockgcp/mockeventarc"
+    "mockgcpLocation": ""
   },
   {
     "group": "filestore",
@@ -6499,7 +6499,7 @@
     "sortOrder": 295,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/filestore/v1beta1/filestorebackup",
-    "mockgcpLocation": "mockgcp/mockfilestore"
+    "mockgcpLocation": ""
   },
   {
     "group": "filestore",
@@ -6556,7 +6556,7 @@
     "sortOrder": 297,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockfilestore"
+    "mockgcpLocation": ""
   },
   {
     "group": "firebase",
@@ -6856,7 +6856,7 @@
     "sortOrder": 307,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/firestore/v1beta1/firestoreindex",
-    "mockgcpLocation": "mockgcp/mockfirestore"
+    "mockgcpLocation": ""
   },
   {
     "group": "resourcemanager",
@@ -7025,7 +7025,7 @@
     "sortOrder": 94,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/gkehub/v1beta1/gkehubfeature",
-    "mockgcpLocation": "mockgcp/mockgkehub"
+    "mockgcpLocation": ""
   },
   {
     "group": "gkehub",
@@ -7056,7 +7056,7 @@
     "sortOrder": 309,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/gkehub/v1beta1/gkehubfeaturemembership",
-    "mockgcpLocation": "mockgcp/mockgkehub"
+    "mockgcpLocation": ""
   },
   {
     "group": "gkehub",
@@ -7082,7 +7082,7 @@
     "sortOrder": 95,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/gkehub/v1beta1/gkehubmembership",
-    "mockgcpLocation": "mockgcp/mockgkehub"
+    "mockgcpLocation": ""
   },
   {
     "group": "healthcare",
@@ -7242,7 +7242,7 @@
     "sortOrder": 315,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/iam/v1beta1/iamaccessboundarypolicy",
-    "mockgcpLocation": "mockgcp/mockiam"
+    "mockgcpLocation": ""
   },
   {
     "group": "iam",
@@ -7268,7 +7268,7 @@
     "sortOrder": 316,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockiam"
+    "mockgcpLocation": ""
   },
   {
     "group": "iam",
@@ -7326,7 +7326,7 @@
     "sortOrder": 319,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockiam"
+    "mockgcpLocation": ""
   },
   {
     "group": "iam",
@@ -7352,7 +7352,7 @@
     "sortOrder": 320,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockiam"
+    "mockgcpLocation": ""
   },
   {
     "group": "iam",
@@ -7383,7 +7383,7 @@
     "sortOrder": 321,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockiam"
+    "mockgcpLocation": ""
   },
   {
     "group": "iam",
@@ -7463,7 +7463,7 @@
     "sortOrder": 96,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/iam/v1beta1/iamworkforcepool",
-    "mockgcpLocation": "mockgcp/mockiam"
+    "mockgcpLocation": ""
   },
   {
     "group": "iam",
@@ -7491,7 +7491,7 @@
     "sortOrder": 323,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/iam/v1beta1/iamworkforcepoolprovider",
-    "mockgcpLocation": "mockgcp/mockiam"
+    "mockgcpLocation": ""
   },
   {
     "group": "iam",
@@ -7519,7 +7519,7 @@
     "sortOrder": 97,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/iam/v1beta1/iamworkloadidentitypool",
-    "mockgcpLocation": "mockgcp/mockiam"
+    "mockgcpLocation": ""
   },
   {
     "group": "iam",
@@ -7548,7 +7548,7 @@
     "sortOrder": 324,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/iam/v1beta1/iamworkloadidentitypoolprovider",
-    "mockgcpLocation": "mockgcp/mockiam"
+    "mockgcpLocation": ""
   },
   {
     "group": "iap",
@@ -7602,7 +7602,7 @@
     "sortOrder": 325,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/iap/v1beta1/iapidentityawareproxyclient",
-    "mockgcpLocation": "mockgcp/mockiap"
+    "mockgcpLocation": ""
   },
   {
     "group": "iap",
@@ -7631,7 +7631,7 @@
     "sortOrder": 326,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/iap/v1beta1/iapsettings",
-    "mockgcpLocation": "mockgcp/mockiap"
+    "mockgcpLocation": ""
   },
   {
     "group": "identityplatform",
@@ -8095,7 +8095,7 @@
     "sortOrder": 340,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockkms"
+    "mockgcpLocation": ""
   },
   {
     "group": "logging",
@@ -8181,7 +8181,7 @@
     "sortOrder": 342,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/logging/v1beta1/logginglogexclusion",
-    "mockgcpLocation": "mockgcp/mocklogging"
+    "mockgcpLocation": ""
   },
   {
     "group": "logging",
@@ -8503,7 +8503,7 @@
     "sortOrder": 36,
     "downstreamCount": 4,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/metastore/v1alpha1/metastoreservice",
-    "mockgcpLocation": "mockgcp/mockmetastore"
+    "mockgcpLocation": ""
   },
   {
     "group": "monitoring",
@@ -8640,7 +8640,7 @@
     "sortOrder": 355,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/monitoring/v1beta1/monitoringmonitoredproject",
-    "mockgcpLocation": "mockgcp/mockmonitoring"
+    "mockgcpLocation": ""
   },
   {
     "group": "monitoring",
@@ -8694,7 +8694,7 @@
     "sortOrder": 102,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/monitoring/v1beta1/monitoringservice",
-    "mockgcpLocation": "mockgcp/mockmonitoring"
+    "mockgcpLocation": ""
   },
   {
     "group": "monitoring",
@@ -8752,7 +8752,7 @@
     "sortOrder": 358,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/monitoring/v1beta1/monitoringuptimecheckconfig",
-    "mockgcpLocation": "mockgcp/mockmonitoring"
+    "mockgcpLocation": ""
   },
   {
     "group": "netapp",
@@ -8808,7 +8808,7 @@
     "sortOrder": 103,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networkconnectivity/v1beta1/networkconnectivityhub",
-    "mockgcpLocation": "mockgcp/mocknetworkconnectivity"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkconnectivity",
@@ -8866,7 +8866,7 @@
     "sortOrder": 362,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networkconnectivity/v1alpha1/networkconnectivityserviceconnectionpolicy",
-    "mockgcpLocation": "mockgcp/mocknetworkconnectivity"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkconnectivity",
@@ -8895,7 +8895,7 @@
     "sortOrder": 363,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networkconnectivity/v1beta1/networkconnectivityspoke",
-    "mockgcpLocation": "mockgcp/mocknetworkconnectivity"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkmanagement",
@@ -8983,7 +8983,7 @@
     "sortOrder": 366,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networksecurity/v1beta1/networksecurityclienttlspolicy",
-    "mockgcpLocation": "mockgcp/mocknetworksecurity"
+    "mockgcpLocation": ""
   },
   {
     "group": "networksecurity",
@@ -9011,7 +9011,7 @@
     "sortOrder": 367,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networksecurity/v1beta1/networksecurityservertlspolicy",
-    "mockgcpLocation": "mockgcp/mocknetworksecurity"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkservices",
@@ -9039,7 +9039,7 @@
     "sortOrder": 368,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networkservices/v1alpha1/networkservicesedgecachekeyset",
-    "mockgcpLocation": "mockgcp/mocknetworkservices"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkservices",
@@ -9067,7 +9067,7 @@
     "sortOrder": 369,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networkservices/v1alpha1/networkservicesedgecacheorigin",
-    "mockgcpLocation": "mockgcp/mocknetworkservices"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkservices",
@@ -9095,7 +9095,7 @@
     "sortOrder": 370,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mocknetworkservices"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkservices",
@@ -9123,7 +9123,7 @@
     "sortOrder": 371,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networkservices/v1beta1/networkservicesendpointpolicy",
-    "mockgcpLocation": "mockgcp/mocknetworkservices"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkservices",
@@ -9152,7 +9152,7 @@
     "sortOrder": 372,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networkservices/v1beta1/networkservicesgrpcroute",
-    "mockgcpLocation": "mockgcp/mocknetworkservices"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkservices",
@@ -9209,7 +9209,7 @@
     "sortOrder": 374,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networkservices/v1beta1/networkserviceshttproute",
-    "mockgcpLocation": "mockgcp/mocknetworkservices"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkservices",
@@ -9295,7 +9295,7 @@
     "sortOrder": 378,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networkservices/v1beta1/networkservicestcproute",
-    "mockgcpLocation": "mockgcp/mocknetworkservices"
+    "mockgcpLocation": ""
   },
   {
     "group": "networkservices",
@@ -9324,7 +9324,7 @@
     "sortOrder": 379,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/networkservices/v1beta1/networkservicestlsroute",
-    "mockgcpLocation": "mockgcp/mocknetworkservices"
+    "mockgcpLocation": ""
   },
   {
     "group": "notebooks",
@@ -9383,7 +9383,7 @@
     "sortOrder": 381,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/notebooks/v1alpha1/notebooksenvironment",
-    "mockgcpLocation": "mockgcp/mocknotebooks"
+    "mockgcpLocation": ""
   },
   {
     "group": "osconfig",
@@ -9637,7 +9637,7 @@
     "sortOrder": 389,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/privateca/v1beta1/privatecacertificate",
-    "mockgcpLocation": "mockgcp/mockprivateca"
+    "mockgcpLocation": ""
   },
   {
     "group": "privateca",
@@ -9696,7 +9696,7 @@
     "sortOrder": 106,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/privateca/v1beta1/privatecacertificatetemplate",
-    "mockgcpLocation": "mockgcp/mockprivateca"
+    "mockgcpLocation": ""
   },
   {
     "group": "privilegedaccessmanager",
@@ -10009,7 +10009,7 @@
     "sortOrder": 396,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/recaptchaenterprise/v1beta1/recaptchaenterprisekey",
-    "mockgcpLocation": "mockgcp/mockrecaptchaenterprise"
+    "mockgcpLocation": ""
   },
   {
     "group": "redis",
@@ -10094,7 +10094,7 @@
     "sortOrder": 399,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/resourcemanager/v1beta1/resourcemanagerlien",
-    "mockgcpLocation": "mockgcp/mockresourcemanager"
+    "mockgcpLocation": ""
   },
   {
     "group": "resourcemanager",
@@ -10123,7 +10123,7 @@
     "sortOrder": 400,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/resourcemanager/v1beta1/resourcemanagerpolicy",
-    "mockgcpLocation": "mockgcp/mockresourcemanager"
+    "mockgcpLocation": ""
   },
   {
     "group": "run",
@@ -10213,7 +10213,7 @@
     "sortOrder": 403,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/sql/v1beta1/sqldatabase",
-    "mockgcpLocation": "mockgcp/mocksql"
+    "mockgcpLocation": ""
   },
   {
     "group": "sql",
@@ -10243,7 +10243,7 @@
     "sortOrder": 27,
     "downstreamCount": 5,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/sql/v1beta1/sqlinstance",
-    "mockgcpLocation": "mockgcp/mocksql"
+    "mockgcpLocation": ""
   },
   {
     "group": "sql",
@@ -10271,7 +10271,7 @@
     "sortOrder": 404,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/sql/v1beta1/sqlsslcert",
-    "mockgcpLocation": "mockgcp/mocksql"
+    "mockgcpLocation": ""
   },
   {
     "group": "sql",
@@ -10299,7 +10299,7 @@
     "sortOrder": 405,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/sql/v1beta1/sqluser",
-    "mockgcpLocation": "mockgcp/mocksql"
+    "mockgcpLocation": ""
   },
   {
     "group": "secretmanager",
@@ -10495,7 +10495,7 @@
     "sortOrder": 11,
     "downstreamCount": 13,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/serviceusage/v1beta1/service",
-    "mockgcpLocation": "mockgcp/mockserviceusage"
+    "mockgcpLocation": ""
   },
   {
     "group": "servicedirectory",
@@ -10524,7 +10524,7 @@
     "sortOrder": 410,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/servicedirectory/v1beta1/servicedirectoryendpoint",
-    "mockgcpLocation": "mockgcp/mockservicedirectory"
+    "mockgcpLocation": ""
   },
   {
     "group": "servicedirectory",
@@ -10608,7 +10608,7 @@
     "sortOrder": 65,
     "downstreamCount": 2,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/serviceusage/v1beta1/serviceidentity",
-    "mockgcpLocation": "mockgcp/mockserviceusage"
+    "mockgcpLocation": ""
   },
   {
     "group": "servicenetworking",
@@ -10692,7 +10692,7 @@
     "sortOrder": 414,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockserviceusage"
+    "mockgcpLocation": ""
   },
   {
     "group": "sourcerepo",
@@ -10720,7 +10720,7 @@
     "sortOrder": 415,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/sourcerepo/v1beta1/sourcereporepository",
-    "mockgcpLocation": "mockgcp/mocksourcerepo"
+    "mockgcpLocation": ""
   },
   {
     "group": "spanner",
@@ -10749,7 +10749,7 @@
     "sortOrder": 416,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/spanner/v1beta1/spannerbackupschedule",
-    "mockgcpLocation": "mockgcp/mockspanner"
+    "mockgcpLocation": ""
   },
   {
     "group": "spanner",
@@ -10778,7 +10778,7 @@
     "sortOrder": 109,
     "downstreamCount": 1,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/spanner/v1beta1/spannerdatabase",
-    "mockgcpLocation": "mockgcp/mockspanner"
+    "mockgcpLocation": ""
   },
   {
     "group": "spanner",
@@ -10805,7 +10805,7 @@
     "sortOrder": 66,
     "downstreamCount": 2,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/spanner/v1beta1/spannerinstance",
-    "mockgcpLocation": "mockgcp/mockspanner"
+    "mockgcpLocation": ""
   },
   {
     "group": "spanner",
@@ -10833,7 +10833,7 @@
     "sortOrder": 417,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/spanner/v1alpha1/spannerinstanceconfig",
-    "mockgcpLocation": "mockgcp/mockspanner"
+    "mockgcpLocation": ""
   },
   {
     "group": "speech",
@@ -10945,7 +10945,7 @@
     "sortOrder": 421,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/storage/v1beta1/storageanywherecache",
-    "mockgcpLocation": "mockgcp/mockstorage"
+    "mockgcpLocation": ""
   },
   {
     "group": "storage",
@@ -11001,7 +11001,7 @@
     "sortOrder": 422,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/storage/v1beta1/storagebucketaccesscontrol",
-    "mockgcpLocation": "mockgcp/mockstorage"
+    "mockgcpLocation": ""
   },
   {
     "group": "storage",
@@ -11029,7 +11029,7 @@
     "sortOrder": 423,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/storage/v1beta1/storagedefaultobjectaccesscontrol",
-    "mockgcpLocation": "mockgcp/mockstorage"
+    "mockgcpLocation": ""
   },
   {
     "group": "storage",
@@ -11086,7 +11086,7 @@
     "sortOrder": 425,
     "downstreamCount": 0,
     "gcpTestLocation": "",
-    "mockgcpLocation": "mockgcp/mockstorage"
+    "mockgcpLocation": ""
   },
   {
     "group": "storage",
@@ -11423,7 +11423,7 @@
     "sortOrder": 28,
     "downstreamCount": 5,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/vmwareengine/v1alpha1/vmwareenginenetwork",
-    "mockgcpLocation": "mockgcp/mockvmwareengine"
+    "mockgcpLocation": ""
   },
   {
     "group": "vmwareengine",
@@ -11906,7 +11906,7 @@
     "sortOrder": 451,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/workstations/v1beta1/workstationcluster",
-    "mockgcpLocation": "mockgcp/mockworkstations"
+    "mockgcpLocation": ""
   },
   {
     "group": "workstations",
@@ -11935,6 +11935,6 @@
     "sortOrder": 452,
     "downstreamCount": 0,
     "gcpTestLocation": "pkg/test/resourcefixture/testdata/basic/workstations/v1beta1/workstationconfig",
-    "mockgcpLocation": "mockgcp/mockworkstations"
+    "mockgcpLocation": ""
   }
 ]
