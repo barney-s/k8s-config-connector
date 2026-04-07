@@ -35,7 +35,7 @@ This is the criteria to identify the resource Group and Kind that need a mock cr
 Finding resources that meet the following criteria:
 1. Run `./dev/migration-tracker/list_top_unmigrated.py -n 20 --step mocks` to get a topologically sorted list of up to 20 unmigrated resources (output is in `<Group>/<Kind>` format).
 2. The resource CRD must be present in `config/crds/resources` directory.
-3. Candidate resources can be identified by the presence of the label `cnrm.cloud.google.com/dcl2crd: "true"` OR `cnrm.cloud.google.com/tf2crd: "true"` in their metadata.
+3. Candidate resources can be identified by the presence of the label `cnrm.cloud.google.com/dcl2crd: "true"` OR `cnrm.cloud.google.com/tf2crd: "true"` in their CRD metadata.
 4. The resource to be migrated should be in `beta` (`spec.versions[].name` is `v1beta1`).
 
 **Dependency Verification:**
@@ -83,7 +83,7 @@ In a single run create at most one PR to avoid overwhelming the team.
 
 ## PR Title
 
-Title should be: `feat: create mockgcp for <Group> <Kind>`,
+Title should be: `mockgcp: feat: For <Group> <Kind>`,
 where `<Group>` and `<Kind>` are replaced with the actual Group and Kind.
 
 ## PR Body
