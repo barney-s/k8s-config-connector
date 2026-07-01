@@ -1574,7 +1574,7 @@
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
-    "sortOrder": 551,
+    "sortOrder": 553,
     "downstreamCount": 4
   },
   {
@@ -1602,7 +1602,7 @@
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
-    "sortOrder": 553,
+    "sortOrder": 551,
     "downstreamCount": 0
   },
   {
@@ -2209,9 +2209,9 @@
     "dependencies": [
       "Project"
     ],
-    "state": "Not Started",
+    "state": "In Progress",
     "steps": {
-      "gen-types": false,
+      "gen-types": true,
       "identity-reference": false,
       "mapper-fuzzer": false,
       "mocks": false,
@@ -2219,7 +2219,7 @@
       "tests": false
     },
     "mocksLastRefreshed": "Never",
-    "notes": "",
+    "notes": "Missing _reference.go or _identity.go",
     "sortOrder": 251,
     "downstreamCount": 0
   },
@@ -2811,10 +2811,10 @@
       "ComputeRouter",
       "ComputeSubnetwork"
     ],
-    "state": "Not Started",
+    "state": "In Progress",
     "steps": {
-      "gen-types": false,
-      "identity-reference": false,
+      "gen-types": true,
+      "identity-reference": true,
       "mapper-fuzzer": false,
       "mocks": false,
       "controller": false,
