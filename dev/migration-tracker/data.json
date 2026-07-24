@@ -971,19 +971,20 @@
     "controllerType": "DCL",
     "defaultController": "DCL",
     "supportedControllers": [
-      "DCL"
+      "DCL",
+      "Direct"
     ],
     "dependencies": [
       "PubSubTopic"
     ],
-    "state": "In Progress",
+    "state": "Completed",
     "steps": {
       "gen-types": true,
       "identity-reference": true,
-      "mapper-fuzzer": false,
-      "mocks": false,
-      "controller": false,
-      "tests": false
+      "mapper-fuzzer": true,
+      "mocks": true,
+      "controller": true,
+      "tests": true
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
@@ -1216,14 +1217,14 @@
     "state": "In Progress",
     "steps": {
       "gen-types": true,
-      "identity-reference": false,
+      "identity-reference": true,
       "mapper-fuzzer": false,
       "mocks": false,
       "controller": false,
       "tests": false
     },
     "mocksLastRefreshed": "Never",
-    "notes": "Missing _reference.go or _identity.go",
+    "notes": "",
     "sortOrder": 115,
     "downstreamCount": 0
   },
@@ -1506,10 +1507,10 @@
       "ComputeNetworkEndpointGroup",
       "ComputeSecurityPolicy"
     ],
-    "state": "Not Started",
+    "state": "In Progress",
     "steps": {
-      "gen-types": false,
-      "identity-reference": false,
+      "gen-types": true,
+      "identity-reference": true,
       "mapper-fuzzer": false,
       "mocks": false,
       "controller": false,
@@ -2146,7 +2147,7 @@
     "mocksLastRefreshed": "Never",
     "notes": "",
     "sortOrder": 3,
-    "downstreamCount": 129
+    "downstreamCount": 132
   },
   {
     "group": "compute",
@@ -2656,9 +2657,9 @@
     "dependencies": [
       "Project"
     ],
-    "state": "Not Started",
+    "state": "In Progress",
     "steps": {
-      "gen-types": false,
+      "gen-types": true,
       "identity-reference": false,
       "mapper-fuzzer": false,
       "mocks": false,
@@ -2666,7 +2667,7 @@
       "tests": false
     },
     "mocksLastRefreshed": "Never",
-    "notes": "",
+    "notes": "Missing _reference.go or _identity.go",
     "sortOrder": 150,
     "downstreamCount": 0
   },
@@ -2873,14 +2874,14 @@
     "state": "In Progress",
     "steps": {
       "gen-types": true,
-      "identity-reference": false,
+      "identity-reference": true,
       "mapper-fuzzer": false,
       "mocks": false,
       "controller": false,
       "tests": false
     },
     "mocksLastRefreshed": "Never",
-    "notes": "Missing _reference.go or _identity.go",
+    "notes": "",
     "sortOrder": 156,
     "downstreamCount": 0
   },
@@ -2946,9 +2947,9 @@
     "dependencies": [
       "Project"
     ],
-    "state": "Not Started",
+    "state": "In Progress",
     "steps": {
-      "gen-types": false,
+      "gen-types": true,
       "identity-reference": false,
       "mapper-fuzzer": false,
       "mocks": false,
@@ -2956,7 +2957,7 @@
       "tests": false
     },
     "mocksLastRefreshed": "Never",
-    "notes": "",
+    "notes": "Missing _reference.go or _identity.go",
     "sortOrder": 40,
     "downstreamCount": 2
   },
@@ -4803,7 +4804,7 @@
     "mocksLastRefreshed": "Never",
     "notes": "",
     "sortOrder": 1,
-    "downstreamCount": 409
+    "downstreamCount": 433
   },
   {
     "group": "gkehub",
@@ -5152,7 +5153,7 @@
     "mocksLastRefreshed": "Never",
     "notes": "",
     "sortOrder": 6,
-    "downstreamCount": 55
+    "downstreamCount": 56
   },
   {
     "group": "iam",
@@ -5592,7 +5593,7 @@
     "mocksLastRefreshed": "Never",
     "notes": "",
     "sortOrder": 5,
-    "downstreamCount": 126
+    "downstreamCount": 129
   },
   {
     "group": "kms",
@@ -5641,7 +5642,7 @@
     "mocksLastRefreshed": "Never",
     "notes": "",
     "sortOrder": 4,
-    "downstreamCount": 128
+    "downstreamCount": 131
   },
   {
     "group": "kms",
@@ -5867,17 +5868,18 @@
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
+      "Direct",
       "Terraform"
     ],
     "dependencies": [],
-    "state": "In Progress",
+    "state": "Completed",
     "steps": {
       "gen-types": true,
       "identity-reference": true,
-      "mapper-fuzzer": false,
-      "mocks": false,
-      "controller": false,
-      "tests": false
+      "mapper-fuzzer": true,
+      "mocks": true,
+      "controller": true,
+      "tests": true
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
@@ -6366,10 +6368,10 @@
       "Project",
       "Service"
     ],
-    "state": "Not Started",
+    "state": "In Progress",
     "steps": {
-      "gen-types": false,
-      "identity-reference": false,
+      "gen-types": true,
+      "identity-reference": true,
       "mapper-fuzzer": false,
       "mocks": false,
       "controller": false,
@@ -6604,10 +6606,10 @@
       "PrivateCACertificateTemplate",
       "Project"
     ],
-    "state": "Not Started",
+    "state": "In Progress",
     "steps": {
-      "gen-types": false,
-      "identity-reference": false,
+      "gen-types": true,
+      "identity-reference": true,
       "mapper-fuzzer": false,
       "mocks": false,
       "controller": false,
@@ -6625,7 +6627,8 @@
     "controllerType": "DCL",
     "defaultController": "DCL",
     "supportedControllers": [
-      "DCL"
+      "DCL",
+      "Direct"
     ],
     "dependencies": [
       "KMSCryptoKey",
@@ -6633,14 +6636,14 @@
       "Project",
       "StorageBucket"
     ],
-    "state": "In Progress",
+    "state": "Completed",
     "steps": {
       "gen-types": true,
       "identity-reference": true,
-      "mapper-fuzzer": false,
-      "mocks": false,
-      "controller": false,
-      "tests": false
+      "mapper-fuzzer": true,
+      "mocks": true,
+      "controller": true,
+      "tests": true
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
@@ -6698,7 +6701,7 @@
     "mocksLastRefreshed": "Never",
     "notes": "",
     "sortOrder": 2,
-    "downstreamCount": 404
+    "downstreamCount": 428
   },
   {
     "group": "pubsublite",
@@ -7328,19 +7331,20 @@
     "controllerType": "Terraform",
     "defaultController": "Terraform",
     "supportedControllers": [
+      "Direct",
       "Terraform"
     ],
     "dependencies": [
       "Project"
     ],
-    "state": "In Progress",
+    "state": "Completed",
     "steps": {
       "gen-types": true,
       "identity-reference": true,
-      "mapper-fuzzer": false,
-      "mocks": false,
-      "controller": false,
-      "tests": false
+      "mapper-fuzzer": true,
+      "mocks": true,
+      "controller": true,
+      "tests": true
     },
     "mocksLastRefreshed": "Never",
     "notes": "",
@@ -7502,7 +7506,7 @@
     "mocksLastRefreshed": "Never",
     "notes": "",
     "sortOrder": 7,
-    "downstreamCount": 40
+    "downstreamCount": 41
   },
   {
     "group": "storage",
