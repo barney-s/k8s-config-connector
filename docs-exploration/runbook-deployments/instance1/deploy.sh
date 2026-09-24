@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Note: Added retry loop for IAM propagation and updated health wait to use jsonpath='{.status.healthy}'=true.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 source "${SCRIPT_DIR}/params.env"
@@ -41,9 +43,15 @@ else
 fi
 
 echo "Assigning roles/editor to ${KCC_GSA_EMAIL} on project ${PROJECT_ID}..."
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="serviceAccount:${KCC_GSA_EMAIL}" \
-  --role="roles/editor"
+for i in {1..6}; do
+  if gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${KCC_GSA_EMAIL}" \
+    --role="roles/editor"; then
+    break
+  fi
+  echo "Retrying project IAM binding in 5s (attempt $i/6)..."
+  sleep 5
+done
 
 # 3. Build Manifests and Deploy Config Connector Operator
 cd "${REPO_ROOT}"
@@ -90,10 +98,16 @@ EOF
 
 # 5. Bind Workload Identity (K8s ServiceAccount to Google ServiceAccount)
 echo "Authorizing K8s ServiceAccount via Workload Identity..."
-gcloud iam service-accounts add-iam-policy-binding "${KCC_GSA_EMAIL}" \
-  --project="${PROJECT_ID}" \
-  --role="roles/iam.workloadIdentityUser" \
-  --member="${K8S_SA}"
+for i in {1..6}; do
+  if gcloud iam service-accounts add-iam-policy-binding "${KCC_GSA_EMAIL}" \
+    --project="${PROJECT_ID}" \
+    --role="roles/iam.workloadIdentityUser" \
+    --member="${K8S_SA}"; then
+    break
+  fi
+  echo "Retrying workload identity binding in 5s (attempt $i/6)..."
+  sleep 5
+done
 
 # Verification
 echo "=== Verifying Deployment ==="
@@ -102,8 +116,8 @@ kubectl get pods -n "${OPERATOR_SYSTEM_NS}"
 kubectl get pods -n "${CNRM_SYSTEM_NS}"
 
 echo "Waiting for ConfigConnector and ConfigConnectorContext health..."
-kubectl wait --for=condition=Healthy=true configconnector/configconnector.core.cnrm.cloud.google.com --timeout=180s
-kubectl wait -n "${KCC_NAMESPACE}" --for=condition=Healthy=true configconnectorcontext/configconnectorcontext.core.cnrm.cloud.google.com --timeout=180s
+kubectl wait --for=jsonpath='{.status.healthy}'=true configconnector/configconnector.core.cnrm.cloud.google.com --timeout=180s
+kubectl wait -n "${KCC_NAMESPACE}" --for=jsonpath='{.status.healthy}'=true configconnectorcontext/configconnectorcontext.core.cnrm.cloud.google.com --timeout=180s
 
 echo "Creating test StorageBucket ${TEST_BUCKET_NAME} in ${KCC_NAMESPACE}..."
 cat <<EOF | kubectl apply -f -

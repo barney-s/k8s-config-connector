@@ -27,7 +27,11 @@ kubectl delete namespace "${KCC_NAMESPACE}" --ignore-not-found=true || true
 # 4. Uninstall Config Connector Operator
 cd "${REPO_ROOT}"
 echo "Uninstalling operator manifests..."
+mkdir -p operator/config/manager
+cp -f operator/config/manager/manager_image_patch_template.yaml operator/config/manager/manager_image_patch.yaml 2>/dev/null || true
+sed -i'' -e "s@image: .*@image: ${OPERATOR_IMG}@" operator/config/manager/manager_image_patch.yaml 2>/dev/null || true
 kubectl delete -k operator/config/default --ignore-not-found=true || true
+rm -f operator/config/manager/manager_image_patch.yaml
 
 # 5. Remove Workload Identity IAM binding and GSA
 echo "Removing IAM policy bindings and deleting GSA ${KCC_GSA_EMAIL}..."
