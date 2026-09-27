@@ -150,7 +150,8 @@ func TestRegisteredTemplatesMatchCAI(t *testing.T) {
 		"//compute.googleapis.com/projects/{}/zones/{}/networkEndpointGroups/{}//{}/{}":   true,
 
 		// Config Delivery
-		"//configdelivery.googleapis.com/projects/{}/locations/{}/fleetPackages/{}": true,
+		"//configdelivery.googleapis.com/projects/{}/locations/{}/fleetPackages/{}":   true,
+		"//configdelivery.googleapis.com/projects/{}/locations/{}/resourceBundles/{}": true,
 
 		// Config Deployment
 		"//config.googleapis.com/projects/{}/locations/{}/deploymentGroups/{}": true,
@@ -180,7 +181,7 @@ func TestRegisteredTemplatesMatchCAI(t *testing.T) {
 		"//dataplex.googleapis.com/projects/{}/locations/{}/dataTaxonomies/{}":        true,
 		"//dataplex.googleapis.com/projects/{}/locations/{}/entryGroups/{}":           true,
 		"//dataplex.googleapis.com/projects/{}/locations/{}/entryTypes/{}":            true,
-
+		"//dataplex.googleapis.com/projects/{}/locations/{}/metadataFeeds/{}":         true,
 		// Dataproc
 		"//dataproc.googleapis.com/projects/{}/locations/{}/sessionTemplates/{}": true,
 		"//dataproc.googleapis.com/v1/projects/{}/regions/{}/clusters/{}":        true,
@@ -258,6 +259,10 @@ func TestRegisteredTemplatesMatchCAI(t *testing.T) {
 
 		// Migration Center
 		"//migrationcenter.googleapis.com/projects/{}/locations/{}/groups/{}": true,
+
+		// Map Management
+		"//mapmanagement.googleapis.com/projects/{}/mapConfigs/{}":   true,
+		"//mapmanagement.googleapis.com/projects/{}/styleConfigs/{}": true,
 
 		// Model Armor
 		"//modelarmor.googleapis.com/projects/{}/locations/{}/templates/{}":      true,

@@ -36,6 +36,18 @@ const (
 
 // GetProtoMessageFromAnnotation will extract a proto message annotation, including the spec and observedstate "subclasses"
 func GetProtoMessageFromAnnotation(commentLine string) (string, bool) {
+	protoMessage, _, ok := GetProtoMessageAndKindFromAnnotation(commentLine)
+	return protoMessage, ok
+}
+
+// GetProtoMessageAndKindFromAnnotation extracts a proto message annotation from a comment line,
+// returning both the proto message full name and the specific annotation kind that matched
+// (e.g. "+kcc:proto" or "+kcc:observedstate:proto").
+//
+// Identifying the matched annotation enables callers to determine whether the annotated Go type
+// represents a spec struct (e.g. "Foo") or an ObservedState struct (e.g. "FooObservedState")
+// when both refer to the same underlying protobuf message.
+func GetProtoMessageAndKindFromAnnotation(commentLine string) (protoMessage string, annotationKind string, ok bool) {
 	trimmed := strings.TrimPrefix(commentLine, "//")
 	trimmed = strings.TrimSpace(trimmed)
 	for _, annotation := range []string{
@@ -45,10 +57,10 @@ func GetProtoMessageFromAnnotation(commentLine string) (string, bool) {
 		KCCProtoMessageAnnotationStatus,
 	} {
 		if strings.HasPrefix(trimmed, annotation+"=") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, annotation+"=")), true
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, annotation+"=")), annotation, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // special-case proto messages that are currently not mapped to KRM Go structs
@@ -61,6 +73,15 @@ var protoMessagesNotMappedToGoStruct = map[string]string{
 	"google.protobuf.Struct":            "apiextensionsv1.JSON",
 	"google.rpc.Status":                 "common.Status",
 	"google.cloud.connectors.v1.Secret": "secretmanagerv1beta1.SecretRef",
+}
+
+// QualifierImports maps the package qualifier of each Go type in
+// protoMessagesNotMappedToGoStruct to its import path. If an entry in that map
+// uses an external package, declare its import path here.
+var QualifierImports = map[string]string{
+	"apiextensionsv1":      "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1",
+	"common":               "github.com/GoogleCloudPlatform/k8s-config-connector/apis/common",
+	"secretmanagerv1beta1": "github.com/GoogleCloudPlatform/k8s-config-connector/apis/secretmanager/v1beta1",
 }
 
 // This acronym list contains both acronym (including initialism) and abbreviation.
