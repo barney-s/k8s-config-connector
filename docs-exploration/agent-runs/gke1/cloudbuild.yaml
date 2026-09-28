@@ -1,6 +1,8 @@
 steps:
   # 1. Build the multi-binary builder image containing all compiled Go binaries
   - name: 'gcr.io/cloud-builders/docker'
+    env:
+      - 'DOCKER_BUILDKIT=1'
     args:
       - 'build'
       - '-t'
@@ -11,6 +13,8 @@ steps:
 
   # 2. Build thin controller manager image
   - name: 'gcr.io/cloud-builders/docker'
+    env:
+      - 'DOCKER_BUILDKIT=1'
     args:
       - 'build'
       - '-t'
@@ -25,6 +29,8 @@ steps:
 
   # 3. Build thin recorder image
   - name: 'gcr.io/cloud-builders/docker'
+    env:
+      - 'DOCKER_BUILDKIT=1'
     args:
       - 'build'
       - '-t'
@@ -39,6 +45,8 @@ steps:
 
   # 4. Build thin webhook image
   - name: 'gcr.io/cloud-builders/docker'
+    env:
+      - 'DOCKER_BUILDKIT=1'
     args:
       - 'build'
       - '-t'
@@ -53,6 +61,8 @@ steps:
 
   # 5. Build thin deletion defender image
   - name: 'gcr.io/cloud-builders/docker'
+    env:
+      - 'DOCKER_BUILDKIT=1'
     args:
       - 'build'
       - '-t'
@@ -67,6 +77,8 @@ steps:
 
   # 6. Build thin unmanaged detector image
   - name: 'gcr.io/cloud-builders/docker'
+    env:
+      - 'DOCKER_BUILDKIT=1'
     args:
       - 'build'
       - '-t'
@@ -81,6 +93,8 @@ steps:
 
   # 7. Build operator image
   - name: 'gcr.io/cloud-builders/docker'
+    env:
+      - 'DOCKER_BUILDKIT=1'
     args:
       - 'build'
       - '-t'
@@ -102,6 +116,8 @@ images:
 options:
   machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
+  env:
+    - 'DOCKER_BUILDKIT=1'
 
 substitutions:
   _IMAGE_PREFIX: ''

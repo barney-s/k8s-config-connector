@@ -17,6 +17,7 @@ kubectl kustomize config/installbundle/releases/scopes/cluster/withworkloadident
     sed -e "s/\${PROJECT_ID?}/${PROJECT}/g" | \
     kubectl delete -f - --ignore-not-found=true || true
 
+kubectl delete -f operator/config/crd/bases/ --ignore-not-found=true || true
 kubectl delete -f config/crds/resources/ --ignore-not-found=true || true
 
 echo "===> [Teardown 3] Deleting GKE Cluster..."

@@ -55,7 +55,7 @@ gcloud artifacts repositories create "${ARTIFACT_REPO}" \
 ---
 
 ### Step 2: Create Google Service Account (GSA) and Assign Project IAM Permissions
-Create a dedicated Google Service Account for Config Connector and grant it the project-level role required to manage GCP resources.
+Create a dedicated Google Service Account for Config Connector and grant it the project-level role required to manage GCP resources. Also ensure Cloud Build's default service account has the requisite permissions (`storage.admin`, `artifactregistry.writer`, `logging.logWriter`) to read source archives and publish container images.
 
 ```bash
 gcloud iam service-accounts create "${GSA_NAME}" \
@@ -67,9 +67,29 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
     --member="serviceAccount:${GSA_EMAIL}" \
     --role="roles/owner" \
     --quiet
+
+PROJECT_NUMBER="$(gcloud projects describe "${PROJECT}" --format="value(projectNumber)")"
+CB_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+    --member="serviceAccount:${CB_SA}" \
+    --role="roles/storage.admin" \
+    --quiet
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+    --member="serviceAccount:${CB_SA}" \
+    --role="roles/artifactregistry.writer" \
+    --quiet
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+    --member="serviceAccount:${CB_SA}" \
+    --role="roles/logging.logWriter" \
+    --quiet
+
+gcloud storage buckets add-iam-policy-binding "gs://${PROJECT}_cloudbuild" \
+    --member="serviceAccount:${CB_SA}" \
+    --role="roles/storage.admin" \
+    --quiet 2>/dev/null || true
 ```
 
-*Why:* Config Connector reconcilers act on behalf of this Google Service Account when creating, updating, and deleting cloud infrastructure in the project.
+*Why:* Config Connector reconcilers act on behalf of this Google Service Account when creating, updating, and deleting cloud infrastructure in the project. Cloud Build execution also requires bucket read access on the upload bucket and Artifact Registry write access to push built images.
 
 ---
 
@@ -109,32 +129,69 @@ gcloud iam service-accounts add-iam-policy-binding "${GSA_EMAIL}" \
 ---
 
 ### Step 5: Build Container Images from Source using Cloud Build
-Submit a Cloud Build job to build all Config Connector component binaries and container images from source, and push them to the Artifact Registry repository.
+Submit a Cloud Build job to build all Config Connector component binaries and container images from source (with BuildKit enabled for cache mounts), and push them to the Artifact Registry repository.
 
 ```bash
-gcloud builds submit \
-    --project="${PROJECT}" \
-    --config="${RUN_DIR}/cloudbuild.yaml" \
-    --substitutions="_IMAGE_PREFIX=${IMAGE_PREFIX},_IMAGE_TAG=${IMAGE_TAG}" \
-    .
+if ! gcloud artifacts docker images list "${IMAGE_PREFIX%/}" --include-tags --filter="TAGS:${IMAGE_TAG}" --format="value(TAGS)" 2>/dev/null | grep -q "${IMAGE_TAG}"; then
+    gcloud builds submit \
+        --project="${PROJECT}" \
+        --config="${RUN_DIR}/cloudbuild.yaml" \
+        --substitutions="_IMAGE_PREFIX=${IMAGE_PREFIX},_IMAGE_TAG=${IMAGE_TAG}" \
+        .
+fi
 ```
 
-*Why:* Because a local Docker daemon is not running in this environment, Cloud Build provides a hermetic, scalable build environment using the repository's multi-stage Dockerfiles (`build/builder/Dockerfile`, `build/manager/Dockerfile`, etc.).
+*Why:* Because a local Docker daemon is not running in this environment, Cloud Build provides a hermetic build environment. The build requires `DOCKER_BUILDKIT=1` because `build/builder/Dockerfile` leverages BuildKit `--mount=type=cache` options. Re-runs skip the build when images are already present.
 
 ---
 
 ### Step 6: Generate Kustomize Image Patches
-Generate the component image patch files from the repository's patch templates, pointing each component to the newly built image in Artifact Registry.
+Generate the component image patch files from the repository's patch templates, pointing each component to the newly built image in Artifact Registry and sizing memory limits appropriately.
 
 ```bash
 cp config/installbundle/components/manager/base/manager_image_patch_template.yaml config/installbundle/components/manager/base/manager_image_patch.yaml
 sed -i -e "s@image: .*@image: ${IMAGE_PREFIX}controller:${IMAGE_TAG}@" config/installbundle/components/manager/base/manager_image_patch.yaml
 
-cp config/installbundle/components/recorder/recorder_image_patch_template.yaml config/installbundle/components/recorder/recorder_image_patch.yaml
-sed -i -e "s@image: .*@image: ${IMAGE_PREFIX}recorder:${IMAGE_TAG}@" config/installbundle/components/recorder/recorder_image_patch.yaml
+cat <<EOF > config/installbundle/components/recorder/recorder_image_patch.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-stats-recorder
+spec:
+  template:
+    spec:
+      containers:
+      - image: ${IMAGE_PREFIX}recorder:${IMAGE_TAG}
+        name: recorder
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 512Mi
+EOF
 
-cp config/installbundle/components/webhook/webhook_image_patch_template.yaml config/installbundle/components/webhook/webhook_image_patch.yaml
-sed -i -e "s@image: .*@image: ${IMAGE_PREFIX}webhook:${IMAGE_TAG}@" config/installbundle/components/webhook/webhook_image_patch.yaml
+cat <<EOF > config/installbundle/components/webhook/webhook_image_patch.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook-manager
+spec:
+  template:
+    spec:
+      containers:
+      - image: ${IMAGE_PREFIX}webhook:${IMAGE_TAG}
+        name: webhook
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+        env:
+        - name: GOMEMLIMIT
+          value: 460MiB
+EOF
 
 cp config/installbundle/components/deletiondefender/deletiondefender_image_patch_template.yaml config/installbundle/components/deletiondefender/deletiondefender_image_patch.yaml
 sed -i -e "s@image: .*@image: ${IMAGE_PREFIX}deletiondefender:${IMAGE_TAG}@" config/installbundle/components/deletiondefender/deletiondefender_image_patch.yaml
@@ -143,18 +200,19 @@ cp config/installbundle/components/unmanageddetector/unmanageddetector_image_pat
 sed -i -e "s@image: .*@image: ${IMAGE_PREFIX}unmanageddetector:${IMAGE_TAG}@" config/installbundle/components/unmanageddetector/unmanageddetector_image_patch.yaml
 ```
 
-*Why:* The repo's Kustomize base expects concrete `*_image_patch.yaml` files generated from `*_image_patch_template.yaml` to substitute custom container images into the deployment manifests.
+*Why:* The repo's Kustomize base expects concrete `*_image_patch.yaml` files generated from `*_image_patch_template.yaml` to substitute custom container images into the deployment manifests. In addition, `webhook` and `recorder` memory requests/limits must be raised to 512Mi (`GOMEMLIMIT=460MiB`) to prevent container OOMKilled crashes during dynamic validation across the 600+ installed CRD schemas.
 
 ---
 
 ### Step 7: Install Config Connector CRDs
-Apply all Custom Resource Definitions from `config/crds/resources/` into the GKE cluster.
+Apply all Custom Resource Definitions (both core operator CRDs and resource CRDs) into the GKE cluster.
 
 ```bash
+kubectl apply -f operator/config/crd/bases/
 kubectl apply -f config/crds/resources/
 ```
 
-*Why:* The Kubernetes API server must have the CRDs registered before the controller manager or user manifests can be submitted.
+*Why:* `cnrm-controller-manager` requires core CRDs (`ConfigConnector`, `ConfigConnectorContext`) to initialize its registration controllers without failing on missing API group `core.cnrm.cloud.google.com/v1beta1`. Resource CRDs are required before user manifests can be submitted.
 
 ---
 
@@ -253,6 +311,7 @@ kubectl kustomize config/installbundle/releases/scopes/cluster/withworkloadident
     sed -e "s/\${PROJECT_ID?}/${PROJECT}/g" | \
     kubectl delete -f - --ignore-not-found=true
 
+kubectl delete -f operator/config/crd/bases/ --ignore-not-found=true
 kubectl delete -f config/crds/resources/ --ignore-not-found=true
 ```
 
