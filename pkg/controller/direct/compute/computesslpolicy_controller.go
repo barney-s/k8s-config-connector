@@ -17,104 +17,102 @@ package compute
 import (
 	"context"
 	"fmt"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	pb "cloud.google.com/go/compute/apiv1/computepb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	pb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
-	registry.RegisterModel(krm.ComputeSSLPolicyGVK, NewSSLPolicyModel)
+	registry.RegisterModel(krm.ComputeSSLPolicyGVK, NewComputeSSLPolicyModel)
 }
 
-func NewSSLPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &sslPolicyModel{config: config}, nil
+func NewComputeSSLPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelComputeSSLPolicy{config: *config}, nil
 }
 
-type sslPolicyModel struct {
-	config *config.ControllerConfig
+var _ directbase.Model = &modelComputeSSLPolicy{}
+var _ = strings.TrimPrefix
+
+type modelComputeSSLPolicy struct {
+	config config.ControllerConfig
 }
 
-// model implements the Model interface.
-var _ directbase.Model = &sslPolicyModel{}
-
-type SSLPolicyAdapter struct {
-	gcpClient *compute.SslPoliciesClient
-	id        *krm.ComputeSSLPolicyIdentity
-	desired   *pb.SslPolicy
-	actual    *pb.SslPolicy
-	reader    client.Reader
-}
-
-var _ directbase.Adapter = &SSLPolicyAdapter{}
-
-func (m *sslPolicyModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeSSLPolicy) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeSSLPolicy{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
+	id := i.(*krm.ComputeSSLPolicyIdentity)
 
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-
-	sslPoliciesClient, err := gcpClient.newSslPoliciesClient(ctx)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := ComputeSSLPolicySpec_v1beta1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	// Set name in proto
-	desired.Name = direct.LazyPtr(id.(*krm.ComputeSSLPolicyIdentity).SslPolicy)
-
-	// Set defaults
-	if desired.MinTlsVersion == nil {
-		desired.MinTlsVersion = direct.PtrTo("TLS_1_0")
-	}
-	if desired.Profile == nil {
-		desired.Profile = direct.PtrTo("COMPATIBLE")
-	}
-
-	return &SSLPolicyAdapter{
-		gcpClient: sslPoliciesClient,
-		id:        id.(*krm.ComputeSSLPolicyIdentity),
-		desired:   desired,
-		reader:    reader,
+	return &ComputeSSLPolicyAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *sslPolicyModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeSSLPolicy) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-func (a *SSLPolicyAdapter) Find(ctx context.Context) (bool, error) {
+func (m *modelComputeSSLPolicy) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeSSLPolicy client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ComputeSSLPolicyAdapter struct {
+	id        *krm.ComputeSSLPolicyIdentity
+	gcpClient *gcp.Client
+	desired   *krm.ComputeSSLPolicy
+	actual    *pb.ComputeSSLPolicy
+}
+
+var _ directbase.Adapter = &ComputeSSLPolicyAdapter{}
+
+func (a *ComputeSSLPolicyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeSSLPolicy", "name", a.id)
 
-	actual, err := a.get(ctx)
+	req := &pb.GetComputeSSLPolicyRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetComputeSSLPolicy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -122,114 +120,80 @@ func (a *SSLPolicyAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting ComputeSSLPolicy %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *SSLPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ComputeSSLPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ComputeSSLPolicy", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	req := &pb.InsertSslPolicyRequest{
-		Project:           a.id.Project,
-		SslPolicyResource: a.desired,
+	desired := a.desired.DeepCopy()
+	resource := ComputeSSLPolicySpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	op, err := a.gcpClient.Insert(ctx, req)
+
+	req := &pb.CreateComputeSSLPolicyRequest{
+		Parent:             a.id.ParentString(),
+		ComputeSSLPolicyId: a.id.SslPolicy,
+		ComputeSSLPolicy:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeSSLPolicy(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating ComputeSSLPolicy %s: %w", a.id, err)
 	}
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting ComputeSSLPolicy %s create failed: %w", a.id, err)
-		}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeSSLPolicy %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created ComputeSSLPolicy", "name", a.id)
 
-	// Get the created resource
-	created, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeSSLPolicy %s: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ComputeSSLPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *SSLPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ComputeSSLPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeSSLPolicy", "name", a.id)
 
-	// Handle output-only fields from GCP
-	a.assignGCPDefaults(a.desired, a.actual)
+	mapCtx := &direct.MapContext{}
+	desired := ComputeSSLPolicySpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
-	paths, report, err := common.CompareProtoMessageStructuredDiff(a.desired, a.actual, common.BasicDiff)
+	diffs, updateMask, err := compareComputeSSLPolicy(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeSSLPolicy resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	report.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, report)
-
-	updateOp.RecordUpdatingEvent()
-
-	// Perform the Patch update
-	req := &pb.PatchSslPolicyRequest{
-		Project:           a.id.Project,
-		SslPolicy:         a.id.SslPolicy,
-		SslPolicyResource: a.desired,
-	}
-	op, err := a.gcpClient.Patch(ctx, req)
-	if err != nil {
-		return fmt.Errorf("patching ComputeSSLPolicy %s: %w", a.id, err)
-	}
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting ComputeSSLPolicy %s patch failed: %w", a.id, err)
-		}
-	}
-	log.V(2).Info("successfully updated ComputeSSLPolicy", "name", a.id)
-
-	// Get the updated resource
-	updated, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeSSLPolicy %s: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, updateOp, updated)
+	status := &krm.ComputeSSLPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *SSLPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeSSLPolicy", "name", a.id)
-
-	req := &pb.DeleteSslPolicyRequest{
-		Project:   a.id.Project,
-		SslPolicy: a.id.SslPolicy,
-	}
-	op, err := a.gcpClient.Delete(ctx, req)
+func compareComputeSSLPolicy(ctx context.Context, actual, desired *pb.ComputeSSLPolicy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeSSLPolicySpec_v1beta1_FromProto, ComputeSSLPolicySpec_v1beta1_ToProto)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting ComputeSSLPolicy %s: %w", a.id, err)
+		return nil, nil, err
 	}
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return false, fmt.Errorf("waiting ComputeSSLPolicy %s delete failed: %w", a.id, err)
-		}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
 	}
-	log.V(2).Info("successfully deleted ComputeSSLPolicy", "name", a.id)
-	return true, nil
+	return diffs, updateMask, nil
 }
 
-func (a *SSLPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ComputeSSLPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -248,40 +212,13 @@ func (a *SSLPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructur
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.GetName())
+	u.SetName(a.id.SslPolicy)
 	u.SetGroupVersionKind(krm.ComputeSSLPolicyGVK)
 	return u, nil
 }
 
-func (a *SSLPolicyAdapter) get(ctx context.Context) (*pb.SslPolicy, error) {
-	req := &pb.GetSslPolicyRequest{
-		Project:   a.id.Project,
-		SslPolicy: a.id.SslPolicy,
-	}
-	return a.gcpClient.Get(ctx, req)
-}
-
-func (a *SSLPolicyAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.SslPolicy) error {
-	mapCtx := &direct.MapContext{}
-	status := ComputeSSLPolicyStatus_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *SSLPolicyAdapter) assignGCPDefaults(desired, actual *pb.SslPolicy) {
-	desired.Id = actual.Id
-	desired.Kind = actual.Kind
-	desired.CreationTimestamp = actual.CreationTimestamp
-	desired.EnabledFeatures = actual.EnabledFeatures
-	desired.Fingerprint = actual.Fingerprint
-	desired.SelfLink = actual.SelfLink
-	desired.Warnings = actual.Warnings
-
-	if len(desired.CustomFeatures) == 0 && len(actual.CustomFeatures) == 0 {
-		desired.CustomFeatures = nil
-		actual.CustomFeatures = nil
-	}
+func (a *ComputeSSLPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for ComputeSSLPolicy, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

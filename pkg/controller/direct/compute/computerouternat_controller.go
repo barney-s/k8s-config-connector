@@ -12,333 +12,201 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.compute.v1.Routers
-// proto.message: google.cloud.compute.v1.RouterNat
-// crd.type: ComputeRouterNAT
-// crd.version: v1beta1
-
 package compute
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	computepb "cloud.google.com/go/compute/apiv1/computepb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	computepb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.ComputeRouterNATGVK, NewRouterNATModel)
+	registry.RegisterModel(krm.ComputeRouterNATGVK, NewComputeRouterNATModel)
 }
 
-func NewRouterNATModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &routerNATModel{config: config}, nil
+func NewComputeRouterNATModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelComputeRouterNAT{config: *config}, nil
 }
 
-var _ directbase.Model = &routerNATModel{}
+var _ directbase.Model = &modelComputeRouterNAT{}
+var _ = strings.TrimPrefix
 
-type routerNATModel struct {
-	config *config.ControllerConfig
+type modelComputeRouterNAT struct {
+	config config.ControllerConfig
 }
 
-func (m *routerNATModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeRouterNAT) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeRouterNAT{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	routersClient, err := gcpClient.newRoutersClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil, common.SkipPath(".Spec.RouterRef")); err != nil {
+	id := i.(*krm.ComputeRouterNATIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desired := obj.DeepCopy()
-	resource := ComputeRouterNATSpec_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
-
-	return &RouterNATAdapter{
-		gcpClient:  routersClient,
-		id:         id.(*krm.ComputeRouterNATIdentity),
-		desiredKRM: &desired.Spec,
-		desired:    resource,
-		reader:     reader,
+	return &ComputeRouterNATAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *routerNATModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeRouterNAT) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.ComputeRouterNATIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := newGCPClient(m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
+		return nil, err
 	}
-	routersClient, err := gcpClient.newRoutersClient(ctx)
+	return &ComputeRouterNATAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelComputeRouterNAT) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	return &RouterNATAdapter{
-		gcpClient: routersClient,
-		id:        id,
-	}, nil
-}
-
-type RouterNATAdapter struct {
-	gcpClient  *compute.RoutersClient
-	id         *krm.ComputeRouterNATIdentity
-	desiredKRM *krm.ComputeRouterNATSpec
-	desired    *computepb.RouterNat
-	actual     *computepb.RouterNat
-	router     *computepb.Router
-	reader     client.Reader
-}
-
-var _ directbase.Adapter = &RouterNATAdapter{}
-
-func (a *RouterNATAdapter) Find(ctx context.Context) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("getting ComputeRouter for ComputeRouterNAT", "name", a.id)
-
-	req := &computepb.GetRouterRequest{
-		Project: a.id.Project,
-		Region:  a.id.Region,
-		Router:  a.id.Router,
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeRouterNAT client: %w", err)
 	}
-	router, err := a.gcpClient.Get(ctx, req)
+	return gcpClient, err
+}
+
+type ComputeRouterNATAdapter struct {
+	id        *krm.ComputeRouterNATIdentity
+	gcpClient *gcp.Client
+	desired   *krm.ComputeRouterNAT
+	actual    *computepb.ComputeRouterNAT
+}
+
+var _ directbase.Adapter = &ComputeRouterNATAdapter{}
+
+func (a *ComputeRouterNATAdapter) Find(ctx context.Context) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("getting ComputeRouterNAT", "name", a.id)
+
+	req := &computepb.GetComputeRouterNATRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetComputeRouterNAT(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting ComputeRouter %q: %w", a.id.Router, err)
+		return false, fmt.Errorf("getting ComputeRouterNAT %q: %w", a.id, err)
 	}
 
-	a.router = router
-
-	for _, nat := range router.Nats {
-		if nat.GetName() == a.id.ComputeRouterNAT {
-			a.actual = nat
-			return true, nil
-		}
-	}
-
-	return false, nil
+	a.actual = resp
+	return true, nil
 }
 
-func (a *RouterNATAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ComputeRouterNATAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ComputeRouterNAT", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	if a.router == nil {
-		req := &computepb.GetRouterRequest{
-			Project: a.id.Project,
-			Region:  a.id.Region,
-			Router:  a.id.Router,
-		}
-		router, err := a.gcpClient.Get(ctx, req)
-		if err != nil {
-			return fmt.Errorf("getting ComputeRouter %q: %w", a.id.Router, err)
-		}
-		a.router = router
+	desired := a.desired.DeepCopy()
+	resource := ComputeRouterNATSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
 
-	a.desired.Name = proto.String(a.id.ComputeRouterNAT)
-	ApplyRouterNATCreationDefaults(a.desired)
-
-	// Check if already exists in a.router.Nats
-	exists := false
-	for _, nat := range a.router.Nats {
-		if nat.GetName() == a.id.ComputeRouterNAT {
-			exists = true
-			break
-		}
+	req := &computepb.CreateComputeRouterNATRequest{
+		Parent:             a.id.ParentString(),
+		ComputeRouterNATId: a.id.Region,
+		ComputeRouterNAT:   resource,
 	}
-
-	if !exists {
-		a.router.Nats = append(a.router.Nats, a.desired)
-	}
-
-	patchRouter := &computepb.Router{
-		Nats: a.router.Nats,
-	}
-
-	req := &computepb.PatchRouterRequest{
-		Project:        a.id.Project,
-		Region:         a.id.Region,
-		Router:         a.id.Router,
-		RouterResource: patchRouter,
-	}
-	op, err := a.gcpClient.Patch(ctx, req)
+	op, err := a.gcpClient.CreateComputeRouterNAT(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating ComputeRouterNAT %s: %w", a.id, err)
 	}
-
-	err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("compute ComputeRouterNAT %s waiting creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create ComputeRouterNAT %s: %w", a.id, err)
 	}
-	log.Info("successfully created compute ComputeRouterNAT in gcp", "name", a.id)
+	log.V(2).Info("successfully created ComputeRouterNAT", "name", a.id)
 
-	// Fetch latest router to get the created NAT
-	latestRouter, err := a.getRouter(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeRouter %s: %w", a.id.Router, err)
-	}
-	a.router = latestRouter
-
-	var created *computepb.RouterNat
-	for _, nat := range latestRouter.Nats {
-		if nat.GetName() == a.id.ComputeRouterNAT {
-			created = nat
-			break
-		}
-	}
-	if created == nil {
-		return fmt.Errorf("created NAT %s not found in latest router configuration", a.id.ComputeRouterNAT)
-	}
-
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ComputeRouterNATStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *RouterNATAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ComputeRouterNATAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeRouterNAT", "name", a.id)
 
-	diffs, _, err := compareComputeRouterNAT(ctx, a.actual, a.desiredKRM)
+	mapCtx := &direct.MapContext{}
+	desired := ComputeRouterNATSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareComputeRouterNAT(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	var updated *computepb.RouterNat
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		updated = a.actual
-	} else {
+	_ = updateMask
+	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
-
-		if a.router == nil {
-			req := &computepb.GetRouterRequest{
-				Project: a.id.Project,
-				Region:  a.id.Region,
-				Router:  a.id.Router,
-			}
-			router, err := a.gcpClient.Get(ctx, req)
-			if err != nil {
-				return fmt.Errorf("getting ComputeRouter %q: %w", a.id.Router, err)
-			}
-			a.router = router
-		}
-
-		mapCtx := &direct.MapContext{}
-		desiredKRM := a.desiredKRM.DeepCopy()
-		actualKRM := ComputeRouterNATSpec_FromProto(mapCtx, a.actual)
-		if err := mapCtx.Err(); err != nil {
-			return err
-		}
-		if actualKRM != nil {
-			common.MergeUnsetFields(reflect.ValueOf(desiredKRM), reflect.ValueOf(actualKRM))
-		}
-		mergedProto := ComputeRouterNATSpec_ToProto(mapCtx, desiredKRM)
-		if err := mapCtx.Err(); err != nil {
-			return err
-		}
-		mergedProto.Name = proto.String(a.id.ComputeRouterNAT)
-
-		// Update our NAT in a.router.Nats
-		found := false
-		for i, nat := range a.router.Nats {
-			if nat.GetName() == a.id.ComputeRouterNAT {
-				a.router.Nats[i] = mergedProto
-				found = true
-				break
-			}
-		}
-		if !found {
-			a.router.Nats = append(a.router.Nats, mergedProto)
-		}
-
-		patchRouter := &computepb.Router{
-			Nats: a.router.Nats,
-		}
-
-		req := &computepb.PatchRouterRequest{
-			Project:        a.id.Project,
-			Region:         a.id.Region,
-			Router:         a.id.Router,
-			RouterResource: patchRouter,
-		}
-		op, err := a.gcpClient.Patch(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating compute ComputeRouterNAT %s: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated compute ComputeRouterNAT", "name", a.id.String())
-
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("compute ComputeRouterNAT %s waiting for update: %w", a.id.String(), err)
-		}
-
-		latestRouter, err := a.getRouter(ctx)
-		if err != nil {
-			return fmt.Errorf("getting ComputeRouter %s: %w", a.id.Router, err)
-		}
-		a.router = latestRouter
-
-		for _, nat := range latestRouter.Nats {
-			if nat.GetName() == a.id.ComputeRouterNAT {
-				updated = nat
-				break
-			}
-		}
-		if updated == nil {
-			return fmt.Errorf("updated NAT %s not found in latest router configuration", a.id.ComputeRouterNAT)
-		}
+		return fmt.Errorf("ComputeRouterNAT resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	return a.updateStatus(ctx, updateOp, updated)
+	status := &krm.ComputeRouterNATStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *RouterNATAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareComputeRouterNAT(ctx context.Context, actual, desired *computepb.ComputeRouterNAT) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeRouterNATSpec_FromProto, ComputeRouterNATSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *ComputeRouterNATAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -350,12 +218,7 @@ func (a *RouterNATAdapter) Export(ctx context.Context) (*unstructured.Unstructur
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.Region = a.id.Region
-	obj.Spec.RouterRef = krm.ComputeRouterRef{
-		External: fmt.Sprintf("projects/%s/regions/%s/routers/%s", a.id.Project, a.id.Region, a.id.Router),
-	}
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.ComputeRouterNAT)
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Region)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -363,127 +226,13 @@ func (a *RouterNATAdapter) Export(ctx context.Context) (*unstructured.Unstructur
 	}
 
 	u.Object = uObj
-	u.SetName(a.id.ComputeRouterNAT)
+	u.SetName(a.id.Region)
 	u.SetGroupVersionKind(krm.ComputeRouterNATGVK)
-
-	export.SetProjectID(u, a.id.Project)
-
 	return u, nil
 }
 
-func (a *RouterNATAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ComputeRouterNATAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeRouterNAT", "name", a.id)
-
-	req := &computepb.GetRouterRequest{
-		Project: a.id.Project,
-		Region:  a.id.Region,
-		Router:  a.id.Router,
-	}
-	router, err := a.gcpClient.Get(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			log.Info("parent ComputeRouter not found, assuming NAT is deleted", "router", a.id.Router)
-			return true, nil
-		}
-		return false, fmt.Errorf("getting ComputeRouter %q: %w", a.id.Router, err)
-	}
-
-	a.router = router
-
-	var newNats []*computepb.RouterNat
-	found := false
-	for _, nat := range a.router.Nats {
-		if nat.GetName() == a.id.ComputeRouterNAT {
-			found = true
-			continue
-		} else {
-			newNats = append(newNats, nat)
-		}
-	}
-
-	if !found {
-		log.Info("ComputeRouterNAT already deleted or not found on router", "name", a.id)
-		return true, nil
-	}
-
-	if len(newNats) == 0 {
-		a.router.Nats = []*computepb.RouterNat{}
-		updateReq := &computepb.UpdateRouterRequest{
-			Project:        a.id.Project,
-			Region:         a.id.Region,
-			Router:         a.id.Router,
-			RouterResource: a.router,
-		}
-		op, err := a.gcpClient.Update(ctx, updateReq)
-		if err != nil {
-			return false, fmt.Errorf("deleting compute ComputeRouterNAT %s: %w", a.id.String(), err)
-		}
-
-		err = op.Wait(ctx)
-		if err != nil {
-			return false, fmt.Errorf("waiting for deletion of compute ComputeRouterNAT %s: %w", a.id.String(), err)
-		}
-
-		log.Info("successfully deleted compute ComputeRouterNAT", "name", a.id)
-		return true, nil
-	}
-
-	patchRouter := &computepb.Router{
-		Nats: newNats,
-	}
-
-	updateReq := &computepb.PatchRouterRequest{
-		Project:        a.id.Project,
-		Region:         a.id.Region,
-		Router:         a.id.Router,
-		RouterResource: patchRouter,
-	}
-	op, err := a.gcpClient.Patch(ctx, updateReq)
-	if err != nil {
-		return false, fmt.Errorf("deleting compute ComputeRouterNAT %s: %w", a.id.String(), err)
-	}
-
-	err = op.Wait(ctx)
-	if err != nil {
-		return false, fmt.Errorf("waiting for deletion of compute ComputeRouterNAT %s: %w", a.id.String(), err)
-	}
-
-	log.Info("successfully deleted compute ComputeRouterNAT", "name", a.id)
+	log.V(2).Info("deletion not supported for ComputeRouterNAT, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func (a *RouterNATAdapter) getRouter(ctx context.Context) (*computepb.Router, error) {
-	getReq := &computepb.GetRouterRequest{
-		Project: a.id.Project,
-		Region:  a.id.Region,
-		Router:  a.id.Router,
-	}
-	resource, err := a.gcpClient.Get(ctx, getReq)
-	if err != nil {
-		return nil, fmt.Errorf("getting ComputeRouter %s: %w", a.id.Router, err)
-	}
-	return resource, nil
-}
-
-func (a *RouterNATAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *computepb.RouterNat) error {
-	status := &krm.ComputeRouterNATStatus{}
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareComputeRouterNAT(ctx context.Context, actual *computepb.RouterNat, desired *krm.ComputeRouterNATSpec) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	mapCtx := &direct.MapContext{}
-
-	normalize := func(ctx context.Context, pb *computepb.RouterNat) error {
-		return common.NormalizeManagedComputeURIs(mapCtx, pb, ComputeRouterNATSpec_FromProto, ComputeRouterNATSpec_ToProto)
-	}
-
-	return common.CompareBrownfieldSpec(
-		ctx,
-		desired,
-		actual,
-		ComputeRouterNATSpec_FromProto,
-		ComputeRouterNATSpec_ToProto,
-		normalize,
-	)
 }

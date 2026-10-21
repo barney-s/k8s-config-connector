@@ -35,7 +35,7 @@ var controllerTemplate = `// Copyright 2026 Google LLC
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {{.KCCService}}
+package {{if .Package}}{{.Package}}{{else}}{{.KCCService}}{{end}}
 
 import (
 	"context"

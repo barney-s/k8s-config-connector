@@ -12,31 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.compute.v1.TargetHttpsProxies
-// proto.service: google.cloud.compute.v1.RegionTargetHttpsProxies
-// proto.message: google.cloud.compute.v1.TargetHttpsProxy
-// crd.type: ComputeTargetHTTPSProxy
-// crd.version: v1beta1
-
 package compute
 
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	computepb "cloud.google.com/go/compute/apiv1/computepb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -45,6 +25,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	computepb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -52,78 +42,65 @@ func init() {
 }
 
 func NewComputeTargetHTTPSProxyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeTargetHTTPSProxyModel{config: config}, nil
+	return &modelComputeTargetHTTPSProxy{config: *config}, nil
 }
 
-var _ directbase.Model = &computeTargetHTTPSProxyModel{}
+var _ directbase.Model = &modelComputeTargetHTTPSProxy{}
+var _ = strings.TrimPrefix
 
-type computeTargetHTTPSProxyModel struct {
-	config *config.ControllerConfig
+type modelComputeTargetHTTPSProxy struct {
+	config config.ControllerConfig
 }
 
-func (m *computeTargetHTTPSProxyModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeTargetHTTPSProxy) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeTargetHTTPSProxy{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*v1beta1.ComputeTargetHTTPSProxyIdentity)
 
-	id, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ComputeTargetHTTPSProxyAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelComputeTargetHTTPSProxy) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelComputeTargetHTTPSProxy) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	gcpClient, err := newGCPClient(m.config)
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
+		return nil, fmt.Errorf("building ComputeTargetHTTPSProxy client: %w", err)
 	}
-
-	if err := resolveTargetHTTPSProxyRefs(ctx, reader, obj); err != nil {
-		return nil, fmt.Errorf("resolving references: %w", err)
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := obj.DeepCopy()
-	resource := ComputeTargetHTTPSProxySpec_v1beta1_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	adapter := &ComputeTargetHTTPSProxyAdapter{
-		id:      id.(*v1beta1.ComputeTargetHTTPSProxyIdentity),
-		desired: resource,
-		reader:  reader,
-	}
-
-	if adapter.id.IsGlobal() {
-		client, err := gcpClient.newTargetHttpsProxiesClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-		adapter.targetHttpsProxiesClient = client
-	} else {
-		client, err := gcpClient.newRegionalTargetHttpsProxiesClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-		adapter.regionalTargetHttpsProxiesClient = client
-	}
-
-	return adapter, nil
-}
-
-func (m *computeTargetHTTPSProxyModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	return nil, nil
+	return gcpClient, err
 }
 
 type ComputeTargetHTTPSProxyAdapter struct {
-	targetHttpsProxiesClient         *compute.TargetHttpsProxiesClient
-	regionalTargetHttpsProxiesClient *compute.RegionTargetHttpsProxiesClient
-	id                               *v1beta1.ComputeTargetHTTPSProxyIdentity
-	desired                          *computepb.TargetHttpsProxy
-	actual                           *computepb.TargetHttpsProxy
-	reader                           client.Reader
+	id        *v1beta1.ComputeTargetHTTPSProxyIdentity
+	gcpClient *gcp.Client
+	desired   *krm.ComputeTargetHTTPSProxy
+	actual    *computepb.ComputeTargetHTTPSProxy
 }
 
 var _ directbase.Adapter = &ComputeTargetHTTPSProxyAdapter{}
@@ -132,7 +109,10 @@ func (a *ComputeTargetHTTPSProxyAdapter) Find(ctx context.Context) (bool, error)
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeTargetHTTPSProxy", "name", a.id)
 
-	actual, err := a.get(ctx)
+	req := &computepb.GetComputeTargetHTTPSProxyRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetComputeTargetHTTPSProxy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -140,7 +120,7 @@ func (a *ComputeTargetHTTPSProxyAdapter) Find(ctx context.Context) (bool, error)
 		return false, fmt.Errorf("getting ComputeTargetHTTPSProxy %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
@@ -149,115 +129,68 @@ func (a *ComputeTargetHTTPSProxyAdapter) Create(ctx context.Context, createOp *d
 	log.V(2).Info("creating ComputeTargetHTTPSProxy", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
-	a.desired.Name = direct.LazyPtr(a.id.TargetHttpsProxy)
-
-	var op *compute.Operation
-	var err error
-
-	if a.id.IsGlobal() {
-		req := &computepb.InsertTargetHttpsProxyRequest{
-			Project:                  a.id.Project,
-			TargetHttpsProxyResource: a.desired,
-		}
-		op, err = a.targetHttpsProxiesClient.Insert(ctx, req)
-	} else {
-		req := &computepb.InsertRegionTargetHttpsProxyRequest{
-			Project:                  a.id.Project,
-			Region:                   a.id.Region,
-			TargetHttpsProxyResource: a.desired,
-		}
-		op, err = a.regionalTargetHttpsProxiesClient.Insert(ctx, req)
-	}
-
-	if err != nil {
-		return fmt.Errorf("creating ComputeTargetHTTPSProxy %s: %w", a.id, err)
-	}
-
-	err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("compute ComputeTargetHTTPSProxy %s waiting creation: %w", a.id.String(), err)
-	}
-	log.Info("successfully created compute ComputeTargetHTTPSProxy in gcp", "name", a.id)
-
-	// Get the created resource
-	created, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeTargetHTTPSProxy %s: %w", a.id, err)
-	}
-
-	status := ComputeTargetHTTPSProxyStatus_v1beta1_FromProto(mapCtx, created)
+	desired := a.desired.DeepCopy()
+	resource := ComputeTargetHTTPSProxySpec_v1beta1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
+
+	req := &computepb.CreateComputeTargetHTTPSProxyRequest{
+		Parent:                    a.id.ParentString(),
+		ComputeTargetHTTPSProxyId: a.id.TargetHttpsProxy,
+		ComputeTargetHTTPSProxy:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeTargetHTTPSProxy(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating ComputeTargetHTTPSProxy %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeTargetHTTPSProxy %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created ComputeTargetHTTPSProxy", "name", a.id)
+
+	status := &krm.ComputeTargetHTTPSProxyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeTargetHTTPSProxyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeTargetHTTPSProxy", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-
-	diffs, _, err := compareComputeTargetHTTPSProxy(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	var updated *computepb.TargetHttpsProxy
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		updated = a.actual
-	} else {
-		diffs.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diffs)
-
-		a.desired.Name = direct.LazyPtr(a.id.TargetHttpsProxy)
-
-		var op *compute.Operation
-		var err error
-
-		if a.id.IsGlobal() {
-			req := &computepb.PatchTargetHttpsProxyRequest{
-				Project:                  a.id.Project,
-				TargetHttpsProxy:         a.id.TargetHttpsProxy,
-				TargetHttpsProxyResource: a.desired,
-			}
-			op, err = a.targetHttpsProxiesClient.Patch(ctx, req)
-		} else {
-			req := &computepb.PatchRegionTargetHttpsProxyRequest{
-				Project:                  a.id.Project,
-				Region:                   a.id.Region,
-				TargetHttpsProxy:         a.id.TargetHttpsProxy,
-				TargetHttpsProxyResource: a.desired,
-			}
-			op, err = a.regionalTargetHttpsProxiesClient.Patch(ctx, req)
-		}
-
-		if err != nil {
-			return fmt.Errorf("updating compute ComputeTargetHTTPSProxy %s: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated compute ComputeTargetHTTPSProxy", "name", a.id.String())
-
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("compute ComputeTargetHTTPSProxy %s waiting for update: %w", a.id.String(), err)
-		}
-
-		// Get the updated resource
-		updated, err = a.get(ctx)
-		if err != nil {
-			return fmt.Errorf("getting ComputeTargetHTTPSProxy %s: %w", a.id, err)
-		}
-	}
-
-	status := ComputeTargetHTTPSProxyStatus_v1beta1_FromProto(mapCtx, updated)
+	desired := ComputeTargetHTTPSProxySpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
+
+	diffs, updateMask, err := compareComputeTargetHTTPSProxy(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeTargetHTTPSProxy resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.ComputeTargetHTTPSProxyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return updateOp.UpdateStatus(ctx, status, nil)
+}
+
+func compareComputeTargetHTTPSProxy(ctx context.Context, actual, desired *computepb.ComputeTargetHTTPSProxy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeTargetHTTPSProxySpec_v1beta1_FromProto, ComputeTargetHTTPSProxySpec_v1beta1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *ComputeTargetHTTPSProxyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -279,124 +212,13 @@ func (a *ComputeTargetHTTPSProxyAdapter) Export(ctx context.Context) (*unstructu
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.GetName())
+	u.SetName(a.id.TargetHttpsProxy)
 	u.SetGroupVersionKind(krm.ComputeTargetHTTPSProxyGVK)
 	return u, nil
 }
 
 func (a *ComputeTargetHTTPSProxyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeTargetHTTPSProxy", "name", a.id)
-
-	var op *compute.Operation
-	var err error
-
-	if a.id.IsGlobal() {
-		req := &computepb.DeleteTargetHttpsProxyRequest{
-			Project:          a.id.Project,
-			TargetHttpsProxy: a.id.TargetHttpsProxy,
-		}
-		op, err = a.targetHttpsProxiesClient.Delete(ctx, req)
-	} else {
-		req := &computepb.DeleteRegionTargetHttpsProxyRequest{
-			Project:          a.id.Project,
-			Region:           a.id.Region,
-			TargetHttpsProxy: a.id.TargetHttpsProxy,
-		}
-		op, err = a.regionalTargetHttpsProxiesClient.Delete(ctx, req)
-	}
-
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting compute ComputeTargetHTTPSProxy %s: %w", a.id.String(), err)
-	}
-	log.Info("successfully deleted compute ComputeTargetHTTPSProxy", "name", a.id)
-
-	err = op.Wait(ctx)
-	if err != nil {
-		return false, fmt.Errorf("waiting for deletion of compute ComputeTargetHTTPSProxy %s: %w", a.id.String(), err)
-	}
-
+	log.V(2).Info("deletion not supported for ComputeTargetHTTPSProxy, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func (a *ComputeTargetHTTPSProxyAdapter) get(ctx context.Context) (*computepb.TargetHttpsProxy, error) {
-	if a.id.IsGlobal() {
-		req := &computepb.GetTargetHttpsProxyRequest{
-			Project:          a.id.Project,
-			TargetHttpsProxy: a.id.TargetHttpsProxy,
-		}
-		return a.targetHttpsProxiesClient.Get(ctx, req)
-	} else {
-		req := &computepb.GetRegionTargetHttpsProxyRequest{
-			Project:          a.id.Project,
-			Region:           a.id.Region,
-			TargetHttpsProxy: a.id.TargetHttpsProxy,
-		}
-		return a.regionalTargetHttpsProxiesClient.Get(ctx, req)
-	}
-}
-
-func normalizeCertificateManagerLink(link string) string {
-	link = strings.TrimPrefix(link, "https://certificatemanager.googleapis.com/v1/")
-	link = strings.TrimPrefix(link, "//certificatemanager.googleapis.com/")
-	return link
-}
-
-func normalizeComputeLink(link string) string {
-	for _, basePath := range []string{"https://compute.googleapis.com/compute", "https://www.googleapis.com/compute"} {
-		for _, version := range []string{"/beta/", "/v1/"} {
-			prefix := basePath + version
-			if strings.HasPrefix(link, prefix) {
-				return strings.TrimPrefix(link, prefix)
-			}
-		}
-	}
-	return normalizeCertificateManagerLink(link)
-}
-
-func normalizeLinkPtr(link *string) *string {
-	if link == nil {
-		return nil
-	}
-	val := normalizeComputeLink(*link)
-	return &val
-}
-
-func compareComputeTargetHTTPSProxy(ctx context.Context, actual, desired *computepb.TargetHttpsProxy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, ComputeTargetHTTPSProxySpec_v1beta1_FromProto, ComputeTargetHTTPSProxySpec_v1beta1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *computepb.TargetHttpsProxy) {
-		obj.UrlMap = normalizeLinkPtr(obj.UrlMap)
-		obj.SslPolicy = normalizeLinkPtr(obj.SslPolicy)
-		obj.CertificateMap = normalizeLinkPtr(obj.CertificateMap)
-		obj.ServerTlsPolicy = normalizeLinkPtr(obj.ServerTlsPolicy)
-		for i, cert := range obj.SslCertificates {
-			obj.SslCertificates[i] = normalizeComputeLink(cert)
-		}
-		if obj.QuicOverride == nil || *obj.QuicOverride == "" {
-			obj.QuicOverride = direct.LazyPtr("NONE")
-		}
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	if actual.Region != nil && *actual.Region != "" {
-		maskedActual.QuicOverride = nil
-		clonedDesired.QuicOverride = nil
-	}
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

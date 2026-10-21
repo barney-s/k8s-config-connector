@@ -17,220 +17,214 @@ package knowledgebase
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/dialogflow/apiv2"
-	pb "cloud.google.com/go/dialogflow/apiv2/dialogflowpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dialogflow/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/dialogflow/generator"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/dialogflow/apiv2"
+	pb "cloud.google.com/go/dialogflow/apiv2/dialogflowpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.DialogflowKnowledgeBaseGVK, NewModel)
+	registry.RegisterModel(krm.DialogflowKnowledgeBaseGVK, NewKnowledgeBaseModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewKnowledgeBaseModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelKnowledgeBase{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelKnowledgeBase{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelKnowledgeBase struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.KnowledgeBasesClient, error) {
+func (m *modelKnowledgeBase) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.DialogflowKnowledgeBase{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.DialogflowKnowledgeBaseIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &KnowledgeBaseAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelKnowledgeBase) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.DialogflowKnowledgeBaseIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &KnowledgeBaseAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelKnowledgeBase) client(ctx context.Context) (*gcp.KnowledgeBasesClient, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewKnowledgeBasesRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building KnowledgeBases REST client: %w", err)
+		return nil, fmt.Errorf("building KnowledgeBase client: %w", err)
 	}
-	return gcpClient, nil
+	return gcpClient, err
 }
 
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.DialogflowKnowledgeBase{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	identity, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id := identity.(*krm.DialogflowKnowledgeBaseIdentity)
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desiredProto := generator.DialogflowKnowledgeBaseSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &Adapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   desiredProto,
-	}, nil
-}
-
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.DialogflowKnowledgeBaseIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Adapter{
-		id:        id,
-		gcpClient: gcpClient,
-	}, nil
-}
-
-type Adapter struct {
+type KnowledgeBaseAdapter struct {
 	id        *krm.DialogflowKnowledgeBaseIdentity
 	gcpClient *gcp.KnowledgeBasesClient
-	desired   *pb.KnowledgeBase
+	desired   *krm.DialogflowKnowledgeBase
 	actual    *pb.KnowledgeBase
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &KnowledgeBaseAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *KnowledgeBaseAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting DialogflowKnowledgeBase", "name", a.id.String())
+	log.V(2).Info("getting KnowledgeBase", "name", a.id)
 
-	req := &pb.GetKnowledgeBaseRequest{Name: a.id.String()}
-	kb, err := a.gcpClient.GetKnowledgeBase(ctx, req)
+	req := &pb.GetKnowledgeBaseRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetKnowledgeBase(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting DialogflowKnowledgeBase %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting KnowledgeBase %q: %w", a.id, err)
 	}
 
-	a.actual = kb
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *KnowledgeBaseAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating DialogflowKnowledgeBase", "name", a.id.String())
+	log.V(2).Info("creating KnowledgeBase", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	desired := proto.CloneOf(a.desired)
-	desired.Name = ""
+	desired := a.desired.DeepCopy()
+	resource := DialogflowKnowledgeBaseSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateKnowledgeBaseRequest{
-		Parent:        a.id.ParentString(),
-		KnowledgeBase: desired,
+		Parent:          a.id.ParentString(),
+		KnowledgeBaseId: a.id.Knowledge,
+		KnowledgeBase:   resource,
 	}
 	created, err := a.gcpClient.CreateKnowledgeBase(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating DialogflowKnowledgeBase %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating KnowledgeBase %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created DialogflowKnowledgeBase", "name", a.id.String())
+	log.V(2).Info("successfully created KnowledgeBase", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.DialogflowKnowledgeBaseStatus{}
+	status.ObservedState = DialogflowKnowledgeBaseObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *KnowledgeBaseAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating DialogflowKnowledgeBase", "name", a.id.String())
+	log.V(2).Info("updating KnowledgeBase", "name", a.id)
 
-	a.desired.Name = a.id.String()
+	mapCtx := &direct.MapContext{}
+	desired := DialogflowKnowledgeBaseSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
-	diffs, updateMask, err := compareKnowledgeBase(ctx, a.actual, a.desired)
+	diffs, updateMask, err := compareKnowledgeBase(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
+		desired.Name = a.id.String()
+
 		req := &pb.UpdateKnowledgeBaseRequest{
-			KnowledgeBase: a.desired,
+			KnowledgeBase: desired,
 			UpdateMask:    updateMask,
 		}
 		updated, err := a.gcpClient.UpdateKnowledgeBase(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating DialogflowKnowledgeBase %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating KnowledgeBase %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated DialogflowKnowledgeBase", "name", a.id.String())
-		latest = updated
+		log.V(2).Info("successfully updated KnowledgeBase", "name", a.id)
+
+		status := &krm.DialogflowKnowledgeBaseStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = DialogflowKnowledgeBaseObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
 func compareKnowledgeBase(ctx context.Context, actual, desired *pb.KnowledgeBase) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, generator.DialogflowKnowledgeBaseSpec_FromProto, generator.DialogflowKnowledgeBaseSpec_ToProto)
+	maskedActual, err := mappers.OnlySpecFields(actual, DialogflowKnowledgeBaseSpec_FromProto, DialogflowKnowledgeBaseSpec_ToProto)
 	if err != nil {
 		return nil, nil, err
 	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *pb.KnowledgeBase) {
-		if obj.LanguageCode == "" {
-			obj.LanguageCode = "en-US"
-		}
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
 	}
 	return diffs, updateMask, nil
 }
 
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.KnowledgeBase) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.DialogflowKnowledgeBaseStatus{}
-	status.ObservedState = generator.DialogflowKnowledgeBaseObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(latest.GetName())
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *KnowledgeBaseAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -238,16 +232,13 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 
 	obj := &krm.DialogflowKnowledgeBase{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(generator.DialogflowKnowledgeBaseSpec_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(DialogflowKnowledgeBaseSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	if a.id.Location != "" {
-		obj.Spec.Location = &a.id.Location
-	}
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Knowledge_base)
-	obj.Spec.ProjectRef = &refs.ProjectRef{Name: a.id.Project}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Knowledge)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -255,26 +246,25 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	}
 
 	u.Object = uObj
-	u.SetName(a.id.Knowledge_base)
+	u.SetName(a.id.Knowledge)
 	u.SetGroupVersionKind(krm.DialogflowKnowledgeBaseGVK)
-
-	export.SetProjectID(u, a.id.Project)
-
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *KnowledgeBaseAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting DialogflowKnowledgeBase", "name", a.id.String())
+	log.V(2).Info("deleting KnowledgeBase", "name", a.id)
 
-	req := &pb.DeleteKnowledgeBaseRequest{Name: a.id.String()}
+	req := &pb.DeleteKnowledgeBaseRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteKnowledgeBase(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting DialogflowKnowledgeBase %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting KnowledgeBase %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted DialogflowKnowledgeBase", "name", a.id.String())
+	log.V(2).Info("successfully deleted KnowledgeBase", "name", a.id)
 	return true, nil
 }

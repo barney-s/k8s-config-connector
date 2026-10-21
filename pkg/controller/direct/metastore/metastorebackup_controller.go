@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,132 +12,119 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.metastore.v1.DataprocMetastore
-// proto.message: google.cloud.metastore.v1.Backup
-// crd.type: MetastoreBackup
-// crd.version: v1beta1
-
 package metastore
 
 import (
 	"context"
 	"fmt"
-
-	krmv1alplpha1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/metastore/v1alpha1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/metastore/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/metastore/apiv1"
 	pb "cloud.google.com/go/metastore/apiv1/metastorepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
-	registry.RegisterModel(krm.MetastoreBackupGVK, NewMetastoreBackupModel)
+	registry.RegisterModel(krm.MetastoreBackupGVK, NewBackupModel)
 }
 
-func NewMetastoreBackupModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &MetastoreBackupModel{config: *config}, nil
+func NewBackupModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelBackup{config: *config}, nil
 }
 
-var _ directbase.Model = &MetastoreBackupModel{}
+var _ directbase.Model = &modelBackup{}
+var _ = strings.TrimPrefix
 
-type MetastoreBackupModel struct {
+type modelBackup struct {
 	config config.ControllerConfig
 }
 
-func (m *MetastoreBackupModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelBackup) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.MetastoreBackup{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.BackupIdentity{}
 
-	id, err := krm.NewBackupIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// Get metastore GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
-	if err != nil {
-		return nil, err
-	}
-	metastoreClient, err := gcpClient.newDataprocMetastoreClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &MetastoreBackupAdapter{
-		gcpClient: metastoreClient,
+	return &BackupAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *MetastoreBackupModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelBackup) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type MetastoreBackupAdapter struct {
-	gcpClient *gcp.DataprocMetastoreClient
-	id        *krm.BackupIdentity
-	desired   *krm.MetastoreBackup
-	actual    *pb.Backup
-	reader    client.Reader
+func (m *modelBackup) client(ctx context.Context) (*gcp.DataprocMetastoreClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Backup client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &MetastoreBackupAdapter{}
+type BackupAdapter struct {
+	id        *krm.BackupIdentity
+	gcpClient *gcp.DataprocMetastoreClient
+	desired   *krm.MetastoreBackup
+	actual    *pb.Backup
+}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
-func (a *MetastoreBackupAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &BackupAdapter{}
+
+func (a *BackupAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting MetastoreBackup", "name", a.id)
+	log.V(2).Info("getting Backup", "name", a.id)
 
-	req := &pb.GetBackupRequest{Name: a.id.String()}
-	metastorebackuppb, err := a.gcpClient.GetBackup(ctx, req)
+	req := &pb.GetBackupRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBackup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting MetastoreBackup %q: %w", a.id, err)
+		return false, fmt.Errorf("getting Backup %q: %w", a.id, err)
 	}
 
-	a.actual = metastorebackuppb
+	a.actual = resp
 	return true, nil
 }
 
-func (a *MetastoreBackupAdapter) resolveReferences(ctx context.Context) error {
-	obj := a.desired
-
-	if _, err := obj.Spec.ServiceRef.NormalizedExternal(ctx, a.reader, obj.Namespace); err != nil {
-		return fmt.Errorf("resolving serviceRef: %w", err)
-	}
-	return nil
-}
-
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *MetastoreBackupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *BackupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating MetastoreBackup", "name", a.id)
-
-	if err := a.resolveReferences(ctx); err != nil {
-		return err
-	}
-
+	log.V(2).Info("creating Backup", "name", a.id)
 	mapCtx := &direct.MapContext{}
+
 	desired := a.desired.DeepCopy()
 	resource := MetastoreBackupSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
@@ -151,13 +138,13 @@ func (a *MetastoreBackupAdapter) Create(ctx context.Context, createOp *directbas
 	}
 	op, err := a.gcpClient.CreateBackup(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating MetastoreBackup %s: %w", a.id, err)
+		return fmt.Errorf("creating Backup %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("MetastoreBackup %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create Backup %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created MetastoreBackup", "name", a.id)
+	log.V(2).Info("successfully created Backup", "name", a.id)
 
 	status := &krm.MetastoreBackupStatus{}
 	status.ObservedState = MetastoreBackupObservedState_FromProto(mapCtx, created)
@@ -168,14 +155,29 @@ func (a *MetastoreBackupAdapter) Create(ctx context.Context, createOp *directbas
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-// MetastoreBackup resource has no mutable fields as per the proto definition, so this function only updates the status.
-func (a *MetastoreBackupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *BackupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("resource has no mutable fields, skipping update", "name", a.id)
+	log.V(2).Info("updating Backup", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
+	desired := MetastoreBackupSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareBackup(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("MetastoreBackup resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
 	status := &krm.MetastoreBackupStatus{}
+	mapCtx = &direct.MapContext{}
 	status.ObservedState = MetastoreBackupObservedState_FromProto(mapCtx, a.actual)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
@@ -184,8 +186,19 @@ func (a *MetastoreBackupAdapter) Update(ctx context.Context, updateOp *directbas
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *MetastoreBackupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareBackup(ctx context.Context, actual, desired *pb.Backup) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, MetastoreBackupSpec_FromProto, MetastoreBackupSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *BackupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -198,44 +211,37 @@ func (a *MetastoreBackupAdapter) Export(ctx context.Context) (*unstructured.Unst
 		return nil, mapCtx.Err()
 	}
 
-	// Populate required references from the ID
-	obj.Spec.ServiceRef = krmv1alplpha1.ServiceRef{
-		External: a.id.Parent().String(), // Set external reference to the service name
-	}
-
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.MetastoreBackupGVK)
-
-	u.Object = uObj
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *MetastoreBackupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *BackupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting MetastoreBackup", "name", a.id)
+	log.V(2).Info("deleting Backup", "name", a.id)
 
-	req := &pb.DeleteBackupRequest{Name: a.id.String()}
+	req := &pb.DeleteBackupRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteBackup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent MetastoreBackup, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting MetastoreBackup %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting Backup %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully initiated deletion for MetastoreBackup", "name", a.id)
-
+	log.V(2).Info("successfully deleted Backup", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete MetastoreBackup %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Backup %s: %w", a.id, err)
+		}
 	}
-	log.V(2).Info("successfully deleted MetastoreBackup", "name", a.id)
 	return true, nil
 }

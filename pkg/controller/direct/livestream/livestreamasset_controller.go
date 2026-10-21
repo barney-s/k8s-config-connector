@@ -17,9 +17,6 @@ package livestream
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/video/livestream/apiv1"
-	pb "cloud.google.com/go/video/livestream/apiv1/livestreampb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/livestream/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -29,9 +26,13 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/video/livestream/apiv1"
+	pb "cloud.google.com/go/video/livestream/apiv1/livestreampb"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -42,42 +43,29 @@ func init() {
 }
 
 func NewAssetModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &assetModel{config: *config}, nil
+	return &modelAsset{config: *config}, nil
 }
 
-var _ directbase.Model = &assetModel{}
+var _ directbase.Model = &modelAsset{}
+var _ = strings.TrimPrefix
 
-type assetModel struct {
+type modelAsset struct {
 	config config.ControllerConfig
 }
 
-func (m *assetModel) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building livestream client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *assetModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelAsset) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.LiveStreamAsset{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	idBase, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idBase.(*krm.LiveStreamAssetIdentity)
-
+	id := i.(*krm.LiveStreamAssetIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
@@ -86,113 +74,131 @@ func (m *assetModel) AdapterForObject(ctx context.Context, op *directbase.Adapte
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := LiveStreamAssetSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &assetAdapter{
+	return &AssetAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
-		model:     m,
+		desired:   obj,
 	}, nil
 }
 
-func (m *assetModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelAsset) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type assetAdapter struct {
-	id        *krm.LiveStreamAssetIdentity
-	gcpClient *gcp.Client
-	desired   *pb.Asset
-	actual    *pb.Asset
-	model     *assetModel
+func (m *modelAsset) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Asset client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &assetAdapter{}
+type AssetAdapter struct {
+	id        *krm.LiveStreamAssetIdentity
+	gcpClient *gcp.Client
+	desired   *krm.LiveStreamAsset
+	actual    *pb.Asset
+}
 
-func (a *assetAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &AssetAdapter{}
+
+func (a *AssetAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("finding LiveStreamAsset", "id", a.id)
+	log.V(2).Info("getting Asset", "name", a.id)
 
 	req := &pb.GetAssetRequest{
 		Name: a.id.String(),
 	}
-	asset, err := a.gcpClient.GetAsset(ctx, req)
+	resp, err := a.gcpClient.GetAsset(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting LiveStreamAsset %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Asset %q: %w", a.id, err)
 	}
 
-	a.actual = asset
+	a.actual = resp
 	return true, nil
 }
 
-func (a *assetAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *AssetAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating LiveStreamAsset", "id", a.id)
+	log.V(2).Info("creating Asset", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := LiveStreamAssetSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateAssetRequest{
 		Parent:  a.id.ParentString(),
 		AssetId: a.id.Asset,
-		Asset:   a.desired,
+		Asset:   resource,
 	}
 	op, err := a.gcpClient.CreateAsset(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating LiveStreamAsset %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating Asset %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for LiveStreamAsset %s creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create Asset %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created Asset", "name", a.id)
 
-	// Fetch fully-populated resource after creation
-	refetched, err := a.gcpClient.GetAsset(ctx, &pb.GetAssetRequest{Name: a.id.String()})
-	if err != nil {
-		refetched = created
+	status := &krm.LiveStreamAssetStatus{}
+	status.ObservedState = LiveStreamAssetObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	a.actual = refetched
-
-	return a.updateStatus(ctx, createOp, refetched)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *assetAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *AssetAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating LiveStreamAsset", "id", a.id)
+	log.V(2).Info("updating Asset", "name", a.id)
 
-	diffs, _, err := a.compareAsset(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := LiveStreamAssetSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareAsset(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
+	_ = updateMask
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
-		return fmt.Errorf("LiveStreamAsset is immutable and cannot be updated")
+		return fmt.Errorf("LiveStreamAsset resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	return a.updateStatus(ctx, updateOp, a.actual)
+	status := &krm.LiveStreamAssetStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = LiveStreamAssetObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *assetAdapter) compareAsset(ctx context.Context, actual, desired *pb.Asset) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+func compareAsset(ctx context.Context, actual, desired *pb.Asset) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
 	maskedActual, err := mappers.OnlySpecFields(actual, LiveStreamAssetSpec_FromProto, LiveStreamAssetSpec_ToProto)
 	if err != nil {
 		return nil, nil, err
 	}
-	maskedActual.Name = desired.Name
-
-	// Since crc32c is filled by the server if omitted, copy it to desired to avoid false drift
-	if desired.Crc32C == "" && maskedActual.Crc32C != "" {
-		desired.Crc32C = maskedActual.Crc32C
-	}
-
 	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
@@ -200,20 +206,7 @@ func (a *assetAdapter) compareAsset(ctx context.Context, actual, desired *pb.Ass
 	return diffs, updateMask, nil
 }
 
-func (a *assetAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Asset) error {
-	mapCtx := &direct.MapContext{}
-	status := krm.LiveStreamAssetStatus{}
-	status.ObservedState = LiveStreamAssetObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
-	return op.UpdateStatus(ctx, &status, nil)
-}
-
-func (a *assetAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *AssetAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -225,10 +218,9 @@ func (a *assetAdapter) Export(ctx context.Context) (*unstructured.Unstructured, 
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Asset)
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = direct.LazyPtr(a.id.Location)
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Asset)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -238,27 +230,29 @@ func (a *assetAdapter) Export(ctx context.Context) (*unstructured.Unstructured, 
 	u.Object = uObj
 	u.SetName(a.id.Asset)
 	u.SetGroupVersionKind(krm.LiveStreamAssetGVK)
-
 	return u, nil
 }
 
-func (a *assetAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *AssetAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting LiveStreamAsset", "id", a.id)
+	log.V(2).Info("deleting Asset", "name", a.id)
 
-	req := &pb.DeleteAssetRequest{Name: a.id.String()}
+	req := &pb.DeleteAssetRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteAsset(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent LiveStreamAsset, assuming it was already deleted", "id", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting LiveStreamAsset %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Asset %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted Asset", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete LiveStreamAsset %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Asset %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

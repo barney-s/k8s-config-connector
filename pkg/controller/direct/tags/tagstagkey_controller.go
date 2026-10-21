@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,24 +16,21 @@ package tags
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/tags/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
-	"google.golang.org/api/iterator"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"strings"
 
-	api "cloud.google.com/go/resourcemanager/apiv3"
+	gcp "cloud.google.com/go/resourcemanager/apiv3"
 	pb "cloud.google.com/go/resourcemanager/apiv3/resourcemanagerpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -45,344 +42,206 @@ func init() {
 }
 
 func NewTagsTagKeyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &TagsTagKeyModel{config: config}, nil
+	return &modelTagsTagKey{config: *config}, nil
 }
 
-var _ directbase.Model = &TagsTagKeyModel{}
+var _ directbase.Model = &modelTagsTagKey{}
+var _ = strings.TrimPrefix
 
-type TagsTagKeyModel struct {
-	config *config.ControllerConfig
+type modelTagsTagKey struct {
+	config config.ControllerConfig
 }
 
-func (m *TagsTagKeyModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelTagsTagKey) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
-	tagKeysClient, err := newTagKeysClient(ctx, m.config)
-	if err != nil {
-		return nil, err
-	}
-
+	_ = reader
 	obj := &krm.TagsTagKey{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.TagsTagKeyIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	// normalize parent (sadly not a ref, for legacy reasons)
-	{
-		parent := direct.ValueOf(obj.Spec.Parent)
-		tokens := strings.Split(parent, "/")
-		if len(tokens) == 2 && tokens[0] == "projects" {
-			// TODO: Use ProjectRef once it uses the ref pattern
-			// Ensure uses number
-			projectNumber, err := m.config.ProjectMapper.LookupProjectNumber(ctx, tokens[1])
-			if err != nil {
-				return nil, fmt.Errorf("mapping project ID to number: %w", err)
-			}
-			obj.Spec.Parent = direct.PtrTo(fmt.Sprintf("projects/%d", projectNumber))
-		} else if len(tokens) == 2 && tokens[0] == "organizations" {
-			// Always numeric, no normalization needed
-		} else {
-			return nil, fmt.Errorf("invalid parent %q: expected form is project/{project_id} or organizations/{organization_id}", parent)
-		}
-	}
-
-	var id *krm.TagsTagKeyIdentity
-	if obj.Spec.ResourceID != nil || obj.Status.ExternalRef != nil {
-		idFromObject, err := obj.GetIdentity(ctx, reader)
-		if err != nil {
-			return nil, err
-		}
-		id = idFromObject.(*krm.TagsTagKeyIdentity)
-	}
-
-	var desired *pb.TagKey
-	{
-		mapCtx := &direct.MapContext{}
-		desired = TagsTagKeySpec_ToProto(mapCtx, &obj.Spec)
-		if mapCtx.Err() != nil {
-			return nil, mapCtx.Err()
-		}
-	}
-
-	return &TagsTagKeyAdapter{
-		id:            id,
-		tagKeysClient: tagKeysClient,
-		desired:       desired,
-	}, nil
-}
-
-func (m *TagsTagKeyModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// The url format should match the Cloud-Asset-Inventory format: https://cloud.google.com/asset-inventory/docs/resource-name-format
-	if !strings.HasPrefix(url, "//cloudresourcemanager.googleapis.com/") {
-		return nil, nil
-	}
-
-	id := &krm.TagsTagKeyIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		// Not recognized
-		return nil, nil
-	}
-
-	tagKeysClient, err := newTagKeysClient(ctx, m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &TagsTagKeyAdapter{
-		id:            id,
-		tagKeysClient: tagKeysClient,
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
+func (m *modelTagsTagKey) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.TagsTagKeyIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &TagsTagKeyAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelTagsTagKey) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building TagsTagKey client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type TagsTagKeyAdapter struct {
-	id            *krm.TagsTagKeyIdentity
-	tagKeysClient *api.TagKeysClient
-	desired       *pb.TagKey
-	actual        *pb.TagKey
+	id        *krm.TagsTagKeyIdentity
+	gcpClient *gcp.Client
+	desired   *krm.TagsTagKey
+	actual    *pb.TagsTagKey
 }
 
 var _ directbase.Adapter = &TagsTagKeyAdapter{}
 
 func (a *TagsTagKeyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
+	log.V(2).Info("getting TagsTagKey", "name", a.id)
 
-	if a.id == nil {
-		return false, nil
+	req := &pb.GetTagsTagKeyRequest{
+		Name: a.id.String(),
 	}
-
-	fqn := a.id.String()
-	log.V(0).Info("getting TagsTagKey", "name", fqn)
-
-	req := &pb.GetTagKeyRequest{Name: fqn}
-	actual, err := a.tagKeysClient.GetTagKey(ctx, req)
+	resp, err := a.gcpClient.GetTagsTagKey(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting TagsTagKey %q: %w", fqn, err)
+		return false, fmt.Errorf("getting TagsTagKey %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
 func (a *TagsTagKeyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
-	// There no FQN until after creation (server generated id).
-
 	log := klog.FromContext(ctx)
-	log.V(0).Info("creating TagsTagKey")
+	log.V(2).Info("creating TagsTagKey", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	req := &pb.CreateTagKeyRequest{
-		TagKey: proto.CloneOf(a.desired),
+	desired := a.desired.DeepCopy()
+	resource := TagsTagKeySpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
 
-	op, err := a.tagKeysClient.CreateTagKey(ctx, req)
+	req := &pb.CreateTagsTagKeyRequest{
+		Parent:       a.id.ParentString(),
+		TagsTagKeyId: a.id.TagKey,
+		TagsTagKey:   resource,
+	}
+	op, err := a.gcpClient.CreateTagsTagKey(ctx, req)
 	if err != nil {
-		if direct.IsAlreadyExists(err) {
-			log.V(0).Info("TagsTagKey already exists, attempting to acquire", "parent", a.desired.GetParent(), "shortName", a.desired.GetShortName())
-			return a.acquireExistingTagKey(ctx, createOp)
-		}
-		return fmt.Errorf("creating TagsTagKey: %w", err)
+		return fmt.Errorf("creating TagsTagKey %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		if direct.IsAlreadyExists(err) {
-			log.V(0).Info("TagsTagKey already exists, attempting to acquire", "parent", a.desired.GetParent(), "shortName", a.desired.GetShortName())
-			return a.acquireExistingTagKey(ctx, createOp)
-		}
-		return fmt.Errorf("waiting for creation of TagsTagKey: %w", err)
+		return fmt.Errorf("waiting create TagsTagKey %s: %w", a.id, err)
 	}
-	log.V(0).Info("created TagsTagKey", "name", created.GetName())
+	log.V(2).Info("successfully created TagsTagKey", "name", a.id)
 
-	return a.setResourceIDAndStatus(ctx, createOp, created)
-}
-
-// acquireExistingTagKey looks up an existing TagKey by parent and shortName after an ALREADY_EXISTS error,
-// then sets the resourceID and status to adopt the resource.
-func (a *TagsTagKeyAdapter) acquireExistingTagKey(ctx context.Context, createOp *directbase.CreateOperation) error {
-	log := klog.FromContext(ctx)
-
-	existing, err := a.findTagKeyByShortName(ctx)
-	if err != nil {
-		return err
+	status := &krm.TagsTagKeyStatus{}
+	status.ObservedState = TagsTagKeyObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	if existing == nil {
-		return fmt.Errorf("TagsTagKey with shortName %q not found under %q despite ALREADY_EXISTS error", a.desired.GetShortName(), a.desired.GetParent())
-	}
-	log.V(0).Info("acquired existing TagsTagKey", "name", existing.GetName())
-
-	return a.setResourceIDAndStatus(ctx, createOp, existing)
-}
-
-// setResourceIDAndStatus sets spec.resourceID and updates status from the given TagKey.
-// For compatibility, we set spec.resourceID after creation because this is a server-generated-id resource that we are migrating from terraform/DCL.
-// More info in .gemini/skills/kcc-direct-service-generated-id/SKILL.md
-func (a *TagsTagKeyAdapter) setResourceIDAndStatus(ctx context.Context, createOp *directbase.CreateOperation, tagKey *pb.TagKey) error {
-	resourceID := strings.TrimPrefix(tagKey.GetName(), "tagKeys/")
-	if err := createOp.SetSpecResourceID(ctx, resourceID); err != nil {
-		return err
-	}
-	return a.updateStatus(ctx, createOp, tagKey)
-}
-
-// findTagKeyByShortName lists TagKeys under the parent and returns the one matching the desired shortName.
-func (a *TagsTagKeyAdapter) findTagKeyByShortName(ctx context.Context) (*pb.TagKey, error) {
-	listReq := &pb.ListTagKeysRequest{Parent: a.desired.GetParent()}
-	it := a.tagKeysClient.ListTagKeys(ctx, listReq)
-	for {
-		tagKey, err := it.Next()
-		if err != nil {
-			if errors.Is(err, iterator.Done) {
-				break
-			}
-			return nil, fmt.Errorf("listing TagsTagKeys under %q: %w", a.desired.GetParent(), err)
-		}
-		if tagKey.GetShortName() == a.desired.GetShortName() {
-			return tagKey, nil
-		}
-	}
-	return nil, nil
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *TagsTagKeyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
+	log.V(2).Info("updating TagsTagKey", "name", a.id)
 
-	fqn := a.id.String()
-
-	req := &pb.UpdateTagKeyRequest{
-		TagKey: proto.CloneOf(a.desired),
+	mapCtx := &direct.MapContext{}
+	desired := TagsTagKeySpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	req.TagKey.Name = fqn
 
-	diff, updateMask, err := a.changedFields(ctx)
+	diffs, updateMask, err := compareTagsTagKey(ctx, a.actual, desired)
 	if err != nil {
-		return fmt.Errorf("getting changed fields for TagsTagKey %q: %w", fqn, err)
+		return err
 	}
-	req.UpdateMask = updateMask
-
-	diff.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diff)
-
-	latest := a.actual
-	if len(req.UpdateMask.Paths) != 0 {
-		log.V(0).Info("updating TagsTagKey", "name", fqn)
-
-		op, err := a.tagKeysClient.UpdateTagKey(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating TagsTagKey %q: %w", fqn, err)
-		}
-
-		updated, err := op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting for update of TagsTagKey %s: %w", fqn, err)
-		}
-		log.V(0).Info("updated TagsTagKey", "name", fqn)
-		latest = updated
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("TagsTagKey resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	status := &krm.TagsTagKeyStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = TagsTagKeyObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *TagsTagKeyAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.TagKey) error {
-	status := &krm.TagsTagKeyStatus{}
-
-	// NOTYET: observedState
-	// {
-	// 	mapCtx := &direct.MapContext{}
-	// 	status.ObservedState = TagsTagKeyObservedState_v1alpha1_FromProto(mapCtx, latest)
-	// 	if mapCtx.Err() != nil {
-	// 		return mapCtx.Err()
-	// 	}
-	// }
-
-	status.ExternalRef = direct.PtrTo(latest.GetName())
-
-	// Legacy status fields
-	status.Name = direct.PtrTo(strings.TrimPrefix(latest.GetName(), "tagKeys/"))
-	status.NamespacedName = direct.PtrTo(latest.GetNamespacedName())
-	status.CreateTime = direct.StringTimestamp_FromProto(nil, latest.GetCreateTime())
-	status.UpdateTime = direct.StringTimestamp_FromProto(nil, latest.GetUpdateTime())
-
-	return op.UpdateStatus(ctx, status, nil)
+func compareTagsTagKey(ctx context.Context, actual, desired *pb.TagsTagKey) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, TagsTagKeySpec_FromProto, TagsTagKeySpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *TagsTagKeyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	fqn := a.id.String()
 	if a.actual == nil {
-		return nil, fmt.Errorf("TagsTagKey %q not found", fqn)
+		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
 	obj := &krm.TagsTagKey{}
-
-	{
-		mapCtx := &direct.MapContext{}
-		spec := TagsTagKeySpec_FromProto(mapCtx, a.actual)
-		if mapCtx.Err() != nil {
-			return nil, mapCtx.Err()
-		}
-		obj.Spec = *spec
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(TagsTagKeySpec_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
 	}
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.TagKey)
 
-	obj.SetGroupVersionKind(krm.TagsTagKeyGVK)
-	obj.Name = a.id.TagKey
-
-	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("converting TagsTagKey to unstructured failed: %w", err)
+		return nil, err
 	}
 
-	return &unstructured.Unstructured{Object: u}, nil
+	u.Object = uObj
+	u.SetName(a.id.TagKey)
+	u.SetGroupVersionKind(krm.TagsTagKeyGVK)
+	return u, nil
 }
 
-// Delete implements the Adapter interface.
 func (a *TagsTagKeyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-
-	fqn := a.id.String()
-
-	log.V(0).Info("deleting TagsTagKey", "name", fqn)
-
-	req := &pb.DeleteTagKeyRequest{}
-	req.Name = fqn
-
-	op, err := a.tagKeysClient.DeleteTagKey(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(0).Info("skipping delete for non-existent TagsTagKey, assuming it was already deleted", "name", fqn)
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting TagsTagKey %s: %w", fqn, err)
-	}
-	log.V(0).Info("successfully deleted TagsTagKey", "name", fqn)
-
-	if _, err := op.Wait(ctx); err != nil {
-		return false, fmt.Errorf("waiting for delete of TagsTagKey %s: %w", fqn, err)
-	}
-
+	log.V(2).Info("deletion not supported for TagsTagKey, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func (a *TagsTagKeyAdapter) changedFields(ctx context.Context) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	// Compute the actual with only the spec fields populated.
-	var actualMasked protoreflect.Message
-	{
-		mapCtx := &direct.MapContext{}
-		actualSpec := TagsTagKeySpec_FromProto(mapCtx, a.actual)
-		if mapCtx.Err() != nil {
-			return nil, nil, mapCtx.Err()
-		}
-		mapCtx = &direct.MapContext{}
-		specProto := TagsTagKeySpec_ToProto(mapCtx, actualSpec)
-		if mapCtx.Err() != nil {
-			return nil, nil, mapCtx.Err()
-		}
-		actualMasked = specProto.ProtoReflect()
-	}
-
-	return common.DiffForTopLevelFields(ctx, a.desired.ProtoReflect(), actualMasked)
 }

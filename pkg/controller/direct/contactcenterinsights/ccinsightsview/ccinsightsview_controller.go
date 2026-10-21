@@ -17,243 +17,216 @@ package ccinsightsview
 import (
 	"context"
 	"fmt"
-
-	contactcenterinsights "cloud.google.com/go/contactcenterinsights/apiv1"
-	pb "cloud.google.com/go/contactcenterinsights/apiv1/contactcenterinsightspb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/contactcenterinsights/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/contactcenterinsights/apiv1"
+	pb "cloud.google.com/go/contactcenterinsights/apiv1/contactcenterinsightspb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.CCInsightsViewGVK, newModel)
+	registry.RegisterModel(krm.CCInsightsViewGVK, NewCCInsightsViewModel)
 }
 
-func newModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewCCInsightsViewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelCCInsightsView{config: *config}, nil
 }
 
-type model struct {
+var _ directbase.Model = &modelCCInsightsView{}
+var _ = strings.TrimPrefix
+
+type modelCCInsightsView struct {
 	config config.ControllerConfig
 }
 
-// model implements the Model interface.
-var _ directbase.Model = &model{}
+func (m *modelCCInsightsView) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.CCInsightsView{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.CCInsightsViewIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
 
-type adapter struct {
-	id      *krm.CCInsightsViewIdentity
-	desired *pb.View
-	actual  *pb.View
-	gcp     *contactcenterinsights.Client
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &CCInsightsViewAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
 }
 
-// adapter implements the Adapter interface.
-var _ directbase.Adapter = &adapter{}
+func (m *modelCCInsightsView) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
 
-func (m *model) client(ctx context.Context) (*contactcenterinsights.Client, error) {
+func (m *modelCCInsightsView) client(ctx context.Context) (*gcp.Client, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	gcpClient, err := contactcenterinsights.NewRESTClient(ctx, opts...)
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building contactcenterinsights client: %w", err)
+		return nil, fmt.Errorf("building CCInsightsView client: %w", err)
 	}
 	return gcpClient, err
 }
 
-// AdapterForObject implements the Model interface.
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	gcp, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	obj := &krm.CCInsightsView{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := ViewSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	idTyped := id.(*krm.CCInsightsViewIdentity)
-	if desired.DisplayName == "" {
-		desired.DisplayName = u.GetName()
-	}
-
-	return &adapter{
-		id:      idTyped,
-		desired: desired,
-		gcp:     gcp,
-	}, nil
+type CCInsightsViewAdapter struct {
+	id        *krm.CCInsightsViewIdentity
+	gcpClient *gcp.Client
+	desired   *krm.CCInsightsView
+	actual    *pb.CCInsightsView
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	return nil, nil
-}
+var _ directbase.Adapter = &CCInsightsViewAdapter{}
 
-// Find implements the Adapter interface.
-func (a *adapter) Find(ctx context.Context) (bool, error) {
-	req := &pb.GetViewRequest{
+func (a *CCInsightsViewAdapter) Find(ctx context.Context) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("getting CCInsightsView", "name", a.id)
+
+	req := &pb.GetCCInsightsViewRequest{
 		Name: a.id.String(),
 	}
-	actual, err := a.gcp.GetView(ctx, req)
+	resp, err := a.gcpClient.GetCCInsightsView(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting view: %w", err)
+		return false, fmt.Errorf("getting CCInsightsView %q: %w", a.id, err)
 	}
-	a.actual = actual
+
+	a.actual = resp
 	return true, nil
 }
 
-// Create implements the Adapter interface.
-func (a *adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *CCInsightsViewAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating CCInsightsView", "id", a.id)
+	log.V(2).Info("creating CCInsightsView", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	view := proto.Clone(a.desired).(*pb.View)
-	view.Name = a.id.String()
-
-	req := &pb.CreateViewRequest{
-		Parent: a.id.ParentString(),
-		View:   view,
+	desired := a.desired.DeepCopy()
+	resource := CCInsightsViewSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
 
-	created, err := a.gcp.CreateView(ctx, req)
+	req := &pb.CreateCCInsightsViewRequest{
+		Parent:           a.id.ParentString(),
+		CCInsightsViewId: a.id.CCInsightsView,
+		CCInsightsView:   resource,
+	}
+	created, err := a.gcpClient.CreateCCInsightsView(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating view %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating CCInsightsView %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created CCInsightsView", "name", a.id)
 
-	log.V(2).Info("created CCInsightsView", "id", a.id)
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.CCInsightsViewStatus{}
+	status.ObservedState = CCInsightsViewObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update implements the Adapter interface.
-func (a *adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *CCInsightsViewAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating CCInsightsView", "id", a.id)
+	log.V(2).Info("updating CCInsightsView", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	actualSpec := ViewSpec_FromProto(mapCtx, a.actual)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	maskedActual := ViewSpec_ToProto(mapCtx, actualSpec)
+	desired := CCInsightsViewSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	clonedDesired := proto.Clone(a.desired).(*pb.View)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := compareCCInsightsView(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "id", a.id)
-		return nil
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("CCInsightsView resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	view := proto.Clone(clonedDesired).(*pb.View)
-	view.Name = a.id.String()
-
-	req := &pb.UpdateViewRequest{
-		View:       view,
-		UpdateMask: updateMask,
+	status := &krm.CCInsightsViewStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = CCInsightsViewObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	updated, err := a.gcp.UpdateView(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating view %s: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("updated CCInsightsView", "id", a.id)
-	return a.updateStatus(ctx, updateOp, updated)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Delete implements the Adapter interface.
-func (a *adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting CCInsightsView", "id", a.id)
-
-	req := &pb.DeleteViewRequest{
-		Name: a.id.String(),
-	}
-
-	err := a.gcp.DeleteView(ctx, req)
+func compareCCInsightsView(ctx context.Context, actual, desired *pb.CCInsightsView) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, CCInsightsViewSpec_FromProto, CCInsightsViewSpec_ToProto)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting view %s: %w", a.id.String(), err)
+		return nil, nil, err
 	}
-
-	log.V(2).Info("successfully deleted CCInsightsView", "id", a.id)
-	return true, nil
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *CCInsightsViewAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
-		return nil, fmt.Errorf("Find() not called or no object found")
+		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.CCInsightsView{}
 	mapCtx := &direct.MapContext{}
-	spec := ViewSpec_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(CCInsightsViewSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
 
-	obj := &krm.CCInsightsView{}
-	obj.Spec = *spec
-
-	specObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
-	u := &unstructured.Unstructured{Object: specObj}
+
+	u.Object = uObj
+	u.SetName(a.id.CCInsightsView)
 	u.SetGroupVersionKind(krm.CCInsightsViewGVK)
 	return u, nil
 }
 
-func (a *adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.View) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.CCInsightsViewStatus{}
-	status.ObservedState = ViewObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(latest.Name)
-	return op.UpdateStatus(ctx, status, nil)
+func (a *CCInsightsViewAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for CCInsightsView, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

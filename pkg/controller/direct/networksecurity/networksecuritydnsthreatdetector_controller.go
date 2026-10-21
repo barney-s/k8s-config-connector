@@ -17,190 +17,200 @@ package networksecurity
 import (
 	"context"
 	"fmt"
-
-	pb "cloud.google.com/go/networksecurity/apiv1/networksecuritypb"
-	"google.golang.org/api/option"
-	"google.golang.org/api/transport/grpc"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/networksecurity/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/networksecurity/apiv1"
+	pb "cloud.google.com/go/networksecurity/apiv1/networksecuritypb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.NetworkSecurityDNSThreatDetectorGVK, NewDNSThreatDetectorModel)
+	registry.RegisterModel(krm.NetworkSecurityDNSThreatDetectorGVK, NewDnsThreatDetectorModel)
 }
 
-func NewDNSThreatDetectorModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &dnsThreatDetectorModel{config: *config}, nil
+func NewDnsThreatDetectorModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelDnsThreatDetector{config: *config}, nil
 }
 
-var _ directbase.Model = &dnsThreatDetectorModel{}
+var _ directbase.Model = &modelDnsThreatDetector{}
+var _ = strings.TrimPrefix
 
-type dnsThreatDetectorModel struct {
+type modelDnsThreatDetector struct {
 	config config.ControllerConfig
 }
 
-func (m *dnsThreatDetectorModel) client(ctx context.Context) (pb.DnsThreatDetectorServiceClient, error) {
-	var opts []option.ClientOption
-
-	config := m.config
-	opts, err := config.GRPCClientOptions()
-	if err != nil {
-		return nil, err
-	}
-
-	opts = append(opts, option.WithEndpoint("networksecurity.googleapis.com:443"))
-	opts = append(opts, option.WithScopes("https://www.googleapis.com/auth/cloud-platform"))
-
-	conn, err := grpc.Dial(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("dialing networksecurity service: %w", err)
-	}
-
-	return pb.NewDnsThreatDetectorServiceClient(conn), nil
-}
-
-func (m *dnsThreatDetectorModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelDnsThreatDetector) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.NetworkSecurityDNSThreatDetector{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
+	id := i.(*krm.NetworkSecurityDNSThreatDetectorIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, err
-	}
-	mapCtx := &direct.MapContext{}
-	desired := NetworkSecurityDNSThreatDetectorSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if err := mapCtx.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &dnsThreatDetectorAdapter{
+	return &DnsThreatDetectorAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		id:        id.(*krm.NetworkSecurityDNSThreatDetectorIdentity),
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *dnsThreatDetectorModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelDnsThreatDetector) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type dnsThreatDetectorAdapter struct {
-	gcpClient pb.DnsThreatDetectorServiceClient
+func (m *modelDnsThreatDetector) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building DnsThreatDetector client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type DnsThreatDetectorAdapter struct {
 	id        *krm.NetworkSecurityDNSThreatDetectorIdentity
-	desired   *pb.DnsThreatDetector
+	gcpClient *gcp.Client
+	desired   *krm.NetworkSecurityDNSThreatDetector
 	actual    *pb.DnsThreatDetector
 }
 
-var _ directbase.Adapter = &dnsThreatDetectorAdapter{}
+var _ directbase.Adapter = &DnsThreatDetectorAdapter{}
 
-func (a *dnsThreatDetectorAdapter) Find(ctx context.Context) (bool, error) {
+func (a *DnsThreatDetectorAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.Info("getting networksecurity dns threat detector", "name", a.id)
+	log.V(2).Info("getting DnsThreatDetector", "name", a.id)
 
-	req := &pb.GetDnsThreatDetectorRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetDnsThreatDetector(ctx, req)
+	req := &pb.GetDnsThreatDetectorRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetDnsThreatDetector(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting networksecurity dns threat detector %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting DnsThreatDetector %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *dnsThreatDetectorAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *DnsThreatDetectorAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.Info("creating networksecurity dns threat detector", "name", a.id)
+	log.V(2).Info("creating DnsThreatDetector", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	parent := a.id.ParentString()
+	desired := a.desired.DeepCopy()
+	resource := NetworkSecurityDNSThreatDetectorSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
 	req := &pb.CreateDnsThreatDetectorRequest{
-		Parent:              parent,
+		Parent:              a.id.ParentString(),
 		DnsThreatDetectorId: a.id.DNSThreatDetector,
-		DnsThreatDetector:   a.desired,
+		DnsThreatDetector:   resource,
 	}
-	actual, err := a.gcpClient.CreateDnsThreatDetector(ctx, req)
+	created, err := a.gcpClient.CreateDnsThreatDetector(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating networksecurity dns threat detector %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating DnsThreatDetector %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created DnsThreatDetector", "name", a.id)
 
-	log.V(2).Info("successfully created networksecurity dns threat detector", "name", a.id.String())
-
-	return a.updateStatus(ctx, createOp, actual)
+	status := &krm.NetworkSecurityDNSThreatDetectorStatus{}
+	status.ObservedState = NetworkSecurityDNSThreatDetectorObservedState_v1alpha1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *dnsThreatDetectorAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *DnsThreatDetectorAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.Info("updating networksecurity dns threat detector", "name", a.id)
+	log.V(2).Info("updating DnsThreatDetector", "name", a.id)
 
-	diffs, updateMask, err := compareDNSThreatDetector(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := NetworkSecurityDNSThreatDetectorSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareDnsThreatDetector(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
+		desired.Name = a.id.String()
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return nil
+		req := &pb.UpdateDnsThreatDetectorRequest{
+			DnsThreatDetector: desired,
+			UpdateMask:        updateMask,
+		}
+		updated, err := a.gcpClient.UpdateDnsThreatDetector(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating DnsThreatDetector %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated DnsThreatDetector", "name", a.id)
+
+		status := &krm.NetworkSecurityDNSThreatDetectorStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = NetworkSecurityDNSThreatDetectorObservedState_v1alpha1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	log.V(2).Info("fields need update", "name", a.id, "updateMask", updateMask)
-
-	req := &pb.UpdateDnsThreatDetectorRequest{
-		UpdateMask:        updateMask,
-		DnsThreatDetector: a.desired,
-	}
-	req.DnsThreatDetector.Name = a.id.String()
-
-	actual, err := a.gcpClient.UpdateDnsThreatDetector(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating networksecurity dns threat detector %s: %w", a.id, err)
-	}
-
-	log.V(2).Info("successfully updated networksecurity dns threat detector", "name", a.id)
-
-	return a.updateStatus(ctx, updateOp, actual)
+	return nil
 }
 
-func compareDNSThreatDetector(ctx context.Context, actual, desired *pb.DnsThreatDetector) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	mapCtx := &direct.MapContext{}
-	spec := NetworkSecurityDNSThreatDetectorSpec_v1alpha1_FromProto(mapCtx, actual)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
+func compareDnsThreatDetector(ctx context.Context, actual, desired *pb.DnsThreatDetector) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, NetworkSecurityDNSThreatDetectorSpec_v1alpha1_FromProto, NetworkSecurityDNSThreatDetectorSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	maskedActual := NetworkSecurityDNSThreatDetectorSpec_v1alpha1_ToProto(mapCtx, spec)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
-	}
-	maskedActual.Name = desired.Name
 	maskedActual.Labels = actual.Labels
-
 	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
@@ -208,36 +218,51 @@ func compareDNSThreatDetector(ctx context.Context, actual, desired *pb.DnsThreat
 	return diffs, updateMask, nil
 }
 
-func (a *dnsThreatDetectorAdapter) updateStatus(ctx context.Context, op directbase.Operation, actual *pb.DnsThreatDetector) error {
+func (a *DnsThreatDetectorAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.NetworkSecurityDNSThreatDetector{}
 	mapCtx := &direct.MapContext{}
-	status := &krm.NetworkSecurityDNSThreatDetectorStatus{}
-	status.ObservedState = NetworkSecurityDNSThreatDetectorObservedState_v1alpha1_FromProto(mapCtx, actual)
+	obj.Spec = direct.ValueOf(NetworkSecurityDNSThreatDetectorSpec_v1alpha1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+		return nil, mapCtx.Err()
 	}
 
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
 
-	return op.UpdateStatus(ctx, status, nil)
+	u.Object = uObj
+	u.SetName(a.id.DNSThreatDetector)
+	u.SetGroupVersionKind(krm.NetworkSecurityDNSThreatDetectorGVK)
+	export.SetLabels(u, a.actual.Labels)
+	return u, nil
 }
 
-func (a *dnsThreatDetectorAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	return nil, nil
-}
-
-func (a *dnsThreatDetectorAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *DnsThreatDetectorAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.Info("deleting networksecurity dns threat detector", "name", a.id)
+	log.V(2).Info("deleting DnsThreatDetector", "name", a.id)
 
-	req := &pb.DeleteDnsThreatDetectorRequest{Name: a.id.String()}
-	_, err := a.gcpClient.DeleteDnsThreatDetector(ctx, req)
+	req := &pb.DeleteDnsThreatDetectorRequest{
+		Name: a.id.String(),
+	}
+	op, err := a.gcpClient.DeleteDnsThreatDetector(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting networksecurity dns threat detector %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting DnsThreatDetector %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted DnsThreatDetector", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete DnsThreatDetector %s: %w", a.id, err)
+		}
+	}
 	return true, nil
 }

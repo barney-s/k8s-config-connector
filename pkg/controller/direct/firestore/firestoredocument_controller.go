@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,19 +17,21 @@ package firestore
 import (
 	"context"
 	"fmt"
-	"strings"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/firestore/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
-	apiv1 "cloud.google.com/go/firestore/apiv1"
+	gcp "cloud.google.com/go/firestore/apiv1"
 	pb "cloud.google.com/go/firestore/apiv1/firestorepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
-	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -40,246 +42,198 @@ func init() {
 }
 
 func NewFirestoreDocumentModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &firestoreDocumentModel{config: config}, nil
+	return &modelFirestoreDocument{config: *config}, nil
 }
 
-type firestoreDocumentModel struct {
-	config *config.ControllerConfig
+var _ directbase.Model = &modelFirestoreDocument{}
+var _ = strings.TrimPrefix
+
+type modelFirestoreDocument struct {
+	config config.ControllerConfig
 }
 
-var _ directbase.Model = &firestoreDocumentModel{}
-
-func (m *firestoreDocumentModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelFirestoreDocument) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
-	firestoreClient, err := newFirestoreClient(ctx, m.config)
-	if err != nil {
-		return nil, err
-	}
-
+	_ = reader
 	obj := &krm.FirestoreDocument{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
+	id := i.(*krm.FirestoreDocumentIdentity)
 
-	mapCtx := &direct.MapContext{}
-	desired := FirestoreDocumentSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
-
-	return &firestoreDocumentAdapter{
-		id:              id.(*krm.FirestoreDocumentIdentity),
-		firestoreClient: firestoreClient,
-		desired:         desired,
+	return &FirestoreDocumentAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *firestoreDocumentModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// The url format should match the Cloud-Asset-Inventory format: https://cloud.google.com/asset-inventory/docs/resource-name-format
-	if !strings.HasPrefix(url, "//firestore.googleapis.com/") {
-		return nil, nil
-	}
-
-	url = strings.TrimPrefix(url, "//firestore.googleapis.com/")
-
+func (m *modelFirestoreDocument) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.FirestoreDocumentIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	firestoreClient, err := newFirestoreClient(ctx, m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &firestoreDocumentAdapter{
-		id:              id,
-		firestoreClient: firestoreClient,
+	return &FirestoreDocumentAdapter{
+		id:        id,
+		gcpClient: gcpClient,
 	}, nil
 }
 
-type firestoreDocumentAdapter struct {
-	id              *krm.FirestoreDocumentIdentity
-	firestoreClient *apiv1.Client
-	desired         *pb.Document
-	actual          *pb.Document
-}
-
-var _ directbase.Adapter = &firestoreDocumentAdapter{}
-
-func (a *firestoreDocumentAdapter) Find(ctx context.Context) (bool, error) {
-	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("getting FirestoreDocument", "name", fqn)
-
-	if a.id == nil {
-		return false, nil
+func (m *modelFirestoreDocument) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
 	}
 
-	req := &pb.GetDocumentRequest{Name: fqn}
-	obj, err := a.firestoreClient.GetDocument(ctx, req)
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building FirestoreDocument client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type FirestoreDocumentAdapter struct {
+	id        *krm.FirestoreDocumentIdentity
+	gcpClient *gcp.Client
+	desired   *krm.FirestoreDocument
+	actual    *pb.FirestoreDocument
+}
+
+var _ directbase.Adapter = &FirestoreDocumentAdapter{}
+
+func (a *FirestoreDocumentAdapter) Find(ctx context.Context) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("getting FirestoreDocument", "name", a.id)
+
+	req := &pb.GetFirestoreDocumentRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetFirestoreDocument(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting FirestoreDocument %q: %w", fqn, err)
+		return false, fmt.Errorf("getting FirestoreDocument %q: %w", a.id, err)
 	}
 
-	a.actual = obj
+	a.actual = resp
 	return true, nil
 }
 
-func (a *firestoreDocumentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
-	fqn := a.id.String()
-
+func (a *FirestoreDocumentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating FirestoreDocument", "name", fqn)
+	log.V(2).Info("creating FirestoreDocument", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	resource := proto.CloneOf(a.desired)
-
-	req := &pb.CreateDocumentRequest{
-		Parent:       a.id.Parent.String() + "/documents",
-		CollectionId: a.id.Collection,
-		DocumentId:   a.id.Document,
-		Document:     resource,
+	desired := a.desired.DeepCopy()
+	resource := FirestoreDocumentSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	created, err := a.firestoreClient.CreateDocument(ctx, req)
+
+	req := &pb.CreateFirestoreDocumentRequest{
+		Parent:            a.id.ParentString(),
+		CollectionId:      a.id.Collection,
+		FirestoreDocument: resource,
+	}
+	created, err := a.gcpClient.CreateFirestoreDocument(ctx, req)
 	if err != nil {
-		log.Info("error creating FirestoreDocument", "req", req, "error", err)
-		return fmt.Errorf("creating FirestoreDocument %s: %w", fqn, err)
+		return fmt.Errorf("creating FirestoreDocument %s: %w", a.id, err)
 	}
-
-	log.V(2).Info("successfully created FirestoreDocument", "name", fqn)
+	log.V(2).Info("successfully created FirestoreDocument", "name", a.id)
 
 	status := &krm.FirestoreDocumentStatus{}
-	status.ExternalRef = direct.PtrTo(a.id.String())
-	mapCtx := &direct.MapContext{}
 	status.ObservedState = FirestoreDocumentObservedState_v1alpha1_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *firestoreDocumentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	fqn := a.id.String()
-
+func (a *FirestoreDocumentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating FirestoreDocument", "name", fqn)
+	log.V(2).Info("updating FirestoreDocument", "name", a.id)
 
-	resource := proto.CloneOf(a.desired)
-
-	latest := a.actual
-
-	changedFieldPaths := changedFieldPaths(a.actual, a.desired)
-	if len(changedFieldPaths.Fields) > 0 {
-		changedFieldPaths.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, changedFieldPaths)
-
-		resource.Name = fqn
-		req := &pb.UpdateDocumentRequest{
-			Document: resource,
-		}
-		updated, err := a.firestoreClient.UpdateDocument(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating FirestoreDocument %s: %w", fqn, err)
-		}
-		log.V(2).Info("successfully updated FirestoreDocument", "name", fqn)
-		latest = updated
-	}
-
-	status := &krm.FirestoreDocumentStatus{}
-	status.ExternalRef = direct.PtrTo(a.id.String())
 	mapCtx := &direct.MapContext{}
-	status.ObservedState = FirestoreDocumentObservedState_v1alpha1_FromProto(mapCtx, latest)
+	desired := FirestoreDocumentSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+
+	diffs, updateMask, err := compareFirestoreDocument(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("FirestoreDocument resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.FirestoreDocumentStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = FirestoreDocumentObservedState_v1alpha1_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *firestoreDocumentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	fqn := a.id.String()
-	if a.actual == nil {
-		return nil, fmt.Errorf("FirestoreDocument %q not found", fqn)
+func compareFirestoreDocument(ctx context.Context, actual, desired *pb.FirestoreDocument) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, FirestoreDocumentSpec_v1alpha1_FromProto, FirestoreDocumentSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
 
+func (a *FirestoreDocumentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.FirestoreDocument{}
 	mapCtx := &direct.MapContext{}
-	objSpec := FirestoreDocumentSpec_v1alpha1_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(FirestoreDocumentSpec_v1alpha1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
 
-	obj := &krm.FirestoreDocument{
-		Spec: *objSpec,
-	}
-
-	obj.SetGroupVersionKind(krm.FirestoreDocumentGVK)
-	obj.Name = a.id.Document
-	obj.Spec.DatabaseRef.External = a.id.Parent.String()
-	if a.id.Collection != "" {
-		obj.Spec.Collection = direct.PtrTo(a.id.Collection)
-	}
-
-	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("converting FirestoreDocument to unstructured failed: %w", err)
+		return nil, err
 	}
 
-	u := &unstructured.Unstructured{
-		Object: unstructuredObj,
-	}
-
+	u.Object = uObj
+	u.SetName(a.id.Collection)
+	u.SetGroupVersionKind(krm.FirestoreDocumentGVK)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *firestoreDocumentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	fqn := a.id.String()
-
+func (a *FirestoreDocumentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting FirestoreDocument", "name", fqn)
-
-	req := &pb.DeleteDocumentRequest{
-		Name: fqn,
-	}
-	if err := a.firestoreClient.DeleteDocument(ctx, req); err != nil {
-		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent FirestoreDocument, assuming it was already deleted", "name", fqn)
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting FirestoreDocument %s: %w", fqn, err)
-	}
-	log.V(2).Info("successfully deleted FirestoreDocument", "name", fqn)
-
+	log.V(2).Info("deletion not supported for FirestoreDocument, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func changedFieldPaths(oldDoc, newDoc *pb.Document) *structuredreporting.Diff {
-	diff := &structuredreporting.Diff{}
-	for k, oldVal := range oldDoc.Fields {
-		newVal, ok := newDoc.Fields[k]
-		if !ok {
-			diff.AddField(".fields."+k, oldVal, newVal)
-			continue
-		}
-		if !proto.Equal(oldVal, newVal) {
-			diff.AddField(".fields."+k, oldVal, newVal)
-			continue
-		}
-	}
-	for k, newVal := range newDoc.Fields {
-		oldVal, ok := oldDoc.Fields[k]
-		if !ok {
-			diff.AddField(".fields."+k, oldVal, newVal)
-		}
-	}
-	return diff
 }

@@ -12,25 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.eventarc.v1.Eventarc
-// proto.message: google.cloud.eventarc.v1.MessageBus
-// crd.type: EventarcMessageBus
-// crd.version: v1alpha1
-
 package eventarc
 
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/eventarc/apiv1"
-	pb "cloud.google.com/go/eventarc/apiv1/eventarcpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/eventarc/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -38,7 +24,18 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/eventarc/apiv1"
+	pb "cloud.google.com/go/eventarc/apiv1/eventarcpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -46,174 +43,182 @@ func init() {
 }
 
 func NewMessageBusModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &messageBusModel{config: *config}, nil
+	return &modelMessageBus{config: *config}, nil
 }
 
-var _ directbase.Model = &messageBusModel{}
+var _ directbase.Model = &modelMessageBus{}
+var _ = strings.TrimPrefix
 
-type messageBusModel struct {
+type modelMessageBus struct {
 	config config.ControllerConfig
 }
 
-func (m *messageBusModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelMessageBus) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.EventarcMessageBus{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := krm.NewEventarcMessageBusIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
+	id := &krm.EventarcMessageBusIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desired := EventarcMessageBusSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Name = id.String()
-
-	// Get eventarc GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	eventarcClient, err := gcpClient.newEventarcClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &messageBusAdapter{
-		gcpClient: eventarcClient,
+	return &MessageBusAdapter{
 		id:        id,
-		desired:   desired,
-		reader:    reader,
-		obj:       obj,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *messageBusModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelMessageBus) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type messageBusAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.EventarcMessageBusIdentity
-	desired   *pb.MessageBus
-	actual    *pb.MessageBus
-	reader    client.Reader
-	obj       *krm.EventarcMessageBus
+func (m *modelMessageBus) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building MessageBus client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &messageBusAdapter{}
+type MessageBusAdapter struct {
+	id        *krm.EventarcMessageBusIdentity
+	gcpClient *gcp.Client
+	desired   *krm.EventarcMessageBus
+	actual    *pb.MessageBus
+}
 
-func (a *messageBusAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &MessageBusAdapter{}
+
+func (a *MessageBusAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting eventarc MessageBus", "name", a.id)
+	log.V(2).Info("getting MessageBus", "name", a.id)
 
-	req := &pb.GetMessageBusRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetMessageBus(ctx, req)
+	req := &pb.GetMessageBusRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetMessageBus(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting eventarc MessageBus %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting MessageBus %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *messageBusAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *MessageBusAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating eventarc MessageBus", "name", a.id)
+	log.V(2).Info("creating MessageBus", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := EventarcMessageBusSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateMessageBusRequest{
 		Parent:       a.id.ParentString(),
-		MessageBus:   a.desired,
 		MessageBusId: a.id.MessageBus,
+		MessageBus:   resource,
 	}
-
 	op, err := a.gcpClient.CreateMessageBus(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating eventarc MessageBus %q: %w", a.id.String(), err)
+		return fmt.Errorf("creating MessageBus %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for eventarc MessageBus creation %q: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create MessageBus %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created eventarc MessageBus", "name", a.id)
+	log.V(2).Info("successfully created MessageBus", "name", a.id)
 
-	// Fetch fully-populated resource after creation
-	latest, err := a.gcpClient.GetMessageBus(ctx, &pb.GetMessageBusRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting created eventarc MessageBus %q: %w", a.id.String(), err)
+	status := &krm.EventarcMessageBusStatus{}
+	status.ObservedState = EventarcMessageBusObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *messageBusAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *MessageBusAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating eventarc MessageBus", "name", a.id)
+	log.V(2).Info("updating MessageBus", "name", a.id)
 
-	diffs, updateMask, err := common.CompareBrownfieldSpec(
-		ctx,
-		&a.obj.Spec,
-		a.actual,
-		EventarcMessageBusSpec_FromProto,
-		EventarcMessageBusSpec_ToProto,
-		nil,
-	)
+	mapCtx := &direct.MapContext{}
+	desired := EventarcMessageBusSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareMessageBus(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateMessageBusRequest{
+			MessageBus: desired,
+			UpdateMask: updateMask,
+		}
+		op, err := a.gcpClient.UpdateMessageBus(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating MessageBus %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update MessageBus %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated MessageBus", "name", a.id)
+
+		status := &krm.EventarcMessageBusStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = EventarcMessageBusObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateMessageBusRequest{
-		MessageBus: a.desired,
-		UpdateMask: updateMask,
-	}
-
-	op, err := a.gcpClient.UpdateMessageBus(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating eventarc MessageBus %s: %w", a.id.String(), err)
-	}
-
-	_, err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for eventarc MessageBus update %s: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully updated eventarc MessageBus", "name", a.id)
-
-	// Fetch fully-populated resource after update
-	latest, err := a.gcpClient.GetMessageBus(ctx, &pb.GetMessageBusRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting updated eventarc MessageBus %q: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *messageBusAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareMessageBus(ctx context.Context, actual, desired *pb.MessageBus) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, EventarcMessageBusSpec_FromProto, EventarcMessageBusSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *MessageBusAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -225,9 +230,8 @@ func (a *messageBusAdapter) Export(ctx context.Context) (*unstructured.Unstructu
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = &a.id.Location
+	obj.Spec.Location = a.id.Location
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.MessageBus)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
@@ -237,43 +241,30 @@ func (a *messageBusAdapter) Export(ctx context.Context) (*unstructured.Unstructu
 
 	u.Object = uObj
 	u.SetName(a.id.MessageBus)
-	u.SetNamespace(obj.Namespace)
 	u.SetGroupVersionKind(krm.EventarcMessageBusGVK)
-
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *messageBusAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *MessageBusAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting eventarc MessageBus", "name", a.id)
+	log.V(2).Info("deleting MessageBus", "name", a.id)
 
-	req := &pb.DeleteMessageBusRequest{Name: a.id.String()}
+	req := &pb.DeleteMessageBusRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteMessageBus(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("eventarc MessageBus not found", "name", a.id)
 			return false, nil
 		}
-		return false, fmt.Errorf("deleting eventarc MessageBus %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting MessageBus %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	log.V(2).Info("successfully deleted MessageBus", "name", a.id)
+	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for eventarc MessageBus deletion %q: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete MessageBus %s: %w", a.id, err)
+		}
 	}
-
-	log.V(2).Info("successfully deleted eventarc MessageBus", "name", a.id)
 	return true, nil
-}
-
-func (a *messageBusAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.MessageBus) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.EventarcMessageBusStatus{}
-	status.ObservedState = EventarcMessageBusObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(latest.Name)
-	return op.UpdateStatus(ctx, status, nil)
 }

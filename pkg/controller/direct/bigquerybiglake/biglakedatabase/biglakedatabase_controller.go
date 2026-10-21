@@ -17,15 +17,15 @@ package biglakedatabase
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/bigquerybiglake/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/bigquerybiglake"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/bigquery/biglake/apiv1"
 	bigquerybiglakepb "cloud.google.com/go/bigquery/biglake/apiv1/biglakepb"
@@ -34,7 +34,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
 
@@ -47,9 +46,50 @@ func NewDatabaseModel(ctx context.Context, config *config.ControllerConfig) (dir
 }
 
 var _ directbase.Model = &modelDatabase{}
+var _ = strings.TrimPrefix
 
 type modelDatabase struct {
 	config config.ControllerConfig
+}
+
+func (m *modelDatabase) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.BigLakeDatabase{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.DatabaseIdentity)
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &DatabaseAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelDatabase) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.DatabaseIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &DatabaseAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
 }
 
 func (m *modelDatabase) client(ctx context.Context) (*gcp.MetastoreClient, error) {
@@ -58,6 +98,7 @@ func (m *modelDatabase) client(ctx context.Context) (*gcp.MetastoreClient, error
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewMetastoreRESTClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building Database client: %w", err)
@@ -65,63 +106,23 @@ func (m *modelDatabase) client(ctx context.Context) (*gcp.MetastoreClient, error
 	return gcpClient, err
 }
 
-func (m *modelDatabase) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.BigLakeDatabase{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-
-	copied := obj.DeepCopy()
-	desired := bigquerybiglake.BigLakeDatabaseSpec_v1alpha1_ToProto(mapCtx, &copied.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	// Get bigquerybiglake GCP client
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &DatabaseAdapter{
-		id:        id.(*krm.DatabaseIdentity),
-		gcpClient: gcpClient,
-		desired:   desired,
-	}, nil
-}
-
-func (m *modelDatabase) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// TODO: Support URLs
-	return nil, nil
-}
-
 type DatabaseAdapter struct {
 	id        *krm.DatabaseIdentity
 	gcpClient *gcp.MetastoreClient
-	desired   *bigquerybiglakepb.Database
+	desired   *krm.BigLakeDatabase
 	actual    *bigquerybiglakepb.Database
 }
 
 var _ directbase.Adapter = &DatabaseAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *DatabaseAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting Database", "name", a.id)
 
-	req := &bigquerybiglakepb.GetDatabaseRequest{Name: a.id.String()}
-	databasepb, err := a.gcpClient.GetDatabase(ctx, req)
+	req := &bigquerybiglakepb.GetDatabaseRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetDatabase(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -129,29 +130,34 @@ func (a *DatabaseAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting Database %q: %w", a.id, err)
 	}
 
-	a.actual = databasepb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *DatabaseAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating Database", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := BigLakeDatabaseSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
 	req := &bigquerybiglakepb.CreateDatabaseRequest{
 		Parent:     a.id.Parent().String(),
-		Database:   a.desired,
 		DatabaseId: a.id.ID(),
+		Database:   resource,
 	}
 	created, err := a.gcpClient.CreateDatabase(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating Database %s: %w", a.id, err)
 	}
-
 	log.V(2).Info("successfully created Database", "name", a.id)
 
-	mapCtx := &direct.MapContext{}
 	status := &krm.BigLakeDatabaseStatus{}
-	status.ObservedState = bigquerybiglake.BigLakeDatabaseObservedState_v1alpha1_FromProto(mapCtx, created)
+	status.ObservedState = BigLakeDatabaseObservedState_v1alpha1_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
@@ -159,56 +165,61 @@ func (a *DatabaseAdapter) Create(ctx context.Context, createOp *directbase.Creat
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *DatabaseAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating Database", "name", a.id)
 
-	paths := make(sets.Set[string])
-	var err error
-	paths, err = common.CompareProtoMessage(a.desired, a.actual, common.BasicDiff)
-	if err != nil {
-		return err
-	}
-
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return nil
-	}
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-	for path := range paths {
-		report.AddField(path, nil, nil)
-	}
-	structuredreporting.ReportDiff(ctx, report)
-
-	updateMask := &fieldmaskpb.FieldMask{
-		Paths: sets.List(paths),
-	}
-	a.desired.Name = a.id.String()
-
-	req := &bigquerybiglakepb.UpdateDatabaseRequest{
-		UpdateMask: updateMask,
-		Database:   a.desired,
-	}
-	updated, err := a.gcpClient.UpdateDatabase(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating Database %s: %w", a.id, err)
-	}
-
-	log.V(2).Info("successfully updated Database", "name", a.id)
-
 	mapCtx := &direct.MapContext{}
-
-	status := &krm.BigLakeDatabaseStatus{}
-	status.ObservedState = bigquerybiglake.BigLakeDatabaseObservedState_v1alpha1_FromProto(mapCtx, updated)
+	desired := BigLakeDatabaseSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	return updateOp.UpdateStatus(ctx, status, nil)
+
+	diffs, updateMask, err := compareDatabase(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &bigquerybiglakepb.UpdateDatabaseRequest{
+			Database:   desired,
+			UpdateMask: updateMask,
+		}
+		updated, err := a.gcpClient.UpdateDatabase(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Database %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Database", "name", a.id)
+
+		status := &krm.BigLakeDatabaseStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = BigLakeDatabaseObservedState_v1alpha1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func compareDatabase(ctx context.Context, actual, desired *bigquerybiglakepb.Database) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BigLakeDatabaseSpec_v1alpha1_FromProto, BigLakeDatabaseSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
 func (a *DatabaseAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -217,47 +228,43 @@ func (a *DatabaseAdapter) Export(ctx context.Context) (*unstructured.Unstructure
 
 	obj := &krm.BigLakeDatabase{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(bigquerybiglake.BigLakeDatabaseSpec_v1alpha1_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(BigLakeDatabaseSpec_v1alpha1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	externalRef := a.actual.GetName()
-	var id krm.DatabaseIdentity
-	if err := id.FromExternal(externalRef); err != nil {
-		return nil, fmt.Errorf("parsing external ref %q: %w", externalRef, err)
-	}
-	obj.Spec.ParentRef = &krm.BigQueryBigLakeCatalogRef{
-		External: id.Parent().String(),
-	}
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.ID())
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.BigLakeDatabaseGVK)
-
-	u.Object = uObj
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *DatabaseAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting Database", "name", a.id)
 
-	req := &bigquerybiglakepb.DeleteDatabaseRequest{Name: a.id.String()}
-	_, err := a.gcpClient.DeleteDatabase(ctx, req)
+	req := &bigquerybiglakepb.DeleteDatabaseRequest{
+		Name: a.id.String(),
+	}
+	op, err := a.gcpClient.DeleteDatabase(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent Database, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting Database %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted Database", "name", a.id)
-
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Database %s: %w", a.id, err)
+		}
+	}
 	return true, nil
 }

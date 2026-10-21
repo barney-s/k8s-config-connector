@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,53 +17,79 @@ package secretmanager
 import (
 	"context"
 	"fmt"
-	"reflect"
-	"regexp"
-
-	gcp "cloud.google.com/go/secretmanager/apiv1"
-	secretmanagerpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/secretmanager/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/go-logr/logr"
-
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/secretmanager/apiv1"
+	secretmanagerpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
 
-const (
-	ctrlName = "secretmanager-controller"
-)
-
 func init() {
-	registry.RegisterModel(krm.SecretManagerSecretGVK, NewModel)
+	registry.RegisterModel(krm.SecretManagerSecretGVK, NewSecretModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &secretModel{config: *config}, nil
+func NewSecretModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelSecret{config: *config}, nil
 }
 
-var _ directbase.Model = &secretModel{}
+var _ directbase.Model = &modelSecret{}
+var _ = strings.TrimPrefix
 
-type secretModel struct {
+type modelSecret struct {
 	config config.ControllerConfig
 }
 
-func (m *secretModel) client(ctx context.Context) (*gcp.Client, error) {
+func (m *modelSecret) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.SecretManagerSecret{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	id := &krm.SecretIdentity{}
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &SecretAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelSecret) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelSecret) client(ctx context.Context) (*gcp.Client, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building Secret client: %w", err)
@@ -71,105 +97,35 @@ func (m *secretModel) client(ctx context.Context) (*gcp.Client, error) {
 	return gcpClient, err
 }
 
-func (m *secretModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.SecretManagerSecret{}
-
-	copied := u.DeepCopy()
-	if err := label.ComputeLabels(copied); err != nil {
-		return nil, err
-	}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(copied.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := krm.NewSecretIdentity(ctx, reader, obj, copied)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	// Get secretmanager GCP client
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &Adapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   obj,
-	}, nil
-}
-
-func (m *secretModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// TODO: Support URLs
-	return nil, nil
-}
-
-type Adapter struct {
+type SecretAdapter struct {
 	id        *krm.SecretIdentity
 	gcpClient *gcp.Client
 	desired   *krm.SecretManagerSecret
 	actual    *secretmanagerpb.Secret
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &SecretAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *SecretAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting SecretManagerSecret", "name", a.id)
+	log.V(2).Info("getting Secret", "name", a.id)
 
-	req := &secretmanagerpb.GetSecretRequest{Name: a.id.String()}
-	secretpb, err := a.gcpClient.GetSecret(ctx, req)
+	req := &secretmanagerpb.GetSecretRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetSecret(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting SecretManagerSecret %q: %w", a.id, err)
+		return false, fmt.Errorf("getting Secret %q: %w", a.id, err)
 	}
 
-	a.actual = secretpb
+	a.actual = resp
 	return true, nil
 }
 
-func MergeMap(a, b map[string]string) map[string]string {
-	copy := make(map[string]string, len(a))
-	for k, v := range a {
-		copy[k] = v
-	}
-	for k, v := range b {
-		copy[k] = v
-	}
-	return copy
-}
-
-// Annotation keys must be between 1 and 63 characters long
-// have a UTF-8 encoding of maximum 128 bytes
-// begin and end with an alphanumeric character ([a-z0-9A-Z]),
-// may have dashes (-), underscores (_), dots (.), and alphanumerics in between these symbols.
-func IsValidAnnotation(s string) bool {
-	var validPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9\.\-_]*[a-zA-Z0-9]$`)
-
-	// A string is valid if it matches the pattern AND its length is between 1 and 63.
-	return validPattern.MatchString(s) && len(s) >= 1 && len(s) <= 63
-}
-
-func ComputeAnnotations(secret *krm.SecretManagerSecret, log *logr.Logger) map[string]string {
-	annotations := MergeMap(secret.GetAnnotations(), secret.Spec.Annotations)
-	for key := range annotations {
-		if !IsValidAnnotation(key) {
-			log.V(2).Info("Remove annotation with invalid key", "key", key)
-			delete(annotations, key)
-		}
-	}
-	return annotations
-}
-
-func (a *Adapter) Create(ctx context.Context, op *directbase.CreateOperation) error {
+func (a *SecretAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating Secret", "name", a.id)
 	mapCtx := &direct.MapContext{}
@@ -179,9 +135,8 @@ func (a *Adapter) Create(ctx context.Context, op *directbase.CreateOperation) er
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	resource.Annotations = ComputeAnnotations(desired, &log)
-	// GCP service does not allow setting version aliases during Secret creation.
-	resource.VersionAliases = nil
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
 	req := &secretmanagerpb.CreateSecretRequest{
 		Parent:   a.id.Parent().String(),
 		SecretId: a.id.ID(),
@@ -194,93 +149,72 @@ func (a *Adapter) Create(ctx context.Context, op *directbase.CreateOperation) er
 	log.V(2).Info("successfully created Secret", "name", a.id)
 
 	status := &krm.SecretManagerSecretStatus{}
-	status.ObservedState = SecretManagerSecretStatusObservedState_FromProto(mapCtx, created)
+	status.ObservedState = SecretManagerSecretObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	external := a.id.String()
-	status.ExternalRef = &external
-	status.Name = created.Name
-	if err = op.UpdateStatus(ctx, status, nil); err != nil {
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
+}
+
+func (a *SecretAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating Secret", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := SecretManagerSecretSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareSecret(ctx, a.actual, desired)
+	if err != nil {
 		return err
 	}
-	// VersionAliases cannot be set in Creation, requeing the result to update the versionAlias without waiting for the reconciliation interval.
-	if a.desired.Spec.VersionAliases != nil {
-		op.RequeueRequested = true
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &secretmanagerpb.UpdateSecretRequest{
+			Secret:     desired,
+			UpdateMask: updateMask,
+		}
+		updated, err := a.gcpClient.UpdateSecret(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Secret %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Secret", "name", a.id)
+
+		status := &krm.SecretManagerSecretStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = SecretManagerSecretObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
+
 	return nil
 }
 
-func topicsEqual(desired []*krm.TopicRef, actual []*secretmanagerpb.Topic) bool {
-
-	externalsDesired := sets.Set[string]{}
-	externalsActual := sets.Set[string]{}
-	for _, topicRef := range desired {
-		externalsDesired.Insert(topicRef.PubSubTopicRef.External)
+func compareSecret(ctx context.Context, actual, desired *secretmanagerpb.Secret) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, SecretManagerSecretSpec_FromProto, SecretManagerSecretSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	for _, topic := range actual {
-		externalsActual.Insert(topic.GetName())
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
 	}
-	return reflect.DeepEqual(sets.List(externalsDesired), sets.List(externalsActual))
+	return diffs, updateMask, nil
 }
 
-func (a *Adapter) Update(ctx context.Context, op *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating Secret", "name", a.id)
-	mapCtx := &direct.MapContext{}
-
-	desired := a.desired.DeepCopy()
-	resource := SecretManagerSecretSpec_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	resource.Annotations = ComputeAnnotations(desired, &log)
-	// the GCP service use *name* to identify the resource.
-	resource.Name = a.id.String()
-	resource.Etag = a.actual.Etag
-	paths, err := common.CompareProtoMessage(resource, a.actual, common.BasicDiff)
-	if err != nil {
-		return err
-	}
-	if paths.Has("ttl") {
-		paths = paths.Delete("ttl")
-		resource.Expiration = a.actual.Expiration
-	}
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return nil
-	}
-
-	report := &structuredreporting.Diff{Object: op.GetUnstructured()}
-	for path := range paths {
-		report.AddField(path, nil, nil)
-	}
-	structuredreporting.ReportDiff(ctx, report)
-
-	req := &secretmanagerpb.UpdateSecretRequest{
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: sets.List(paths)},
-		Secret:     resource,
-	}
-	updated, err := a.gcpClient.UpdateSecret(ctx, req)
-	if err != nil {
-		return fmt.Errorf("Secret %s waiting update: %w", a.id, err)
-	}
-	log.V(2).Info("successfully updated Secret", "name", a.id)
-
-	status := &krm.SecretManagerSecretStatus{}
-	status.ObservedState = SecretManagerSecretStatusObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	// Set externalRef. This field is empty after migration from the TF-based controller to the direct.
-	external := a.id.String()
-	status.ExternalRef = &external
-
-	status.Name = updated.Name
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *SecretAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -292,22 +226,31 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.SecretManagerSecretGVK)
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *SecretAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting Secret", "name", a.id)
 
-	req := &secretmanagerpb.DeleteSecretRequest{Name: a.id.String()}
+	req := &secretmanagerpb.DeleteSecretRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteSecret(ctx, req)
 	if err != nil {
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
 		return false, fmt.Errorf("deleting Secret %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted Secret", "name", a.id)

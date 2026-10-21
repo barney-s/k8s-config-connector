@@ -17,21 +17,20 @@ package securitycentermanagement
 import (
 	"context"
 	"fmt"
-
-	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/securitycentermanagement/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/securitycentermanagement/apiv1"
-
 	securitycentermanagementpb "cloud.google.com/go/securitycentermanagement/apiv1/securitycentermanagementpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,9 +46,40 @@ func NewEventThreatDetectionCustomModuleModel(ctx context.Context, config *confi
 }
 
 var _ directbase.Model = &modelEventThreatDetectionCustomModule{}
+var _ = strings.TrimPrefix
 
 type modelEventThreatDetectionCustomModule struct {
 	config config.ControllerConfig
+}
+
+func (m *modelEventThreatDetectionCustomModule) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.SecurityCenterManagementEventThreatDetectionCustomModule{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.SecurityCenterManagementEventThreatDetectionCustomModuleIdentity)
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &EventThreatDetectionCustomModuleAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelEventThreatDetectionCustomModule) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
 }
 
 func (m *modelEventThreatDetectionCustomModule) client(ctx context.Context) (*gcp.Client, error) {
@@ -58,40 +88,12 @@ func (m *modelEventThreatDetectionCustomModule) client(ctx context.Context) (*gc
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building EventThreatDetectionCustomModule client: %w", err)
 	}
 	return gcpClient, err
-}
-
-func (m *modelEventThreatDetectionCustomModule) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.SecurityCenterManagementEventThreatDetectionCustomModule{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get securitycentermanagement GCP client
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &EventThreatDetectionCustomModuleAdapter{
-		id:        id.(*krm.SecurityCenterManagementEventThreatDetectionCustomModuleIdentity),
-		gcpClient: gcpClient,
-		desired:   obj,
-	}, nil
-}
-
-func (m *modelEventThreatDetectionCustomModule) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	return nil, nil
 }
 
 type EventThreatDetectionCustomModuleAdapter struct {
@@ -103,16 +105,14 @@ type EventThreatDetectionCustomModuleAdapter struct {
 
 var _ directbase.Adapter = &EventThreatDetectionCustomModuleAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *EventThreatDetectionCustomModuleAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting EventThreatDetectionCustomModule", "name", a.id)
 
-	req := &securitycentermanagementpb.GetEventThreatDetectionCustomModuleRequest{Name: a.id.String()}
-	eventthreatdetectioncustommodulepb, err := a.gcpClient.GetEventThreatDetectionCustomModule(ctx, req)
+	req := &securitycentermanagementpb.GetEventThreatDetectionCustomModuleRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetEventThreatDetectionCustomModule(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -120,11 +120,10 @@ func (a *EventThreatDetectionCustomModuleAdapter) Find(ctx context.Context) (boo
 		return false, fmt.Errorf("getting EventThreatDetectionCustomModule %q: %w", a.id, err)
 	}
 
-	a.actual = eventthreatdetectioncustommodulepb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *EventThreatDetectionCustomModuleAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating EventThreatDetectionCustomModule", "name", a.id)
@@ -137,8 +136,9 @@ func (a *EventThreatDetectionCustomModuleAdapter) Create(ctx context.Context, cr
 	}
 
 	req := &securitycentermanagementpb.CreateEventThreatDetectionCustomModuleRequest{
-		Parent:                           a.id.ParentString(),
-		EventThreatDetectionCustomModule: resource,
+		Parent:                             a.id.ParentString(),
+		EventThreatDetectionCustomModuleId: a.id.Organization,
+		EventThreatDetectionCustomModule:   resource,
 	}
 	created, err := a.gcpClient.CreateEventThreatDetectionCustomModule(ctx, req)
 	if err != nil {
@@ -151,66 +151,65 @@ func (a *EventThreatDetectionCustomModuleAdapter) Create(ctx context.Context, cr
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.LazyPtr(created.GetName())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *EventThreatDetectionCustomModuleAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating EventThreatDetectionCustomModule", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-
-	desiredPb := SecurityCenterManagementEventThreatDetectionCustomModuleSpec_ToProto(mapCtx, &a.desired.DeepCopy().Spec)
+	desired := SecurityCenterManagementEventThreatDetectionCustomModuleSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	clonedDesired := proto.Clone(desiredPb).(*securitycentermanagementpb.EventThreatDetectionCustomModule)
-	actualSpec := SecurityCenterManagementEventThreatDetectionCustomModuleSpec_FromProto(mapCtx, a.actual)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	maskedActual := SecurityCenterManagementEventThreatDetectionCustomModuleSpec_ToProto(mapCtx, actualSpec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := compareEventThreatDetectionCustomModule(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	updated := a.actual
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-	} else {
-		log.V(2).Info("fields need update", "name", a.id, "updateMask", updateMask)
-
+	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desiredPb.Name = a.id.String()
+		desired.Name = a.id.String()
+
 		req := &securitycentermanagementpb.UpdateEventThreatDetectionCustomModuleRequest{
+			EventThreatDetectionCustomModule: desired,
 			UpdateMask:                       updateMask,
-			EventThreatDetectionCustomModule: desiredPb,
 		}
-		updated, err = a.gcpClient.UpdateEventThreatDetectionCustomModule(ctx, req)
+		updated, err := a.gcpClient.UpdateEventThreatDetectionCustomModule(ctx, req)
 		if err != nil {
 			return fmt.Errorf("updating EventThreatDetectionCustomModule %s: %w", a.id, err)
 		}
 		log.V(2).Info("successfully updated EventThreatDetectionCustomModule", "name", a.id)
+
+		status := &krm.SecurityCenterManagementEventThreatDetectionCustomModuleStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = SecurityCenterManagementEventThreatDetectionCustomModuleObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	status := &krm.SecurityCenterManagementEventThreatDetectionCustomModuleStatus{}
-	status.ObservedState = SecurityCenterManagementEventThreatDetectionCustomModuleObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func compareEventThreatDetectionCustomModule(ctx context.Context, actual, desired *securitycentermanagementpb.EventThreatDetectionCustomModule) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, SecurityCenterManagementEventThreatDetectionCustomModuleSpec_FromProto, SecurityCenterManagementEventThreatDetectionCustomModuleSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
 func (a *EventThreatDetectionCustomModuleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -223,32 +222,30 @@ func (a *EventThreatDetectionCustomModuleAdapter) Export(ctx context.Context) (*
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.OrganizationRef = &refs.OrganizationRef{External: a.id.Organization}
-	obj.Spec.Location = &a.id.Location
+	obj.Spec.Location = a.id.Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.id.EventThreatDetectionCustomModule)
-	u.SetGroupVersionKind(krm.SecurityCenterManagementEventThreatDetectionCustomModuleGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.Organization)
+	u.SetGroupVersionKind(krm.SecurityCenterManagementEventThreatDetectionCustomModuleGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *EventThreatDetectionCustomModuleAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting EventThreatDetectionCustomModule", "name", a.id)
 
-	req := &securitycentermanagementpb.DeleteEventThreatDetectionCustomModuleRequest{Name: a.id.String()}
+	req := &securitycentermanagementpb.DeleteEventThreatDetectionCustomModuleRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteEventThreatDetectionCustomModule(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent EventThreatDetectionCustomModule, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting EventThreatDetectionCustomModule %s: %w", a.id, err)
 	}

@@ -17,16 +17,6 @@ package clouddeploy
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/deploy/apiv1"
-	pb "cloud.google.com/go/deploy/apiv1/deploypb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/clouddeploy/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -36,6 +26,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/deploy/apiv1"
+	pb "cloud.google.com/go/deploy/apiv1/deploypb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -46,56 +46,34 @@ func NewCustomTargetTypeModel(ctx context.Context, config *config.ControllerConf
 	return &modelCustomTargetType{config: *config}, nil
 }
 
+var _ directbase.Model = &modelCustomTargetType{}
+var _ = strings.TrimPrefix
+
 type modelCustomTargetType struct {
 	config config.ControllerConfig
-}
-
-func (m *modelCustomTargetType) client(ctx context.Context) (*gcp.CloudDeployClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewCloudDeployRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building CustomTargetType client: %w", err)
-	}
-	return gcpClient, nil
 }
 
 func (m *modelCustomTargetType) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
-	obj := &krm.CloudDeployCustomTargetType{}
+	_ = reader
+	obj := &krm.CustomTargetType{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	id := &krm.CustomTargetTypeIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	id, err := krm.NewCustomTargetTypeIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
 	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := CustomTargetTypeSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Name = id.String()
-
 	return &CustomTargetTypeAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
@@ -104,120 +82,140 @@ func (m *modelCustomTargetType) AdapterForURL(ctx context.Context, url string) (
 	return nil, nil
 }
 
+func (m *modelCustomTargetType) client(ctx context.Context) (*gcp.CloudDeployClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewCloudDeployRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building CustomTargetType client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type CustomTargetTypeAdapter struct {
 	id        *krm.CustomTargetTypeIdentity
 	gcpClient *gcp.CloudDeployClient
-	desired   *pb.CustomTargetType
+	desired   *krm.CustomTargetType
 	actual    *pb.CustomTargetType
 }
 
+var _ directbase.Adapter = &CustomTargetTypeAdapter{}
+
 func (a *CustomTargetTypeAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("finding CustomTargetType", "name", a.id.String())
+	log.V(2).Info("getting CustomTargetType", "name", a.id)
 
 	req := &pb.GetCustomTargetTypeRequest{
 		Name: a.id.String(),
 	}
-	actual, err := a.gcpClient.GetCustomTargetType(ctx, req)
+	resp, err := a.gcpClient.GetCustomTargetType(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting CustomTargetType %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting CustomTargetType %q: %w", a.id, err)
 	}
-	a.actual = actual
+
+	a.actual = resp
 	return true, nil
 }
 
 func (a *CustomTargetTypeAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating CustomTargetType", "name", a.id.String())
+	log.V(2).Info("creating CustomTargetType", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := CustomTargetTypeSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateCustomTargetTypeRequest{
 		Parent:             a.id.Parent().String(),
-		CustomTargetType:   a.desired,
 		CustomTargetTypeId: a.id.ID(),
+		CustomTargetType:   resource,
 	}
 	op, err := a.gcpClient.CreateCustomTargetType(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating CustomTargetType %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating CustomTargetType %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("CustomTargetType %s waiting creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create CustomTargetType %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created CustomTargetType", "name", a.id.String())
+	log.V(2).Info("successfully created CustomTargetType", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
-}
-
-func (a *CustomTargetTypeAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating CustomTargetType", "name", a.id.String())
-
-	diffs, updateMask, err := compareCustomTargetType(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	var updated *pb.CustomTargetType
-	if diffs.HasDiff() {
-		structuredreporting.ReportDiff(ctx, diffs)
-		req := &pb.UpdateCustomTargetTypeRequest{
-			UpdateMask:       updateMask,
-			CustomTargetType: a.desired,
-		}
-		op, err := a.gcpClient.UpdateCustomTargetType(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating CustomTargetType %s: %w", a.id.String(), err)
-		}
-		updated, err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("CustomTargetType %s waiting update: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated CustomTargetType", "name", a.id.String())
-	} else {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		updated = a.actual
-	}
-
-	return a.updateStatus(ctx, updateOp, updated)
-}
-
-func (a *CustomTargetTypeAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting CustomTargetType", "name", a.id.String())
-
-	req := &pb.DeleteCustomTargetTypeRequest{
-		Name: a.id.String(),
-	}
-	op, err := a.gcpClient.DeleteCustomTargetType(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting CustomTargetType %s: %w", a.id.String(), err)
-	}
-	err = op.Wait(ctx)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("waiting delete CustomTargetType %s: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully deleted CustomTargetType", "name", a.id.String())
-	return true, nil
-}
-
-func (a *CustomTargetTypeAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.CustomTargetType) error {
-	mapCtx := &direct.MapContext{}
 	status := &krm.CustomTargetTypeStatus{}
-	status.ObservedState = CustomTargetTypeObservedState_v1alpha1_FromProto(mapCtx, latest)
+	status.ObservedState = CustomTargetTypeObservedState_v1alpha1_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
+	return createOp.UpdateStatus(ctx, status, nil)
+}
+
+func (a *CustomTargetTypeAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating CustomTargetType", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := CustomTargetTypeSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareCustomTargetType(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateCustomTargetTypeRequest{
+			CustomTargetType: desired,
+			UpdateMask:       updateMask,
+		}
+		op, err := a.gcpClient.UpdateCustomTargetType(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating CustomTargetType %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update CustomTargetType %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated CustomTargetType", "name", a.id)
+
+		status := &krm.CustomTargetTypeStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = CustomTargetTypeObservedState_v1alpha1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareCustomTargetType(ctx context.Context, actual, desired *pb.CustomTargetType) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, CustomTargetTypeSpec_v1alpha1_FromProto, CustomTargetTypeSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *CustomTargetTypeAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -226,40 +224,46 @@ func (a *CustomTargetTypeAdapter) Export(ctx context.Context) (*unstructured.Uns
 	}
 	u := &unstructured.Unstructured{}
 
-	obj := &krm.CloudDeployCustomTargetType{}
+	obj := &krm.CustomTargetType{}
 	mapCtx := &direct.MapContext{}
 	obj.Spec = direct.ValueOf(CustomTargetTypeSpec_v1alpha1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
-	obj.Spec.Location = a.id.Parent().Location
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("error converting to unstructured: %w", err)
+		return nil, err
 	}
 
 	u.Object = uObj
 	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.CustomTargetTypeGVK)
-
 	return u, nil
 }
 
-func compareCustomTargetType(ctx context.Context, actual, desired *pb.CustomTargetType) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, CustomTargetTypeSpec_v1alpha1_FromProto, CustomTargetTypeSpec_v1alpha1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
+func (a *CustomTargetTypeAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deleting CustomTargetType", "name", a.id)
 
-	clonedDesired := proto.Clone(desired).(*pb.CustomTargetType)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
+	req := &pb.DeleteCustomTargetTypeRequest{
+		Name: a.id.String(),
 	}
-	return diffs, updateMask, nil
+	op, err := a.gcpClient.DeleteCustomTargetType(ctx, req)
+	if err != nil {
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deleting CustomTargetType %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully deleted CustomTargetType", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete CustomTargetType %s: %w", a.id, err)
+		}
+	}
+	return true, nil
 }

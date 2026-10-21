@@ -1,10 +1,10 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//      http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,37 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.batch.v1.BatchService
-// proto.message: google.cloud.batch.v1.Job
-// crd.type: BatchJob
-// crd.version: v1alpha1
-
 package batch
 
 import (
 	"context"
 	"fmt"
-
-	batch "cloud.google.com/go/batch/apiv1"
-	batchpb "cloud.google.com/go/batch/apiv1/batchpb"
-	"google.golang.org/api/option"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/batch/v1alpha1"
-	v1alpha1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/batch/v1alpha1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/common/parent"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
-	"google.golang.org/protobuf/proto"
+	"strings"
+
+	gcp "cloud.google.com/go/batch/apiv1"
+	batchpb "cloud.google.com/go/batch/apiv1/batchpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -50,178 +44,173 @@ func init() {
 }
 
 func NewJobModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &jobModel{config: *config}, nil
+	return &modelJob{config: *config}, nil
 }
 
-var _ directbase.Model = &jobModel{}
+var _ directbase.Model = &modelJob{}
+var _ = strings.TrimPrefix
 
-type jobModel struct {
+type modelJob struct {
 	config config.ControllerConfig
 }
 
-func (m *jobModel) Client(ctx context.Context, projectID string) (*batch.Client, error) {
-	var opts []option.ClientOption
-
-	config := m.config
-
-	// Workaround for an unusual behaviour (bug?):
-	//  the service requires that a quota project be set
-	if !config.UserProjectOverride || config.BillingProject == "" {
-		config.UserProjectOverride = true
-		config.BillingProject = projectID
-	}
-
-	opts, err := config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-
-	gcpClient, err := batch.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building batch job client: %w", err)
-	}
-
-	return gcpClient, err
-}
-
-func (m *jobModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelJob) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.BatchJob{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	// TODO: The ComputeNetworkRef and ComputeSubnetworkRef misses normalization.
+	id := i.(*v1alpha1.JobIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, err
-	}
-	mapCtx := &direct.MapContext{}
-	desired := BatchJobSpec_ToProto(mapCtx, &obj.Spec)
-	if err := mapCtx.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	desired.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
-	gcpClient, err := m.Client(ctx, id.(*v1alpha1.JobIdentity).Parent().ProjectID)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &jobAdapter{
+	return &JobAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		id:        id.(*v1alpha1.JobIdentity),
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *jobModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelJob) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type jobAdapter struct {
-	gcpClient *batch.Client
+func (m *modelJob) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Job client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type JobAdapter struct {
 	id        *v1alpha1.JobIdentity
-	desired   *batchpb.Job
+	gcpClient *gcp.Client
+	desired   *krm.BatchJob
 	actual    *batchpb.Job
 }
 
-var _ directbase.Adapter = &jobAdapter{}
+var _ directbase.Adapter = &JobAdapter{}
 
-func (a *jobAdapter) Find(ctx context.Context) (bool, error) {
+func (a *JobAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.Info("getting batch job", "name", a.id)
+	log.V(2).Info("getting Job", "name", a.id)
 
-	req := &batchpb.GetJobRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetJob(ctx, req)
+	req := &batchpb.GetJobRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetJob(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting batch job %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Job %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *jobAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *JobAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.Info("creating batch job", "name", a.id)
+	log.V(2).Info("creating Job", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := BatchJobSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &batchpb.CreateJobRequest{
 		Parent: a.id.Parent().String(),
-		Job:    a.desired,
 		JobId:  a.id.ID(),
+		Job:    resource,
 	}
-	created, err := a.gcpClient.CreateJob(ctx, req)
+	op, err := a.gcpClient.CreateJob(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating batch job %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating Job %s: %w", a.id, err)
 	}
-	log.Info("successfully created batch job in gcp", "name", a.id)
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create Job %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created Job", "name", a.id)
 
 	status := &krm.BatchJobStatus{}
-	mapCtx := &direct.MapContext{}
 	status.ObservedState = BatchJobObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// BatchJob does not support update.
-func (a *jobAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *JobAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.Info("updating batch job", "name", a.id)
+	log.V(2).Info("updating Job", "name", a.id)
 
-	desiredpb := proto.CloneOf(a.desired)
-	paths, err := common.CompareProtoMessage(desiredpb, a.actual, common.BasicDiff)
+	mapCtx := &direct.MapContext{}
+	desired := BatchJobSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareJob(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-	if len(paths) != 0 {
-		report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-		for path := range paths {
-			report.AddField(path, nil, nil)
-		}
-		structuredreporting.ReportDiff(ctx, report)
-
-		log.V(2).Info("This resource does not support update", "name", a.id.String())
-		return nil
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("BatchJob resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
 	status := &krm.BatchJobStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = BatchJobObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *jobAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.Info("deleting batch job", "name", a.id)
-
-	req := &batchpb.DeleteJobRequest{Name: a.id.String()}
-	op, err := a.gcpClient.DeleteJob(ctx, req)
+func compareJob(ctx context.Context, actual, desired *batchpb.Job) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BatchJobSpec_FromProto, BatchJobSpec_ToProto)
 	if err != nil {
-		return false, fmt.Errorf("deleting batch job %s: %w", a.id.String(), err)
+		return nil, nil, err
 	}
-	log.Info("successfully deleted batch job", "name", a.id)
-
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return false, fmt.Errorf("waiting for deletion of batch job %s: %w", a.id.String(), err)
-		}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
 	}
-
-	return true, nil
+	return diffs, updateMask, nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *jobAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *JobAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -233,18 +222,39 @@ func (a *jobAdapter) Export(ctx context.Context) (*unstructured.Unstructured, er
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ParentRef = &parent.ProjectAndLocationRef{
-		ProjectRef: &v1beta1.ProjectRef{External: a.id.Parent().ProjectID},
-		Location:   a.id.Parent().Location,
-	}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.BatchJobGVK)
-
-	u.Object = uObj
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
+}
+
+func (a *JobAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deleting Job", "name", a.id)
+
+	req := &batchpb.DeleteJobRequest{
+		Name: a.id.String(),
+	}
+	op, err := a.gcpClient.DeleteJob(ctx, req)
+	if err != nil {
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deleting Job %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully deleted Job", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Job %s: %w", a.id, err)
+		}
+	}
+	return true, nil
 }

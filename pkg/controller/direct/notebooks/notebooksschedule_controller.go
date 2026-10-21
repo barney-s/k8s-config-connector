@@ -17,14 +17,6 @@ package notebooks
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/notebooks/apiv1"
-	pb "cloud.google.com/go/notebooks/apiv1/notebookspb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
-	dataprocv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dataproc/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/notebooks/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -34,6 +26,12 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/notebooks/apiv1"
+	pb "cloud.google.com/go/notebooks/apiv1/notebookspb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -49,9 +47,49 @@ func NewScheduleModel(ctx context.Context, config *config.ControllerConfig) (dir
 }
 
 var _ directbase.Model = &modelSchedule{}
+var _ = strings.TrimPrefix
 
 type modelSchedule struct {
 	config config.ControllerConfig
+}
+
+func (m *modelSchedule) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.NotebooksSchedule{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	id := &krm.NotebooksScheduleIdentity{}
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ScheduleAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelSchedule) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.NotebooksScheduleIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ScheduleAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
 }
 
 func (m *modelSchedule) client(ctx context.Context) (*gcp.NotebookClient, error) {
@@ -60,6 +98,7 @@ func (m *modelSchedule) client(ctx context.Context) (*gcp.NotebookClient, error)
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewNotebookClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building Schedule client: %w", err)
@@ -67,71 +106,10 @@ func (m *modelSchedule) client(ctx context.Context) (*gcp.NotebookClient, error)
 	return gcpClient, err
 }
 
-func (m *modelSchedule) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.NotebooksSchedule{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	// Always call common.NormalizeReferences to resolve references
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	// Manually resolve IAMServiceAccountRef
-	if obj.Spec.ExecutionTemplate != nil && obj.Spec.ExecutionTemplate.ServiceAccountRef != nil {
-		if err := obj.Spec.ExecutionTemplate.ServiceAccountRef.Resolve(ctx, reader, obj); err != nil {
-			return nil, fmt.Errorf("resolving serviceAccountRef: %w", err)
-		}
-	}
-
-	// Manually normalize ClusterRef
-	if obj.Spec.ExecutionTemplate != nil && obj.Spec.ExecutionTemplate.DataprocParameters != nil && obj.Spec.ExecutionTemplate.DataprocParameters.ClusterRef != nil {
-		if err := obj.Spec.ExecutionTemplate.DataprocParameters.ClusterRef.Normalize(ctx, reader, obj.GetNamespace()); err != nil {
-			return nil, fmt.Errorf("normalizing clusterRef: %w", err)
-		}
-
-		id := &dataprocv1beta1.DataprocClusterIdentity{}
-		if err := id.FromExternal(obj.Spec.ExecutionTemplate.DataprocParameters.ClusterRef.External); err == nil {
-			obj.Spec.ExecutionTemplate.DataprocParameters.ClusterRef.External = dataprocv1beta1.DataprocClusterIdentityFormatRelative.ToString(*id)
-		}
-	}
-
-	id, err := krm.NewScheduleIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get notebooks GCP client
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := NotebooksScheduleSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &ScheduleAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   desired,
-	}, nil
-}
-
-func (m *modelSchedule) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// TODO: Support URLs
-	return nil, nil
-}
-
 type ScheduleAdapter struct {
 	id        *krm.NotebooksScheduleIdentity
 	gcpClient *gcp.NotebookClient
-	desired   *pb.Schedule
+	desired   *krm.NotebooksSchedule
 	actual    *pb.Schedule
 }
 
@@ -141,8 +119,10 @@ func (a *ScheduleAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting Schedule", "name", a.id)
 
-	req := &pb.GetScheduleRequest{Name: a.id.String()}
-	schedulepb, err := a.gcpClient.GetSchedule(ctx, req)
+	req := &pb.GetScheduleRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetSchedule(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -150,18 +130,25 @@ func (a *ScheduleAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting Schedule %q: %w", a.id, err)
 	}
 
-	a.actual = schedulepb
+	a.actual = resp
 	return true, nil
 }
 
 func (a *ScheduleAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating Schedule", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := NotebooksScheduleSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateScheduleRequest{
 		Parent:     a.id.ParentString(),
 		ScheduleId: a.id.ID(),
-		Schedule:   a.desired,
+		Schedule:   resource,
 	}
 	op, err := a.gcpClient.CreateSchedule(ctx, req)
 	if err != nil {
@@ -169,31 +156,60 @@ func (a *ScheduleAdapter) Create(ctx context.Context, createOp *directbase.Creat
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for Schedule %s creation: %w", a.id, err)
+		return fmt.Errorf("waiting create Schedule %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created Schedule", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.NotebooksScheduleStatus{}
+	status.ObservedState = NotebooksScheduleObservedState_v1alpha1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ScheduleAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating Schedule", "name", a.id)
 
-	diffs, _, err := compareSchedule(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := NotebooksScheduleSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareSchedule(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no diff detected for Schedule", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("NotebooksSchedule resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
+	status := &krm.NotebooksScheduleStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = NotebooksScheduleObservedState_v1alpha1_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
 
-	return fmt.Errorf("NotebooksSchedule resource is immutable and cannot be updated")
+func compareSchedule(ctx context.Context, actual, desired *pb.Schedule) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, NotebooksScheduleSpec_v1alpha1_FromProto, NotebooksScheduleSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *ScheduleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -209,16 +225,16 @@ func (a *ScheduleAdapter) Export(ctx context.Context) (*unstructured.Unstructure
 		return nil, mapCtx.Err()
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = &a.id.Location
+	obj.Spec.Location = a.id.Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.actual.Name)
-	u.SetGroupVersionKind(krm.NotebooksScheduleGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.NotebooksScheduleGVK)
 	return u, nil
 }
 
@@ -226,53 +242,22 @@ func (a *ScheduleAdapter) Delete(ctx context.Context, deleteOp *directbase.Delet
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting Schedule", "name", a.id)
 
-	req := &pb.DeleteScheduleRequest{Name: a.id.String()}
+	req := &pb.DeleteScheduleRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteSchedule(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent Schedule, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting Schedule %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted Schedule", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete Schedule %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Schedule %s: %w", a.id, err)
+		}
 	}
 	return true, nil
-}
-
-func compareSchedule(ctx context.Context, actual, desired *pb.Schedule) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, NotebooksScheduleSpec_v1alpha1_FromProto, NotebooksScheduleSpec_v1alpha1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name // Restore any non-spec identifier fields if needed
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *pb.Schedule) {
-		// Even if empty, it's a good pattern to define and populate GCP/server defaults here
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func (a *ScheduleAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Schedule) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.NotebooksScheduleStatus{}
-	status.ObservedState = NotebooksScheduleObservedState_v1alpha1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
 }

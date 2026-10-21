@@ -17,7 +17,6 @@ package billing
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/billing/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -26,11 +25,11 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/billing/apiv1"
 	pb "cloud.google.com/go/billing/apiv1/billingpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -39,7 +38,7 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.BillingAccountGVK, NewBillingAccountModel, registry.CannotBeDeleted())
+	registry.RegisterModel(krm.BillingAccountGVK, NewBillingAccountModel)
 }
 
 func NewBillingAccountModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
@@ -47,9 +46,53 @@ func NewBillingAccountModel(ctx context.Context, config *config.ControllerConfig
 }
 
 var _ directbase.Model = &modelBillingAccount{}
+var _ = strings.TrimPrefix
 
 type modelBillingAccount struct {
 	config config.ControllerConfig
+}
+
+func (m *modelBillingAccount) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.BillingAccount{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.BillingAccountIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &BillingAccountAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelBillingAccount) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.BillingAccountIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &BillingAccountAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
 }
 
 func (m *modelBillingAccount) client(ctx context.Context) (*gcp.CloudBillingClient, error) {
@@ -58,74 +101,18 @@ func (m *modelBillingAccount) client(ctx context.Context) (*gcp.CloudBillingClie
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewCloudBillingRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building CloudBilling REST client: %w", err)
+		return nil, fmt.Errorf("building BillingAccount client: %w", err)
 	}
 	return gcpClient, err
-}
-
-func (m *modelBillingAccount) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.BillingAccount{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	idVal, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id, ok := idVal.(*krm.BillingAccountIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", idVal)
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := BillingAccountSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &BillingAccountAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   desiredPb,
-	}, nil
-}
-
-func (m *modelBillingAccount) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.BillingAccountIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		// Not recognized
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &BillingAccountAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-	}, nil
 }
 
 type BillingAccountAdapter struct {
 	id        *krm.BillingAccountIdentity
 	gcpClient *gcp.CloudBillingClient
-	desired   *pb.BillingAccount
+	desired   *krm.BillingAccount
 	actual    *pb.BillingAccount
 }
 
@@ -133,31 +120,38 @@ var _ directbase.Adapter = &BillingAccountAdapter{}
 
 func (a *BillingAccountAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting BillingAccount", "name", a.id.String())
+	log.V(2).Info("getting BillingAccount", "name", a.id)
 
-	req := &pb.GetBillingAccountRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetBillingAccount(ctx, req)
+	req := &pb.GetBillingAccountRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBillingAccount(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting BillingAccount %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting BillingAccount %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
 func (a *BillingAccountAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("creating BillingAccount", "id", fqn)
+	log.V(2).Info("creating BillingAccount", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	desired := proto.CloneOf(a.desired)
-	desired.Name = fqn
+	desired := a.desired.DeepCopy()
+	resource := BillingAccountSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateBillingAccountRequest{
-		BillingAccount: desired,
+		Parent:           a.id.ParentString(),
+		BillingAccountId: a.id.BillingAccount,
+		BillingAccount:   resource,
 	}
 	created, err := a.gcpClient.CreateBillingAccount(ctx, req)
 	if err != nil {
@@ -165,51 +159,68 @@ func (a *BillingAccountAdapter) Create(ctx context.Context, createOp *directbase
 	}
 	log.V(2).Info("successfully created BillingAccount", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.BillingAccountStatus{}
+	status.ObservedState = BillingAccountObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *BillingAccountAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating BillingAccount", "name", a.id.String())
+	log.V(2).Info("updating BillingAccount", "name", a.id)
 
-	diffs, updateMask, err := compareBillingAccount(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := BillingAccountSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareBillingAccount(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desired := proto.CloneOf(a.desired)
 		desired.Name = a.id.String()
 
 		req := &pb.UpdateBillingAccountRequest{
-			Name:       a.id.String(),
-			Account:    desired,
-			UpdateMask: updateMask,
+			BillingAccount: desired,
+			UpdateMask:     updateMask,
 		}
-
 		updated, err := a.gcpClient.UpdateBillingAccount(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating BillingAccount %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating BillingAccount %s: %w", a.id, err)
 		}
-		latest = updated
+		log.V(2).Info("successfully updated BillingAccount", "name", a.id)
+
+		status := &krm.BillingAccountStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = BillingAccountObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *BillingAccountAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.BillingAccount) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.BillingAccountStatus{}
-	status.ObservedState = BillingAccountObservedState_FromProto(mapCtx, latest)
-	status.ExternalRef = direct.LazyPtr(latest.GetName())
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func compareBillingAccount(ctx context.Context, actual, desired *pb.BillingAccount) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BillingAccountSpec_FromProto, BillingAccountSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	return op.UpdateStatus(ctx, status, nil)
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *BillingAccountAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -231,25 +242,13 @@ func (a *BillingAccountAdapter) Export(ctx context.Context) (*unstructured.Unstr
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.Name)
+	u.SetName(a.id.BillingAccount)
 	u.SetGroupVersionKind(krm.BillingAccountGVK)
 	return u, nil
 }
 
 func (a *BillingAccountAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting BillingAccount is a no-op because billing accounts cannot be deleted in GCP", "name", a.id)
+	log.V(2).Info("deletion not supported for BillingAccount, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func compareBillingAccount(ctx context.Context, actual, desired *pb.BillingAccount) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, BillingAccountSpec_FromProto, BillingAccountSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

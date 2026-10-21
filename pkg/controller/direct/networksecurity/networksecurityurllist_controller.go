@@ -46,6 +46,7 @@ func NewUrlListModel(ctx context.Context, config *config.ControllerConfig) (dire
 }
 
 var _ directbase.Model = &modelUrlList{}
+var _ = strings.TrimPrefix
 
 type modelUrlList struct {
 	config config.ControllerConfig
@@ -178,6 +179,8 @@ func (a *UrlListAdapter) Update(ctx context.Context, updateOp *directbase.Update
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
 
 		req := &pb.UpdateUrlListRequest{
 			UrlList:    desired,

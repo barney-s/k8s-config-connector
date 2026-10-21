@@ -12,32 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.compute.v1.Disks
-// proto.message: google.cloud.compute.v1.AddResourcePoliciesDiskRequest
-// crd.type: ComputeDiskResourcePolicyAttachment
-// crd.version: v1alpha1
-
 package compute
 
 import (
 	"context"
 	"fmt"
+	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1alpha1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
 	"strings"
 
 	gcp "cloud.google.com/go/compute/apiv1"
 	pb "cloud.google.com/go/compute/apiv1/computepb"
-	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1alpha1"
-	computev1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
-	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -45,181 +43,171 @@ func init() {
 }
 
 func NewComputeDiskResourcePolicyAttachmentModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeDiskResourcePolicyAttachmentModel{config: config}, nil
+	return &modelComputeDiskResourcePolicyAttachment{config: *config}, nil
 }
 
-var _ directbase.Model = &computeDiskResourcePolicyAttachmentModel{}
+var _ directbase.Model = &modelComputeDiskResourcePolicyAttachment{}
+var _ = strings.TrimPrefix
 
-type computeDiskResourcePolicyAttachmentModel struct {
-	config *config.ControllerConfig
+type modelComputeDiskResourcePolicyAttachment struct {
+	config config.ControllerConfig
 }
 
-func (m *computeDiskResourcePolicyAttachmentModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeDiskResourcePolicyAttachment) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeDiskResourcePolicyAttachment{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	attachmentId := id.(*krm.ComputeDiskResourcePolicyAttachmentIdentity)
+	id := i.(*krm.ComputeDiskResourcePolicyAttachmentIdentity)
 
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	disksClient, err := gcpClient.newDisksClient(ctx)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	return &ComputeDiskResourcePolicyAttachmentAdapter{
-		disksClient: disksClient,
-		id:          attachmentId,
-		reader:      reader,
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *computeDiskResourcePolicyAttachmentModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeDiskResourcePolicyAttachment) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
+func (m *modelComputeDiskResourcePolicyAttachment) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeDiskResourcePolicyAttachment client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type ComputeDiskResourcePolicyAttachmentAdapter struct {
-	disksClient *gcp.DisksClient
-	id          *krm.ComputeDiskResourcePolicyAttachmentIdentity
-	actual      string
-	reader      client.Reader
+	id        *krm.ComputeDiskResourcePolicyAttachmentIdentity
+	gcpClient *gcp.Client
+	desired   *krm.ComputeDiskResourcePolicyAttachment
+	actual    *pb.ComputeDiskResourcePolicyAttachment
 }
 
 var _ directbase.Adapter = &ComputeDiskResourcePolicyAttachmentAdapter{}
 
 func (a *ComputeDiskResourcePolicyAttachmentAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting ComputeDiskResourcePolicyAttachment", "id", a.id)
+	log.V(2).Info("getting ComputeDiskResourcePolicyAttachment", "name", a.id)
 
-	disk, err := a.disksClient.Get(ctx, &pb.GetDiskRequest{
-		Project: a.id.Project,
-		Zone:    a.id.Zone,
-		Disk:    a.id.Disk,
-	})
+	req := &pb.GetComputeDiskResourcePolicyAttachmentRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetComputeDiskResourcePolicyAttachment(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting ComputeDisk %s: %w", a.id.Disk, err)
+		return false, fmt.Errorf("getting ComputeDiskResourcePolicyAttachment %q: %w", a.id, err)
 	}
 
-	for _, policyUrl := range disk.ResourcePolicies {
-		tokens := strings.Split(policyUrl, "/")
-		if len(tokens) == 0 {
-			continue
-		}
-		policyName := tokens[len(tokens)-1]
-		if policyName == a.id.Name {
-			a.actual = policyUrl
-			return true, nil
-		}
-	}
-
-	return false, nil
+	a.actual = resp
+	return true, nil
 }
 
 func (a *ComputeDiskResourcePolicyAttachmentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating ComputeDiskResourcePolicyAttachment", "id", a.id)
+	log.V(2).Info("creating ComputeDiskResourcePolicyAttachment", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	region := GetRegionFromZone(a.id.Zone)
-	policyUrl := fmt.Sprintf("projects/%s/regions/%s/resourcePolicies/%s", a.id.Project, region, a.id.Name)
-
-	req := &pb.AddResourcePoliciesDiskRequest{
-		Project: a.id.Project,
-		Zone:    a.id.Zone,
-		Disk:    a.id.Disk,
-		DisksAddResourcePoliciesRequestResource: &pb.DisksAddResourcePoliciesRequest{
-			ResourcePolicies: []string{policyUrl},
-		},
+	desired := a.desired.DeepCopy()
+	resource := ComputeDiskResourcePolicyAttachmentSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
 
-	op, err := a.disksClient.AddResourcePolicies(ctx, req)
+	req := &pb.CreateComputeDiskResourcePolicyAttachmentRequest{
+		Parent:                                a.id.ParentString(),
+		ComputeDiskResourcePolicyAttachmentId: a.id.Zone,
+		ComputeDiskResourcePolicyAttachment:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeDiskResourcePolicyAttachment(ctx, req)
 	if err != nil {
-		return fmt.Errorf("attaching resource policy %s to disk %s: %w", a.id.Name, a.id.Disk, err)
+		return fmt.Errorf("creating ComputeDiskResourcePolicyAttachment %s: %w", a.id, err)
 	}
-
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting for resource policy %s to attach to disk %s: %w", a.id.Name, a.id.Disk, err)
-		}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeDiskResourcePolicyAttachment %s: %w", a.id, err)
 	}
-
-	log.V(2).Info("successfully attached resource policy to disk", "id", a.id)
+	log.V(2).Info("successfully created ComputeDiskResourcePolicyAttachment", "name", a.id)
 
 	status := &krm.ComputeDiskResourcePolicyAttachmentStatus{}
-	status.ObservedGeneration = direct.PtrTo(createOp.GetUnstructured().GetGeneration())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeDiskResourcePolicyAttachmentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating ComputeDiskResourcePolicyAttachment", "id", a.id)
-	return fmt.Errorf("ComputeDiskResourcePolicyAttachment is immutable and cannot be updated")
+	log.V(2).Info("updating ComputeDiskResourcePolicyAttachment", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := ComputeDiskResourcePolicyAttachmentSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareComputeDiskResourcePolicyAttachment(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeDiskResourcePolicyAttachment resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.ComputeDiskResourcePolicyAttachmentStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *ComputeDiskResourcePolicyAttachmentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeDiskResourcePolicyAttachment", "id", a.id)
-
-	region := GetRegionFromZone(a.id.Zone)
-	policyUrl := fmt.Sprintf("projects/%s/regions/%s/resourcePolicies/%s", a.id.Project, region, a.id.Name)
-
-	req := &pb.RemoveResourcePoliciesDiskRequest{
-		Project: a.id.Project,
-		Zone:    a.id.Zone,
-		Disk:    a.id.Disk,
-		DisksRemoveResourcePoliciesRequestResource: &pb.DisksRemoveResourcePoliciesRequest{
-			ResourcePolicies: []string{policyUrl},
-		},
-	}
-
-	op, err := a.disksClient.RemoveResourcePolicies(ctx, req)
+func compareComputeDiskResourcePolicyAttachment(ctx context.Context, actual, desired *pb.ComputeDiskResourcePolicyAttachment) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeDiskResourcePolicyAttachmentSpec_FromProto, ComputeDiskResourcePolicyAttachmentSpec_ToProto)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("removing resource policy %s from disk %s: %w", a.id.Name, a.id.Disk, err)
+		return nil, nil, err
 	}
-
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return false, fmt.Errorf("waiting for resource policy %s to remove from disk %s: %w", a.id.Name, a.id.Disk, err)
-		}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
 	}
-
-	log.V(2).Info("successfully removed resource policy from disk", "id", a.id)
-	return true, nil
+	return diffs, updateMask, nil
 }
 
 func (a *ComputeDiskResourcePolicyAttachmentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	if a.actual == "" {
-		return nil, fmt.Errorf("Find() not called or attachment not found")
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
 	}
-
 	u := &unstructured.Unstructured{}
 
 	obj := &krm.ComputeDiskResourcePolicyAttachment{}
-	obj.Spec.DiskRef = computev1beta1.ComputeDiskRef{
-		External: a.id.Disk,
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(ComputeDiskResourcePolicyAttachmentSpec_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
 	}
-	obj.Spec.ProjectRef = refs.ProjectRef{
-		External: a.id.Project,
-	}
-	obj.Spec.Zone = a.id.Zone
-	obj.Spec.ResourceID = &a.id.Name
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Zone)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -227,17 +215,13 @@ func (a *ComputeDiskResourcePolicyAttachmentAdapter) Export(ctx context.Context)
 	}
 
 	u.Object = uObj
-	u.SetName(a.id.Name)
+	u.SetName(a.id.Zone)
 	u.SetGroupVersionKind(krm.ComputeDiskResourcePolicyAttachmentGVK)
 	return u, nil
 }
 
-// GetRegionFromZone returns the region from a zone for Google cloud.
-// Zones are formatted as <region>-<zone_suffix>, e.g. "us-central1-f" -> "us-central1"
-func GetRegionFromZone(zone string) string {
-	parts := strings.Split(zone, "-")
-	if len(parts) >= 2 {
-		return strings.Join(parts[:len(parts)-1], "-")
-	}
-	return zone
+func (a *ComputeDiskResourcePolicyAttachmentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for ComputeDiskResourcePolicyAttachment, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

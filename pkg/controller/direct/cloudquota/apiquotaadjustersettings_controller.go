@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,29 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.api.cloudquotas.v1beta.QuotaAdjusterSettingsManager
-// proto.message: google.api.cloudquotas.v1beta.QuotaAdjusterSettings
-// crd.type: APIQuotaAdjusterSettings
-// crd.version: v1beta1
-
 package cloudquota
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	gcp "cloud.google.com/go/cloudquotas/apiv1beta"
-	pb "cloud.google.com/go/cloudquotas/apiv1beta/cloudquotaspb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/cloudquota/v1beta1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/cloudquotas/apiv1beta"
+	pb "cloud.google.com/go/cloudquotas/apiv1beta/cloudquotaspb"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -45,95 +43,87 @@ func init() {
 }
 
 func NewQuotaAdjusterSettingsModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &apiQuotaAdjusterSettingsModel{config: *config}, nil
+	return &modelQuotaAdjusterSettings{config: *config}, nil
 }
 
-var _ directbase.Model = &apiQuotaAdjusterSettingsModel{}
+var _ directbase.Model = &modelQuotaAdjusterSettings{}
+var _ = strings.TrimPrefix
 
-type apiQuotaAdjusterSettingsModel struct {
+type modelQuotaAdjusterSettings struct {
 	config config.ControllerConfig
 }
 
-func (m *apiQuotaAdjusterSettingsModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelQuotaAdjusterSettings) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.APIQuotaAdjusterSettings{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.QuotaAdjusterSettingsIdentity{}
 
-	id, err := krm.NewQuotaAdjusterSettingsIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	config := m.config
-	// the service requires that a quota project be set
-	if !config.UserProjectOverride || config.BillingProject == "" {
-		config.UserProjectOverride = true
-		config.BillingProject = id.Parent().ProjectID
-	}
-	// Get cloudquotas GCP client
-	gcpClient, err := newGCPClient(ctx, &config)
-	if err != nil {
-		return nil, err
-	}
-	client, err := gcpClient.newQuotaAdjusterSettingsManagerClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &apiQuotaAdjusterSettingsAdapter{
-		gcpClient: client,
+	return &QuotaAdjusterSettingsAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *apiQuotaAdjusterSettingsModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelQuotaAdjusterSettings) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type apiQuotaAdjusterSettingsAdapter struct {
-	gcpClient *gcp.QuotaAdjusterSettingsManagerClient
+func (m *modelQuotaAdjusterSettings) client(ctx context.Context) (*gcp.QuotaAdjusterSettingsManagerClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building QuotaAdjusterSettings client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type QuotaAdjusterSettingsAdapter struct {
 	id        *krm.QuotaAdjusterSettingsIdentity
+	gcpClient *gcp.QuotaAdjusterSettingsManagerClient
 	desired   *krm.APIQuotaAdjusterSettings
 	actual    *pb.QuotaAdjusterSettings
 }
 
-var _ directbase.Adapter = &apiQuotaAdjusterSettingsAdapter{}
+var _ directbase.Adapter = &QuotaAdjusterSettingsAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-func (a *apiQuotaAdjusterSettingsAdapter) Find(ctx context.Context) (bool, error) {
+func (a *QuotaAdjusterSettingsAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting cloudquotas quotaadjustersettings", "name", a.id)
+	log.V(2).Info("getting QuotaAdjusterSettings", "name", a.id)
 
-	req := &pb.GetQuotaAdjusterSettingsRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetQuotaAdjusterSettings(ctx, req)
+	req := &pb.GetQuotaAdjusterSettingsRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetQuotaAdjusterSettings(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting cloudquotas quotaadjustersettings %q: %w", a.id, err)
+		return false, fmt.Errorf("getting QuotaAdjusterSettings %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-// This function should not be reachable, because Find always returns an object"
-func (a *apiQuotaAdjusterSettingsAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *QuotaAdjusterSettingsAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("create operation is not supported for resource %s", krm.APIQuotaAdjusterSettingsGVK)
-	return fmt.Errorf("create operation is not supported for resource %s", krm.APIQuotaAdjusterSettingsGVK)
-}
-
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *apiQuotaAdjusterSettingsAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating cloudquotas quotaadjustersettings", "name", a.id)
+	log.V(2).Info("creating QuotaAdjusterSettings", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
@@ -142,53 +132,82 @@ func (a *apiQuotaAdjusterSettingsAdapter) Update(ctx context.Context, updateOp *
 		return mapCtx.Err()
 	}
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	paths := []string{}
-	if desired.Spec.Enablement != nil && !reflect.DeepEqual(resource.Enablement, a.actual.Enablement) {
-		report.AddField("enablement", a.actual.Enablement, resource.Enablement)
-		paths = append(paths, "enablement")
+	req := &pb.CreateQuotaAdjusterSettingsRequest{
+		Parent:                  a.id.ParentString(),
+		QuotaAdjusterSettingsId: a.id.ID(),
+		QuotaAdjusterSettings:   resource,
 	}
-
-	var updated *pb.QuotaAdjusterSettings
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		// Even if there are no updates, we still need to update the status
-		// for potential acquisition scenarios.
-		updated = a.actual
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		resource.Name = a.id.String() // we need to set the name so that GCP API can identify the resource
-		// Set etag for optimistic concurrency control if provided
-		if a.desired.Status.ObservedState != nil && a.desired.Status.ObservedState.Etag != nil {
-			resource.Etag = *a.desired.Status.ObservedState.Etag
-		} else {
-			// Use the etag from the last read if not specified in spec
-			resource.Etag = a.actual.Etag
-		}
-		req := &pb.UpdateQuotaAdjusterSettingsRequest{
-			QuotaAdjusterSettings: resource,
-			UpdateMask:            &fieldmaskpb.FieldMask{Paths: paths},
-		}
-		var err error
-		updated, err = a.gcpClient.UpdateQuotaAdjusterSettings(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating cloudquotas quotaadjustersettings %s: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated cloudquotas quotaadjustersettings", "name", a.id)
+	created, err := a.gcpClient.CreateQuotaAdjusterSettings(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating QuotaAdjusterSettings %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created QuotaAdjusterSettings", "name", a.id)
 
 	status := &krm.APIQuotaAdjusterSettingsStatus{}
-	status.ObservedState = APIQuotaAdjusterSettingsObservedState_FromProto(mapCtx, updated)
+	status.ObservedState = APIQuotaAdjusterSettingsObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *apiQuotaAdjusterSettingsAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *QuotaAdjusterSettingsAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating QuotaAdjusterSettings", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := APIQuotaAdjusterSettingsSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareQuotaAdjusterSettings(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateQuotaAdjusterSettingsRequest{
+			QuotaAdjusterSettings: desired,
+			UpdateMask:            updateMask,
+		}
+		updated, err := a.gcpClient.UpdateQuotaAdjusterSettings(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating QuotaAdjusterSettings %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated QuotaAdjusterSettings", "name", a.id)
+
+		status := &krm.APIQuotaAdjusterSettingsStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = APIQuotaAdjusterSettingsObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareQuotaAdjusterSettings(ctx context.Context, actual, desired *pb.QuotaAdjusterSettings) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, APIQuotaAdjusterSettingsSpec_FromProto, APIQuotaAdjusterSettingsSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *QuotaAdjusterSettingsAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -200,21 +219,21 @@ func (a *apiQuotaAdjusterSettingsAdapter) Export(ctx context.Context) (*unstruct
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.id.ID()) // Name is fixed as 'quotaAdjusterSettings'
-	u.SetGroupVersionKind(krm.APIQuotaAdjusterSettingsGVK)
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.APIQuotaAdjusterSettingsGVK)
 	return u, nil
 }
 
-// Delete is not supported for QuotaAdjusterSettings.
-func (a *apiQuotaAdjusterSettingsAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *QuotaAdjusterSettingsAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.Info("delete operation is not supported for QuotaAdjusterSettings, treating as no-op", "name", a.id.String())
-	return false, nil // Indicate that deletion is not supported and should not be retried.
+	log.V(2).Info("deletion not supported for QuotaAdjusterSettings, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

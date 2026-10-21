@@ -17,12 +17,6 @@ package billingbudgets
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/billing/budgets/apiv1"
-	pb "cloud.google.com/go/billing/budgets/apiv1/budgetspb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/billingbudgets/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -31,6 +25,12 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/billing/budgets/apiv1"
+	pb "cloud.google.com/go/billing/budgets/apiv1/budgetspb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,157 +38,173 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.BillingBudgetsBudgetGVK, NewBillingBudgetsBudgetModel)
+	registry.RegisterModel(krm.BillingBudgetsBudgetGVK, NewBudgetModel)
 }
 
-func NewBillingBudgetsBudgetModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &modelBillingBudgetsBudget{config: *config}, nil
+func NewBudgetModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelBudget{config: *config}, nil
 }
 
-var _ directbase.Model = &modelBillingBudgetsBudget{}
+var _ directbase.Model = &modelBudget{}
+var _ = strings.TrimPrefix
 
-type modelBillingBudgetsBudget struct {
+type modelBudget struct {
 	config config.ControllerConfig
 }
 
-func (m *modelBillingBudgetsBudget) client(ctx context.Context) (*gcp.BudgetClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewBudgetRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building BillingBudgets budget client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *modelBillingBudgetsBudget) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelBudget) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.BillingBudgetsBudget{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
+	}
+	id := i.(*krm.BillingBudgetsBudgetIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := BillingBudgetsBudgetSpec_v1beta1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desiredPb.Name = id.String()
-
-	return &BillingBudgetsBudgetAdapter{
-		id:        id.(*krm.BillingBudgetsBudgetIdentity),
+	return &BudgetAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desiredPb,
+		desired:   obj,
 	}, nil
 }
 
-func (m *modelBillingBudgetsBudget) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelBudget) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type BillingBudgetsBudgetAdapter struct {
+func (m *modelBudget) client(ctx context.Context) (*gcp.BudgetClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewBudgetRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Budget client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type BudgetAdapter struct {
 	id        *krm.BillingBudgetsBudgetIdentity
 	gcpClient *gcp.BudgetClient
-	desired   *pb.Budget
+	desired   *krm.BillingBudgetsBudget
 	actual    *pb.Budget
 }
 
-var _ directbase.Adapter = &BillingBudgetsBudgetAdapter{}
+var _ directbase.Adapter = &BudgetAdapter{}
 
-func (a *BillingBudgetsBudgetAdapter) Find(ctx context.Context) (bool, error) {
+func (a *BudgetAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting BillingBudgetsBudget", "name", a.id)
+	log.V(2).Info("getting Budget", "name", a.id)
 
-	req := &pb.GetBudgetRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetBudget(ctx, req)
+	req := &pb.GetBudgetRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBudget(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting BillingBudgetsBudget %q: %w", a.id, err)
+		return false, fmt.Errorf("getting Budget %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *BillingBudgetsBudgetAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *BudgetAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("creating BillingBudgetsBudget", "id", fqn)
+	log.V(2).Info("creating Budget", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	parent := "billingAccounts/" + a.id.BillingAccount
+	desired := a.desired.DeepCopy()
+	resource := BillingBudgetsBudgetSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateBudgetRequest{
-		Parent: parent,
-		Budget: a.desired,
+		Parent:   a.id.ParentString(),
+		BudgetId: a.id.BillingAccount,
+		Budget:   resource,
 	}
 	created, err := a.gcpClient.CreateBudget(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating BillingBudgetsBudget %s: %w", a.id, err)
+		return fmt.Errorf("creating Budget %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created BillingBudgetsBudget", "name", a.id)
+	log.V(2).Info("successfully created Budget", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.BillingBudgetsBudgetStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *BillingBudgetsBudgetAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *BudgetAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating BillingBudgetsBudget", "name", a.id.String())
+	log.V(2).Info("updating Budget", "name", a.id)
 
-	diffs, updateMask, err := compareBillingBudgetsBudget(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := BillingBudgetsBudgetSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareBudget(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
+		desired.Name = a.id.String()
+
 		req := &pb.UpdateBudgetRequest{
-			Budget:     a.desired,
+			Budget:     desired,
 			UpdateMask: updateMask,
 		}
-
 		updated, err := a.gcpClient.UpdateBudget(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating BillingBudgetsBudget %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating Budget %s: %w", a.id, err)
 		}
-		latest = updated
+		log.V(2).Info("successfully updated Budget", "name", a.id)
+
+		status := &krm.BillingBudgetsBudgetStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *BillingBudgetsBudgetAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Budget) error {
-	mapCtx := &direct.MapContext{}
-	status := BillingBudgetsBudgetStatus_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func compareBudget(ctx context.Context, actual, desired *pb.Budget) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BillingBudgetsBudgetSpec_v1beta1_FromProto, BillingBudgetsBudgetSpec_v1beta1_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	return op.UpdateStatus(ctx, status, nil)
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *BillingBudgetsBudgetAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *BudgetAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -207,37 +223,25 @@ func (a *BillingBudgetsBudgetAdapter) Export(ctx context.Context) (*unstructured
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.Name)
+	u.SetName(a.id.BillingAccount)
 	u.SetGroupVersionKind(krm.BillingBudgetsBudgetGVK)
 	return u, nil
 }
 
-func (a *BillingBudgetsBudgetAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *BudgetAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting BillingBudgetsBudget", "name", a.id)
+	log.V(2).Info("deleting Budget", "name", a.id)
 
-	req := &pb.DeleteBudgetRequest{Name: a.id.String()}
+	req := &pb.DeleteBudgetRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteBudget(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent BillingBudgetsBudget, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting BillingBudgetsBudget %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting Budget %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted BillingBudgetsBudget", "name", a.id)
+	log.V(2).Info("successfully deleted Budget", "name", a.id)
 	return true, nil
-}
-
-func compareBillingBudgetsBudget(ctx context.Context, actual, desired *pb.Budget) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, BillingBudgetsBudgetSpec_v1beta1_FromProto, BillingBudgetsBudgetSpec_v1beta1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

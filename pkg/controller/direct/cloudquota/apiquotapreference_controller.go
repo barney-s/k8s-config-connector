@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,33 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.api.cloudquotas.v1beta.CloudQuotas
-// proto.message: google.api.cloudquotas.v1beta.QuotaPreference
-// crd.type: APIQuotaPreference
-// crd.version: v1beta1
-
 package cloudquota
 
 import (
 	"context"
 	"fmt"
-	"reflect"
+	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/cloudquota/v1beta1"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/cloudquotas/apiv1beta"
 	pb "cloud.google.com/go/cloudquotas/apiv1beta/cloudquotaspb"
-	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/cloudquota/v1beta1"
-	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -46,95 +42,87 @@ func init() {
 }
 
 func NewQuotaPreferenceModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &apiQuotaPreferenceModel{config: *config}, nil
+	return &modelQuotaPreference{config: *config}, nil
 }
 
-var _ directbase.Model = &apiQuotaPreferenceModel{}
+var _ directbase.Model = &modelQuotaPreference{}
+var _ = strings.TrimPrefix
 
-type apiQuotaPreferenceModel struct {
+type modelQuotaPreference struct {
 	config config.ControllerConfig
 }
 
-func (m *apiQuotaPreferenceModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelQuotaPreference) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.APIQuotaPreference{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.QuotaPreferenceIdentity{}
 
-	id, err := krm.NewQuotaPreferenceIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	config := m.config
-	// the service requires that a quota project be set
-	if !config.UserProjectOverride || config.BillingProject == "" {
-		config.UserProjectOverride = true
-		if id.Parent().ProjectID != "" {
-			config.BillingProject = id.Parent().ProjectID
-		}
-		// Folder and Organization parents are not billing projects
-	}
-
-	gcpClient, err := newGCPClient(ctx, &config)
-	if err != nil {
-		return nil, err
-	}
-	client, err := gcpClient.newQuotaClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &apiQuotaPreferenceAdapter{
-		gcpClient: client,
+	return &QuotaPreferenceAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *apiQuotaPreferenceModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelQuotaPreference) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type apiQuotaPreferenceAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.QuotaPreferenceIdentity
-	desired   *krm.APIQuotaPreference
-	actual    *pb.QuotaPreference
-	reader    client.Reader
+func (m *modelQuotaPreference) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building QuotaPreference client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &apiQuotaPreferenceAdapter{}
+type QuotaPreferenceAdapter struct {
+	id        *krm.QuotaPreferenceIdentity
+	gcpClient *gcp.Client
+	desired   *krm.APIQuotaPreference
+	actual    *pb.QuotaPreference
+}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-func (a *apiQuotaPreferenceAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &QuotaPreferenceAdapter{}
+
+func (a *QuotaPreferenceAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting cloudquotas quotapreference", "name", a.id)
+	log.V(2).Info("getting QuotaPreference", "name", a.id)
 
-	req := &pb.GetQuotaPreferenceRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetQuotaPreference(ctx, req)
+	req := &pb.GetQuotaPreferenceRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetQuotaPreference(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting cloudquotas quotapreference %q: %w", a.id, err)
+		return false, fmt.Errorf("getting QuotaPreference %q: %w", a.id, err)
 	}
 
-	log.V(2).Info("found cloudquotas quotapreference", "name", a.id)
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *apiQuotaPreferenceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *QuotaPreferenceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating cloudquotas quotapreference", "name", a.id)
+	log.V(2).Info("creating QuotaPreference", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
@@ -142,8 +130,6 @@ func (a *apiQuotaPreferenceAdapter) Create(ctx context.Context, createOp *direct
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	// if not set it is generated by the server
-	resource.Name = a.id.String()
 
 	req := &pb.CreateQuotaPreferenceRequest{
 		Parent:            a.id.Parent().String(),
@@ -152,83 +138,75 @@ func (a *apiQuotaPreferenceAdapter) Create(ctx context.Context, createOp *direct
 	}
 	created, err := a.gcpClient.CreateQuotaPreference(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating cloudquotas quotapreference %s: %w", a.id, err)
+		return fmt.Errorf("creating QuotaPreference %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created cloudquotas quotapreference", "name", a.id)
+	log.V(2).Info("successfully created QuotaPreference", "name", a.id)
 
 	status := &krm.APIQuotaPreferenceStatus{}
 	status.ObservedState = APIQuotaPreferenceObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.LazyPtr(created.Name) // Use the server-generated name
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *apiQuotaPreferenceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *QuotaPreferenceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating cloudquotas quotapreference", "name", a.id)
-	mapCtx := &direct.MapContext{}
+	log.V(2).Info("updating QuotaPreference", "name", a.id)
 
-	desired := a.desired.DeepCopy()
-	resource := APIQuotaPreferenceSpec_ToProto(mapCtx, &desired.Spec)
+	mapCtx := &direct.MapContext{}
+	desired := APIQuotaPreferenceSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	resource.Name = a.id.String() // Set name for update request
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
+	diffs, updateMask, err := compareQuotaPreference(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	paths := []string{}
-	// Only quota_config, justification, contact_email are updatable.
-	if desired.Spec.QuotaConfig != nil && !reflect.DeepEqual(resource.QuotaConfig, a.actual.QuotaConfig) {
-		report.AddField("quota_config", a.actual.QuotaConfig, resource.QuotaConfig)
-		paths = append(paths, "quota_config")
-	}
-	if desired.Spec.Justification != nil && !reflect.DeepEqual(resource.Justification, a.actual.Justification) {
-		report.AddField("justification", a.actual.Justification, resource.Justification)
-		paths = append(paths, "justification")
-	}
-	if desired.Spec.ContactEmail != nil && !reflect.DeepEqual(resource.ContactEmail, a.actual.ContactEmail) {
-		report.AddField("contact_email", a.actual.ContactEmail, resource.ContactEmail)
-		paths = append(paths, "contact_email")
-	}
-
-	var updated *pb.QuotaPreference
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		updated = a.actual // Use the current actual state for status update
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		// Use the etag from the last read if not specified in spec
-		resource.Etag = a.actual.Etag
+		desired.Name = a.id.String()
 
 		req := &pb.UpdateQuotaPreferenceRequest{
-			QuotaPreference: resource,
-			UpdateMask:      &fieldmaskpb.FieldMask{Paths: paths},
-			// Allow missing field behavior is default false. Not supported for now.
-			// Ignore safety checks behavior is default false. Not supported for now.
+			QuotaPreference: desired,
+			UpdateMask:      updateMask,
 		}
-		var err error
-		updated, err = a.gcpClient.UpdateQuotaPreference(ctx, req)
+		updated, err := a.gcpClient.UpdateQuotaPreference(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating cloudquotas quotapreference %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating QuotaPreference %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated cloudquotas quotapreference", "name", a.id)
+		log.V(2).Info("successfully updated QuotaPreference", "name", a.id)
+
+		status := &krm.APIQuotaPreferenceStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = APIQuotaPreferenceObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	status := &krm.APIQuotaPreferenceStatus{}
-	status.ObservedState = APIQuotaPreferenceObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *apiQuotaPreferenceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareQuotaPreference(ctx context.Context, actual, desired *pb.QuotaPreference) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, APIQuotaPreferenceSpec_FromProto, APIQuotaPreferenceSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *QuotaPreferenceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -241,34 +219,19 @@ func (a *apiQuotaPreferenceAdapter) Export(ctx context.Context) (*unstructured.U
 		return nil, mapCtx.Err()
 	}
 
-	parentIdentity, resourceID, err := krm.ParseQuotaPreferenceExternal(a.actual.Name)
-	if err != nil {
-		return nil, fmt.Errorf("parsing parent from name %q: %w", a.actual.Name, err)
-	}
-	if parentIdentity.ProjectID != "" {
-		obj.Spec.Parent.ProjectRef = &refs.ProjectRef{External: parentIdentity.ProjectID}
-	} else if parentIdentity.FolderID != "" {
-		obj.Spec.Parent.FolderRef = &refs.FolderRef{External: parentIdentity.FolderID}
-	} else if parentIdentity.OrganizationID != "" {
-		obj.Spec.Parent.OrganizationRef = &refs.OrganizationRef{External: parentIdentity.OrganizationID}
-	} else {
-		return nil, fmt.Errorf("unknown parent type in name %q", a.actual.Name)
-	}
-
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(resourceID) // Use the server-generated ID as the K8s name
-	u.SetGroupVersionKind(krm.APIQuotaPreferenceGVK)
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.APIQuotaPreferenceGVK)
 	return u, nil
 }
 
-// Delete is not supported for QuotaPreference.
-func (a *apiQuotaPreferenceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *QuotaPreferenceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.Info("delete operation is not supported for QuotaPreference, treating as no-op", "name", a.id.String())
-	return false, nil // Indicate that deletion is not supported and should not be retried.
+	log.V(2).Info("deletion not supported for QuotaPreference, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

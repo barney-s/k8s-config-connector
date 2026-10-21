@@ -17,174 +17,192 @@ package apihubruntimeprojectattachment
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/apihub/apiv1"
-	pb "cloud.google.com/go/apihub/apiv1/apihubpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/apihub/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/apihub"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/apihub/apiv1"
+	pb "cloud.google.com/go/apihub/apiv1/apihubpb"
 	"google.golang.org/api/option"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
-const (
-	ctrlName = "apihub-runtimeprojectattachment-controller"
-)
-
 func init() {
-	registry.RegisterModel(krm.APIHubRuntimeProjectAttachmentGVK, NewModel)
+	registry.RegisterModel(krm.APIHubRuntimeProjectAttachmentGVK, NewRuntimeProjectAttachmentModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewRuntimeProjectAttachmentModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelRuntimeProjectAttachment{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelRuntimeProjectAttachment{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelRuntimeProjectAttachment struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.RuntimeProjectAttachmentClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRuntimeProjectAttachmentRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building APIHubRuntimeProjectAttachment client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelRuntimeProjectAttachment) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.APIHubRuntimeProjectAttachment{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	idBase, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idBase.(*krm.APIHubRuntimeProjectAttachmentIdentity)
+	id := i.(*krm.APIHubRuntimeProjectAttachmentIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// NormalizeReferences is called to resolve any resource references:
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := apihub.APIHubRuntimeProjectAttachmentSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Name = id.String()
-
-	return &Adapter{
+	return &RuntimeProjectAttachmentAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
-		reader:    reader,
-		namespace: obj.GetNamespace(),
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelRuntimeProjectAttachment) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
-	id        *krm.APIHubRuntimeProjectAttachmentIdentity
-	gcpClient *gcp.RuntimeProjectAttachmentClient
-	desired   *pb.RuntimeProjectAttachment
-	actual    *pb.RuntimeProjectAttachment
-	reader    client.Reader
-	namespace string
+func (m *modelRuntimeProjectAttachment) client(ctx context.Context) (*gcp.RuntimeProjectAttachmentClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRuntimeProjectAttachmentRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building RuntimeProjectAttachment client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &Adapter{}
+type RuntimeProjectAttachmentAdapter struct {
+	id        *krm.APIHubRuntimeProjectAttachmentIdentity
+	gcpClient *gcp.RuntimeProjectAttachmentClient
+	desired   *krm.APIHubRuntimeProjectAttachment
+	actual    *pb.RuntimeProjectAttachment
+}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &RuntimeProjectAttachmentAdapter{}
+
+func (a *RuntimeProjectAttachmentAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting APIHubRuntimeProjectAttachment", "name", a.id.String())
+	log.V(2).Info("getting RuntimeProjectAttachment", "name", a.id)
 
-	req := &pb.GetRuntimeProjectAttachmentRequest{Name: a.id.String()}
-	pbObj, err := a.gcpClient.GetRuntimeProjectAttachment(ctx, req)
+	req := &pb.GetRuntimeProjectAttachmentRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetRuntimeProjectAttachment(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting APIHubRuntimeProjectAttachment %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting RuntimeProjectAttachment %q: %w", a.id, err)
 	}
 
-	a.actual = pbObj
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *RuntimeProjectAttachmentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating APIHubRuntimeProjectAttachment", "name", a.id.String())
+	log.V(2).Info("creating RuntimeProjectAttachment", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := APIHubRuntimeProjectAttachmentSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateRuntimeProjectAttachmentRequest{
 		Parent:                     a.id.ParentString(),
-		RuntimeProjectAttachmentId: a.id.Runtime_project_attachment,
-		RuntimeProjectAttachment:   a.desired,
+		RuntimeProjectAttachmentId: a.id.Runtime,
+		RuntimeProjectAttachment:   resource,
 	}
-
-	_, err := a.gcpClient.CreateRuntimeProjectAttachment(ctx, req)
+	created, err := a.gcpClient.CreateRuntimeProjectAttachment(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating APIHubRuntimeProjectAttachment %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating RuntimeProjectAttachment %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created APIHubRuntimeProjectAttachment", "name", a.id.String())
+	log.V(2).Info("successfully created RuntimeProjectAttachment", "name", a.id)
 
-	// Fetch the fully populated resource to be safe
-	getReq := &pb.GetRuntimeProjectAttachmentRequest{Name: a.id.String()}
-	latest, err := a.gcpClient.GetRuntimeProjectAttachment(ctx, getReq)
-	if err != nil {
-		return fmt.Errorf("getting created APIHubRuntimeProjectAttachment %s: %w", a.id.String(), err)
+	status := &krm.APIHubRuntimeProjectAttachmentStatus{}
+	status.ObservedState = APIHubRuntimeProjectAttachmentObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *RuntimeProjectAttachmentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating APIHubRuntimeProjectAttachment", "name", a.id.String())
+	log.V(2).Info("updating RuntimeProjectAttachment", "name", a.id)
 
-	diff, err := compareRuntimeProjectAttachment(ctx, a.actual, a.desired, a.reader, a.namespace)
+	mapCtx := &direct.MapContext{}
+	desired := APIHubRuntimeProjectAttachmentSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareRuntimeProjectAttachment(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if diff.HasDiff() {
-		diff.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diff)
-		return fmt.Errorf("APIHubRuntimeProjectAttachment is immutable and cannot be updated")
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("APIHubRuntimeProjectAttachment resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	return a.updateStatus(ctx, updateOp, a.actual)
+	status := &krm.APIHubRuntimeProjectAttachmentStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = APIHubRuntimeProjectAttachmentObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareRuntimeProjectAttachment(ctx context.Context, actual, desired *pb.RuntimeProjectAttachment) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, APIHubRuntimeProjectAttachmentSpec_FromProto, APIHubRuntimeProjectAttachmentSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *RuntimeProjectAttachmentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -192,74 +210,39 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 
 	obj := &krm.APIHubRuntimeProjectAttachment{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(apihub.APIHubRuntimeProjectAttachmentSpec_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(APIHubRuntimeProjectAttachmentSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = a.id.Location
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: fmt.Sprintf("projects/%s", a.id.Project)}
-	obj.Spec.ResourceID = &a.id.Runtime_project_attachment
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Runtime)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
+	u.SetName(a.id.Runtime)
+	u.SetGroupVersionKind(krm.APIHubRuntimeProjectAttachmentGVK)
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *RuntimeProjectAttachmentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting APIHubRuntimeProjectAttachment", "name", a.id.String())
+	log.V(2).Info("deleting RuntimeProjectAttachment", "name", a.id)
 
-	req := &pb.DeleteRuntimeProjectAttachmentRequest{Name: a.id.String()}
+	req := &pb.DeleteRuntimeProjectAttachmentRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteRuntimeProjectAttachment(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting APIHubRuntimeProjectAttachment %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting RuntimeProjectAttachment %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully deleted RuntimeProjectAttachment", "name", a.id)
 	return true, nil
-}
-
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.RuntimeProjectAttachment) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.APIHubRuntimeProjectAttachmentStatus{}
-	status.ObservedState = apihub.APIHubRuntimeProjectAttachmentObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	externalRef := latest.Name
-	status.ExternalRef = &externalRef
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareRuntimeProjectAttachment(ctx context.Context, actual, desired *pb.RuntimeProjectAttachment, reader client.Reader, namespace string) (*structuredreporting.Diff, error) {
-	if actual.GetRuntimeProject() == desired.GetRuntimeProject() {
-		return &structuredreporting.Diff{}, nil
-	}
-
-	// Since actual.RuntimeProject might be projects/<number> and desired.RuntimeProject might be projects/<id> (or vice versa),
-	// we attempt to resolve both to see if they refer to the same project.
-	desiredRef := &refs.ProjectRef{External: desired.GetRuntimeProject()}
-	actualRef := &refs.ProjectRef{External: actual.GetRuntimeProject()}
-
-	desiredProj, err := refs.ResolveProject(ctx, reader, namespace, desiredRef)
-	if err != nil {
-		return nil, fmt.Errorf("resolving desired project: %w", err)
-	}
-	actualProj, err := refs.ResolveProject(ctx, reader, namespace, actualRef)
-	if err != nil {
-		return nil, fmt.Errorf("resolving actual project: %w", err)
-	}
-
-	if desiredProj != nil && actualProj != nil && desiredProj.ProjectID == actualProj.ProjectID {
-		return &structuredreporting.Diff{}, nil
-	}
-
-	diff := &structuredreporting.Diff{}
-	diff.AddField("spec.runtimeProjectRef", actual.GetRuntimeProject(), desired.GetRuntimeProject())
-	return diff, nil
 }

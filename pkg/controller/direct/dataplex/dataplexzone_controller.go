@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,38 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.dataplex.v1.DataplexService
-// proto.message: google.cloud.dataplex.v1.Zone
-// crd.type: DataplexZone
-// crd.version: v1alpha1
-
 package dataplex
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	"github.com/google/go-cmp/cmp/cmpopts"
-
-	"github.com/google/go-cmp/cmp"
-
-	gcp "cloud.google.com/go/dataplex/apiv1"
-	pb "cloud.google.com/go/dataplex/apiv1/dataplexpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dataplex/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/dataplex/apiv1"
+	pb "cloud.google.com/go/dataplex/apiv1/dataplexpb"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -51,214 +44,193 @@ func init() {
 }
 
 func NewZoneModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &zoneModel{config: config}, nil
+	return &modelZone{config: *config}, nil
 }
 
-var _ directbase.Model = &zoneModel{}
+var _ directbase.Model = &modelZone{}
+var _ = strings.TrimPrefix
 
-type zoneModel struct {
-	config *config.ControllerConfig
+type modelZone struct {
+	config config.ControllerConfig
 }
 
-func (m *zoneModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelZone) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DataplexZone{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.ZoneIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	copied := obj.DeepCopy()
-	mapCtx := &direct.MapContext{}
-	desired := DataplexZoneSpec_ToProto(mapCtx, &copied.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
-	idI, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := idI.(*krm.ZoneIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type %T", idI)
-	}
-
-	zoneAdapter := &zoneAdapter{
-		id:      id,
-		desired: desired,
-		reader:  reader,
-	}
-
-	// Get GCP client
-	gcpClient, err := newGCPClient(ctx, m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	zoneClient, err := gcpClient.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-	zoneAdapter.gcpClient = zoneClient
-
-	return zoneAdapter, nil
+	return &ZoneAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
 }
 
-func (m *zoneModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelZone) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type zoneAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.ZoneIdentity
-	desired   *pb.Zone
-	actual    *pb.Zone
-	reader    client.Reader
+func (m *modelZone) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Zone client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &zoneAdapter{}
+type ZoneAdapter struct {
+	id        *krm.ZoneIdentity
+	gcpClient *gcp.Client
+	desired   *krm.DataplexZone
+	actual    *pb.Zone
+}
 
-func (a *zoneAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &ZoneAdapter{}
+
+func (a *ZoneAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting dataplex zone", "name", a.id)
+	log.V(2).Info("getting Zone", "name", a.id)
 
-	req := &pb.GetZoneRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetZone(ctx, req)
+	req := &pb.GetZoneRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetZone(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		// Returning 'false, nil' means the error is retryable by the controller manager
-		return false, nil
+		return false, fmt.Errorf("getting Zone %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *zoneAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ZoneAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating dataplex zone", "name", a.id)
+	log.V(2).Info("creating Zone", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := DataplexZoneSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateZoneRequest{
-		Parent: fmt.Sprintf("projects/%s/locations/%s/lakes/%s", a.id.Project, a.id.Location, a.id.Lake),
-		Zone:   a.desired,
-		ZoneId: a.id.Zone,
+		Parent: a.id.ParentString(),
+		ZoneId: a.id.Lake,
+		Zone:   resource,
 	}
 	op, err := a.gcpClient.CreateZone(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating dataplex zone %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating Zone %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting create dataplex zone %s failed: %w", a.id, err)
+		return fmt.Errorf("waiting create Zone %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created Zone", "name", a.id)
 
-	log.V(2).Info("successfully created dataplex zone in gcp", "name", a.id)
-	mapCtx := &direct.MapContext{}
 	status := &krm.DataplexZoneStatus{}
 	status.ObservedState = DataplexZoneObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *zoneAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ZoneAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating dataplex zone", "name", a.id)
-
-	zone := a.desired
-	zone.Name = a.id.String()
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	updateMask := &fieldmaskpb.FieldMask{}
-	if !reflect.DeepEqual(zone.DisplayName, a.actual.DisplayName) {
-		report.AddField("display_name", a.actual.DisplayName, zone.DisplayName)
-		updateMask.Paths = append(updateMask.Paths, "display_name")
-	}
-	if !reflect.DeepEqual(zone.Description, a.actual.Description) {
-		report.AddField("description", a.actual.Description, zone.Description)
-		updateMask.Paths = append(updateMask.Paths, "description")
-	}
-	if !reflect.DeepEqual(zone.Labels, a.actual.Labels) {
-		report.AddField("labels", a.actual.Labels, zone.Labels)
-		updateMask.Paths = append(updateMask.Paths, "labels")
-	}
-
-	// API default value:
-	//"discoverySpec": {
-	//    "csvOptions": {},
-	//    "jsonOptions": {},
-	//    "schedule": ""
-	//  })
-	emptyDiscoverySpec := &pb.Zone_DiscoverySpec{
-		CsvOptions:  &pb.Zone_DiscoverySpec_CsvOptions{},
-		JsonOptions: &pb.Zone_DiscoverySpec_JsonOptions{},
-		Trigger:     &pb.Zone_DiscoverySpec_Schedule{Schedule: ""},
-	}
-	if zone.DiscoverySpec != nil {
-		if !cmp.Equal(zone.DiscoverySpec, a.actual.DiscoverySpec, cmpopts.IgnoreUnexported(pb.Zone_DiscoverySpec{}, pb.Zone_DiscoverySpec_CsvOptions{}, pb.Zone_DiscoverySpec_JsonOptions{})) {
-			report.AddField("discovery_spec", a.actual.DiscoverySpec, zone.DiscoverySpec)
-			updateMask.Paths = append(updateMask.Paths, "discovery_spec")
-		}
-	} else {
-		if !cmp.Equal(emptyDiscoverySpec, a.actual.DiscoverySpec, cmpopts.IgnoreUnexported(pb.Zone_DiscoverySpec{}, pb.Zone_DiscoverySpec_CsvOptions{}, pb.Zone_DiscoverySpec_JsonOptions{})) {
-			report.AddField("discovery_spec", a.actual.DiscoverySpec, emptyDiscoverySpec)
-			updateMask.Paths = append(updateMask.Paths, "discovery_spec")
-		}
-	}
-	// Type is immutable, no need to check Type
-	// ResourceSpec.LocationType is immutable, no need to check ResourceSpec
-
-	var updated *pb.Zone
-	if len(updateMask.Paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-
-		// even though there is no update, we still want to update KRM status
-		updated = a.actual
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		log.V(2).Info("updating fields", "name", a.id, "paths", updateMask.Paths)
-		req := &pb.UpdateZoneRequest{
-			UpdateMask: updateMask,
-			Zone:       zone,
-		}
-		op, err := a.gcpClient.UpdateZone(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating dataplex zone %s: %w", a.id.String(), err)
-		}
-		updated, err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting for update of dataplex zone %s: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated dataplex zone", "name", a.id)
-	}
+	log.V(2).Info("updating Zone", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	status := &krm.DataplexZoneStatus{}
-	status.ObservedState = DataplexZoneObservedState_FromProto(mapCtx, updated)
+	desired := DataplexZoneSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	return updateOp.UpdateStatus(ctx, status, nil)
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareZone(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateZoneRequest{
+			Zone:       desired,
+			UpdateMask: updateMask,
+		}
+		op, err := a.gcpClient.UpdateZone(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Zone %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Zone %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Zone", "name", a.id)
+
+		status := &krm.DataplexZoneStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = DataplexZoneObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
 }
 
-func (a *zoneAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	log := klog.FromContext(ctx)
+func compareZone(ctx context.Context, actual, desired *pb.Zone) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DataplexZoneSpec_FromProto, DataplexZoneSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
 
+func (a *ZoneAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
 	obj := &krm.DataplexZone{}
 	mapCtx := &direct.MapContext{}
@@ -266,39 +238,40 @@ func (a *zoneAdapter) Export(ctx context.Context) (*unstructured.Unstructured, e
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
+	obj.Spec.Location = a.id.Location
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u := &unstructured.Unstructured{Object: uObj}
-	u.SetName(a.id.String()) // This will likely be overridden by the caller
+	u.Object = uObj
+	u.SetName(a.id.Lake)
 	u.SetGroupVersionKind(krm.DataplexZoneGVK)
-
-	log.Info("exported object", "obj", u, "gvk", u.GroupVersionKind())
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *zoneAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ZoneAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting dataplex zone", "name", a.id)
+	log.V(2).Info("deleting Zone", "name", a.id)
 
-	req := &pb.DeleteZoneRequest{Name: a.id.String()}
+	req := &pb.DeleteZoneRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteZone(ctx, req)
 	if err != nil {
-		return false, fmt.Errorf("deleting dataplex zone %s: %w", a.id.String(), err)
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deleting Zone %s: %w", a.id, err)
 	}
-
-	if !op.Done() {
-		log.V(2).Info("waiting for deletion of dataplex zone", "name", a.id)
-		err = op.Wait(ctx)
-		if err != nil {
-			return false, fmt.Errorf("waiting for deletion of dataplex zone %s: %w", a.id.String(), err)
+	log.V(2).Info("successfully deleted Zone", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Zone %s: %w", a.id, err)
 		}
 	}
-	log.V(2).Info("successfully deleted dataplex zone", "name", a.id)
-
 	return true, nil
 }

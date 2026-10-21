@@ -17,14 +17,6 @@ package notebooks
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/notebooks/apiv1"
-	pb "cloud.google.com/go/notebooks/apiv1/notebookspb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
-	dataprocv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dataproc/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/notebooks/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -34,6 +26,12 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/notebooks/apiv1"
+	pb "cloud.google.com/go/notebooks/apiv1/notebookspb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -49,9 +47,49 @@ func NewExecutionModel(ctx context.Context, config *config.ControllerConfig) (di
 }
 
 var _ directbase.Model = &modelExecution{}
+var _ = strings.TrimPrefix
 
 type modelExecution struct {
 	config config.ControllerConfig
+}
+
+func (m *modelExecution) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.NotebooksExecution{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	id := &krm.NotebooksExecutionIdentity{}
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ExecutionAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelExecution) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.NotebooksExecutionIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ExecutionAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
 }
 
 func (m *modelExecution) client(ctx context.Context) (*gcp.NotebookClient, error) {
@@ -60,6 +98,7 @@ func (m *modelExecution) client(ctx context.Context) (*gcp.NotebookClient, error
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewNotebookClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building Execution client: %w", err)
@@ -67,71 +106,10 @@ func (m *modelExecution) client(ctx context.Context) (*gcp.NotebookClient, error
 	return gcpClient, err
 }
 
-func (m *modelExecution) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.NotebooksExecution{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	// Always call common.NormalizeReferences to resolve references
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	// Manually resolve IAMServiceAccountRef
-	if obj.Spec.ExecutionTemplate != nil && obj.Spec.ExecutionTemplate.ServiceAccountRef != nil {
-		if err := obj.Spec.ExecutionTemplate.ServiceAccountRef.Resolve(ctx, reader, obj); err != nil {
-			return nil, fmt.Errorf("resolving serviceAccountRef: %w", err)
-		}
-	}
-
-	// Manually normalize ClusterRef
-	if obj.Spec.ExecutionTemplate != nil && obj.Spec.ExecutionTemplate.DataprocParameters != nil && obj.Spec.ExecutionTemplate.DataprocParameters.ClusterRef != nil {
-		if err := obj.Spec.ExecutionTemplate.DataprocParameters.ClusterRef.Normalize(ctx, reader, obj.GetNamespace()); err != nil {
-			return nil, fmt.Errorf("normalizing clusterRef: %w", err)
-		}
-
-		id := &dataprocv1beta1.DataprocClusterIdentity{}
-		if err := id.FromExternal(obj.Spec.ExecutionTemplate.DataprocParameters.ClusterRef.External); err == nil {
-			obj.Spec.ExecutionTemplate.DataprocParameters.ClusterRef.External = dataprocv1beta1.DataprocClusterIdentityFormatRelative.ToString(*id)
-		}
-	}
-
-	id, err := krm.NewExecutionIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get notebooks GCP client
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := NotebooksExecutionSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &ExecutionAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   desired,
-	}, nil
-}
-
-func (m *modelExecution) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// TODO: Support URLs
-	return nil, nil
-}
-
 type ExecutionAdapter struct {
 	id        *krm.NotebooksExecutionIdentity
 	gcpClient *gcp.NotebookClient
-	desired   *pb.Execution
+	desired   *krm.NotebooksExecution
 	actual    *pb.Execution
 }
 
@@ -141,8 +119,10 @@ func (a *ExecutionAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting Execution", "name", a.id)
 
-	req := &pb.GetExecutionRequest{Name: a.id.String()}
-	executionpb, err := a.gcpClient.GetExecution(ctx, req)
+	req := &pb.GetExecutionRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetExecution(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -150,18 +130,25 @@ func (a *ExecutionAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting Execution %q: %w", a.id, err)
 	}
 
-	a.actual = executionpb
+	a.actual = resp
 	return true, nil
 }
 
 func (a *ExecutionAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating Execution", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := NotebooksExecutionSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateExecutionRequest{
 		Parent:      a.id.ParentString(),
 		ExecutionId: a.id.ID(),
-		Execution:   a.desired,
+		Execution:   resource,
 	}
 	op, err := a.gcpClient.CreateExecution(ctx, req)
 	if err != nil {
@@ -169,31 +156,60 @@ func (a *ExecutionAdapter) Create(ctx context.Context, createOp *directbase.Crea
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for Execution %s creation: %w", a.id, err)
+		return fmt.Errorf("waiting create Execution %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created Execution", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.NotebooksExecutionStatus{}
+	status.ObservedState = NotebooksExecutionObservedState_v1alpha1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ExecutionAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating Execution", "name", a.id)
 
-	diffs, _, err := compareExecution(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := NotebooksExecutionSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareExecution(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no diff detected for Execution", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("NotebooksExecution resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
+	status := &krm.NotebooksExecutionStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = NotebooksExecutionObservedState_v1alpha1_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
 
-	return fmt.Errorf("NotebooksExecution resource is immutable and cannot be updated")
+func compareExecution(ctx context.Context, actual, desired *pb.Execution) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, NotebooksExecutionSpec_v1alpha1_FromProto, NotebooksExecutionSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *ExecutionAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -209,16 +225,16 @@ func (a *ExecutionAdapter) Export(ctx context.Context) (*unstructured.Unstructur
 		return nil, mapCtx.Err()
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = &a.id.Location
+	obj.Spec.Location = a.id.Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.actual.Name)
-	u.SetGroupVersionKind(krm.NotebooksExecutionGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.NotebooksExecutionGVK)
 	return u, nil
 }
 
@@ -226,53 +242,22 @@ func (a *ExecutionAdapter) Delete(ctx context.Context, deleteOp *directbase.Dele
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting Execution", "name", a.id)
 
-	req := &pb.DeleteExecutionRequest{Name: a.id.String()}
+	req := &pb.DeleteExecutionRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteExecution(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent Execution, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting Execution %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted Execution", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete Execution %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Execution %s: %w", a.id, err)
+		}
 	}
 	return true, nil
-}
-
-func compareExecution(ctx context.Context, actual, desired *pb.Execution) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, NotebooksExecutionSpec_v1alpha1_FromProto, NotebooksExecutionSpec_v1alpha1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name // Restore any non-spec identifier fields if needed
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *pb.Execution) {
-		// Even if empty, it's a good pattern to define and populate GCP/server defaults here
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func (a *ExecutionAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Execution) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.NotebooksExecutionStatus{}
-	status.ObservedState = NotebooksExecutionObservedState_v1alpha1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
 }

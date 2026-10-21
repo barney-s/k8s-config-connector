@@ -17,193 +17,200 @@ package bigqueryexport
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/securitycenter/apiv1"
-	pb "cloud.google.com/go/securitycenter/apiv1/securitycenterpb"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/securitycenter/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/securitycenter"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/securitycenter/apiv1"
+	pb "cloud.google.com/go/securitycenter/apiv1/securitycenterpb"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
 
-const (
-	ctrlName = "securitycenter-bigqueryexport-controller"
-)
-
 func init() {
-	registry.RegisterModel(krm.SecurityCenterBigQueryExportGVK, NewModel)
+	registry.RegisterModel(krm.SecurityCenterBigQueryExportGVK, NewBigQueryExportModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewBigQueryExportModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelBigQueryExport{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelBigQueryExport{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelBigQueryExport struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building SecurityCenter client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelBigQueryExport) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.SecurityCenterBigQueryExport{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	idBase, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idBase.(*krm.SecurityCenterBigQueryExportIdentity)
+	id := i.(*krm.SecurityCenterBigQueryExportIdentity)
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{
+	return &BigQueryExportAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelBigQueryExport) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
+func (m *modelBigQueryExport) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building BigQueryExport client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type BigQueryExportAdapter struct {
 	id        *krm.SecurityCenterBigQueryExportIdentity
 	gcpClient *gcp.Client
 	desired   *krm.SecurityCenterBigQueryExport
 	actual    *pb.BigQueryExport
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &BigQueryExportAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *BigQueryExportAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting SecurityCenterBigQueryExport", "name", a.fullyQualifiedName())
+	log.V(2).Info("getting BigQueryExport", "name", a.id)
 
-	req := &pb.GetBigQueryExportRequest{Name: a.fullyQualifiedName()}
-	pbObj, err := a.gcpClient.GetBigQueryExport(ctx, req)
+	req := &pb.GetBigQueryExportRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBigQueryExport(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting SecurityCenterBigQueryExport %q: %w", a.fullyQualifiedName(), err)
+		return false, fmt.Errorf("getting BigQueryExport %q: %w", a.id, err)
 	}
 
-	a.actual = pbObj
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *BigQueryExportAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating SecurityCenterBigQueryExport")
+	log.V(2).Info("creating BigQueryExport", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
-	resource := securitycenter.SecurityCenterBigQueryExportSpec_ToProto(mapCtx, &desired.Spec)
+	resource := SecurityCenterBigQueryExportSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	resource.Name = a.fullyQualifiedName()
-
-	parentString := fmt.Sprintf("organizations/%s/locations/%s", a.id.Organization, a.id.Location)
 
 	req := &pb.CreateBigQueryExportRequest{
-		Parent:           parentString,
-		BigQueryExportId: a.id.Export,
+		Parent:           a.id.ParentString(),
+		BigQueryExportId: a.id.Organization,
 		BigQueryExport:   resource,
 	}
-
 	created, err := a.gcpClient.CreateBigQueryExport(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating SecurityCenterBigQueryExport %s: %w", a.fullyQualifiedName(), err)
+		return fmt.Errorf("creating BigQueryExport %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created SecurityCenterBigQueryExport", "name", a.fullyQualifiedName())
+	log.V(2).Info("successfully created BigQueryExport", "name", a.id)
 
 	status := &krm.SecurityCenterBigQueryExportStatus{}
-	status.ObservedState = securitycenter.SecurityCenterBigQueryExportObservedState_FromProto(mapCtx, created)
+	status.ObservedState = SecurityCenterBigQueryExportObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	externalRef := created.Name
-	status.ExternalRef = &externalRef
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *BigQueryExportAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating SecurityCenterBigQueryExport", "name", a.fullyQualifiedName())
-	mapCtx := &direct.MapContext{}
+	log.V(2).Info("updating BigQueryExport", "name", a.id)
 
-	resource := securitycenter.SecurityCenterBigQueryExportSpec_ToProto(mapCtx, &a.desired.DeepCopy().Spec)
+	mapCtx := &direct.MapContext{}
+	desired := SecurityCenterBigQueryExportSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	resource.Name = a.fullyQualifiedName()
 
-	paths, report, err := common.CompareProtoMessageStructuredDiff(resource, a.actual, common.BasicDiff)
+	diffs, updateMask, err := compareBigQueryExport(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.fullyQualifiedName())
-		return nil
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateBigQueryExportRequest{
+			BigQueryExport: desired,
+			UpdateMask:     updateMask,
+		}
+		updated, err := a.gcpClient.UpdateBigQueryExport(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating BigQueryExport %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated BigQueryExport", "name", a.id)
+
+		status := &krm.SecurityCenterBigQueryExportStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = SecurityCenterBigQueryExportObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	report.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, report)
-
-	req := &pb.UpdateBigQueryExportRequest{
-		BigQueryExport: resource,
-		UpdateMask:     &fieldmaskpb.FieldMask{Paths: sets.List(paths)},
-	}
-
-	updated, err := a.gcpClient.UpdateBigQueryExport(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating SecurityCenterBigQueryExport %s: %w", a.fullyQualifiedName(), err)
-	}
-
-	status := &krm.SecurityCenterBigQueryExportStatus{}
-	status.ObservedState = securitycenter.SecurityCenterBigQueryExportObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	externalRef := updated.Name
-	status.ExternalRef = &externalRef
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareBigQueryExport(ctx context.Context, actual, desired *pb.BigQueryExport) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, SecurityCenterBigQueryExportSpec_FromProto, SecurityCenterBigQueryExportSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *BigQueryExportAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -211,37 +218,37 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 
 	obj := &krm.SecurityCenterBigQueryExport{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(securitycenter.SecurityCenterBigQueryExportSpec_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(SecurityCenterBigQueryExportSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.Location = &a.id.Location
-	obj.Spec.OrganizationRef = &refsv1beta1.OrganizationRef{External: fmt.Sprintf("organizations/%s", a.id.Organization)}
+	obj.Spec.Location = a.id.Location
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
+	u.SetName(a.id.Organization)
+	u.SetGroupVersionKind(krm.SecurityCenterBigQueryExportGVK)
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *BigQueryExportAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting SecurityCenterBigQueryExport", "name", a.fullyQualifiedName())
+	log.V(2).Info("deleting BigQueryExport", "name", a.id)
 
-	req := &pb.DeleteBigQueryExportRequest{Name: a.fullyQualifiedName()}
+	req := &pb.DeleteBigQueryExportRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteBigQueryExport(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting SecurityCenterBigQueryExport %s: %w", a.fullyQualifiedName(), err)
+		return false, fmt.Errorf("deleting BigQueryExport %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully deleted BigQueryExport", "name", a.id)
 	return true, nil
-}
-
-func (a *Adapter) fullyQualifiedName() string {
-	return fmt.Sprintf("organizations/%s/locations/%s/bigQueryExports/%s", a.id.Organization, a.id.Location, a.id.Export)
 }

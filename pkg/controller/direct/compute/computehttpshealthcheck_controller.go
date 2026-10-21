@@ -12,30 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.compute.v1.HealthChecks
-// proto.message: google.cloud.compute.v1.HealthCheck
-// crd.type: ComputeHTTPSHealthCheck
-// crd.version: v1beta1
-
 package compute
 
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	computepb "cloud.google.com/go/compute/apiv1/computepb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -44,6 +25,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	computepb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -51,66 +42,68 @@ func init() {
 }
 
 func NewComputeHTTPSHealthCheckModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeHTTPSHealthCheckModel{config: config}, nil
+	return &modelComputeHTTPSHealthCheck{config: *config}, nil
 }
 
-var _ directbase.Model = &computeHTTPSHealthCheckModel{}
+var _ directbase.Model = &modelComputeHTTPSHealthCheck{}
+var _ = strings.TrimPrefix
 
-type computeHTTPSHealthCheckModel struct {
-	config *config.ControllerConfig
+type modelComputeHTTPSHealthCheck struct {
+	config config.ControllerConfig
 }
 
-func (m *computeHTTPSHealthCheckModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeHTTPSHealthCheck) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeHTTPSHealthCheck{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	healthChecksClient, err := gcpClient.newHealthChecksClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+	id := i.(*v1beta1.ComputeHTTPSHealthCheckIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desired := obj.DeepCopy()
-	resource := ComputeHTTPSHealthCheckSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
-
 	return &ComputeHTTPSHealthCheckAdapter{
-		gcpClient: healthChecksClient,
-		id:        id.(*v1beta1.ComputeHTTPSHealthCheckIdentity),
-		desired:   resource,
-		reader:    reader,
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *computeHTTPSHealthCheckModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeHTTPSHealthCheck) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
+func (m *modelComputeHTTPSHealthCheck) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeHTTPSHealthCheck client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type ComputeHTTPSHealthCheckAdapter struct {
-	gcpClient *compute.HealthChecksClient
 	id        *v1beta1.ComputeHTTPSHealthCheckIdentity
-	desired   *computepb.HealthCheck
-	actual    *computepb.HealthCheck
-	reader    client.Reader
+	gcpClient *gcp.Client
+	desired   *krm.ComputeHTTPSHealthCheck
+	actual    *computepb.ComputeHTTPSHealthCheck
 }
 
 var _ directbase.Adapter = &ComputeHTTPSHealthCheckAdapter{}
@@ -119,11 +112,10 @@ func (a *ComputeHTTPSHealthCheckAdapter) Find(ctx context.Context) (bool, error)
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeHTTPSHealthCheck", "name", a.id)
 
-	req := &computepb.GetHealthCheckRequest{
-		Project:     a.id.Project,
-		HealthCheck: a.id.HttpsHealthCheck,
+	req := &computepb.GetComputeHTTPSHealthCheckRequest{
+		Name: a.id.String(),
 	}
-	actual, err := a.gcpClient.Get(ctx, req)
+	resp, err := a.gcpClient.GetComputeHTTPSHealthCheck(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -131,7 +123,7 @@ func (a *ComputeHTTPSHealthCheckAdapter) Find(ctx context.Context) (bool, error)
 		return false, fmt.Errorf("getting ComputeHTTPSHealthCheck %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
@@ -140,94 +132,68 @@ func (a *ComputeHTTPSHealthCheckAdapter) Create(ctx context.Context, createOp *d
 	log.V(2).Info("creating ComputeHTTPSHealthCheck", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
-	a.desired.Name = direct.LazyPtr(a.id.HttpsHealthCheck)
-
-	req := &computepb.InsertHealthCheckRequest{
-		Project:             a.id.Project,
-		HealthCheckResource: a.desired,
-	}
-	op, err := a.gcpClient.Insert(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating ComputeHTTPSHealthCheck %s: %w", a.id, err)
-	}
-
-	err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("compute ComputeHTTPSHealthCheck %s waiting creation: %w", a.id.String(), err)
-	}
-	log.Info("successfully created compute ComputeHTTPSHealthCheck in gcp", "name", a.id)
-
-	// Get the created resource
-	created, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeHTTPSHealthCheck %s: %w", a.id, err)
-	}
-
-	status := ComputeHTTPSHealthCheckStatus_v1beta1_FromProto(mapCtx, created)
+	desired := a.desired.DeepCopy()
+	resource := ComputeHTTPSHealthCheckSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	if status.SelfLink != nil {
-		selfLink := *status.SelfLink
-		selfLink = strings.ReplaceAll(selfLink, "/global/healthChecks/", "/global/httpsHealthChecks/")
-		status.SelfLink = &selfLink
+
+	req := &computepb.CreateComputeHTTPSHealthCheckRequest{
+		Parent:                    a.id.ParentString(),
+		ComputeHTTPSHealthCheckId: a.id.HttpsHealthCheck,
+		ComputeHTTPSHealthCheck:   resource,
 	}
+	op, err := a.gcpClient.CreateComputeHTTPSHealthCheck(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating ComputeHTTPSHealthCheck %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeHTTPSHealthCheck %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created ComputeHTTPSHealthCheck", "name", a.id)
+
+	status := &krm.ComputeHTTPSHealthCheckStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeHTTPSHealthCheckAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeHTTPSHealthCheck", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-
-	diffs, _, err := compareComputeHTTPSHealthCheck(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	var updated *computepb.HealthCheck
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		updated = a.actual
-	} else {
-		diffs.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diffs)
-
-		a.desired.Name = direct.LazyPtr(a.id.HttpsHealthCheck)
-
-		req := &computepb.PatchHealthCheckRequest{
-			Project:             a.id.Project,
-			HealthCheck:         a.id.HttpsHealthCheck,
-			HealthCheckResource: a.desired,
-		}
-		op, err := a.gcpClient.Patch(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating compute ComputeHTTPSHealthCheck %s: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated compute ComputeHTTPSHealthCheck", "name", a.id.String())
-
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("compute ComputeHTTPSHealthCheck %s waiting for update: %w", a.id.String(), err)
-		}
-
-		// Get the updated resource
-		updated, err = a.get(ctx)
-		if err != nil {
-			return fmt.Errorf("getting ComputeHTTPSHealthCheck %s: %w", a.id, err)
-		}
-	}
-
-	status := ComputeHTTPSHealthCheckStatus_v1beta1_FromProto(mapCtx, updated)
+	desired := ComputeHTTPSHealthCheckSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	if status.SelfLink != nil {
-		selfLink := *status.SelfLink
-		selfLink = strings.ReplaceAll(selfLink, "/global/healthChecks/", "/global/httpsHealthChecks/")
-		status.SelfLink = &selfLink
+
+	diffs, updateMask, err := compareComputeHTTPSHealthCheck(ctx, a.actual, desired)
+	if err != nil {
+		return err
 	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeHTTPSHealthCheck resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.ComputeHTTPSHealthCheckStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return updateOp.UpdateStatus(ctx, status, nil)
+}
+
+func compareComputeHTTPSHealthCheck(ctx context.Context, actual, desired *computepb.ComputeHTTPSHealthCheck) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeHTTPSHealthCheckSpec_v1beta1_FromProto, ComputeHTTPSHealthCheckSpec_v1beta1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *ComputeHTTPSHealthCheckAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -242,92 +208,20 @@ func (a *ComputeHTTPSHealthCheckAdapter) Export(ctx context.Context) (*unstructu
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.id.String())
-	u.SetGroupVersionKind(krm.ComputeHTTPSHealthCheckGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.HttpsHealthCheck)
+	u.SetGroupVersionKind(krm.ComputeHTTPSHealthCheckGVK)
 	return u, nil
 }
 
 func (a *ComputeHTTPSHealthCheckAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeHTTPSHealthCheck", "name", a.id)
-
-	req := &computepb.DeleteHealthCheckRequest{
-		Project:     a.id.Project,
-		HealthCheck: a.id.HttpsHealthCheck,
-	}
-	op, err := a.gcpClient.Delete(ctx, req)
-	if err != nil {
-		return false, fmt.Errorf("deleting compute ComputeHTTPSHealthCheck %s: %w", a.id.String(), err)
-	}
-	log.Info("successfully deleted compute ComputeHTTPSHealthCheck", "name", a.id)
-
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return false, fmt.Errorf("waiting for deletion of compute ComputeHTTPSHealthCheck %s: %w", a.id.String(), err)
-		}
-	}
-
+	log.V(2).Info("deletion not supported for ComputeHTTPSHealthCheck, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func (a *ComputeHTTPSHealthCheckAdapter) get(ctx context.Context) (*computepb.HealthCheck, error) {
-	getReq := &computepb.GetHealthCheckRequest{
-		Project:     a.id.Project,
-		HealthCheck: a.id.HttpsHealthCheck,
-	}
-	resource, err := a.gcpClient.Get(ctx, getReq)
-	if err != nil {
-		return nil, fmt.Errorf("getting ComputeHTTPSHealthCheck %s: %w", a.id, err)
-	}
-	return resource, nil
-}
-
-func compareComputeHTTPSHealthCheck(ctx context.Context, actual, desired *computepb.HealthCheck) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, ComputeHTTPSHealthCheckSpec_v1beta1_FromProto, ComputeHTTPSHealthCheckSpec_v1beta1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *computepb.HealthCheck) {
-		if obj.CheckIntervalSec == nil {
-			obj.CheckIntervalSec = direct.PtrTo(int32(5))
-		}
-		if obj.HealthyThreshold == nil {
-			obj.HealthyThreshold = direct.PtrTo(int32(2))
-		}
-		if obj.TimeoutSec == nil {
-			obj.TimeoutSec = direct.PtrTo(int32(5))
-		}
-		if obj.UnhealthyThreshold == nil {
-			obj.UnhealthyThreshold = direct.PtrTo(int32(2))
-		}
-		if obj.HttpsHealthCheck == nil {
-			obj.HttpsHealthCheck = &computepb.HTTPSHealthCheck{}
-		}
-		if obj.HttpsHealthCheck.Port == nil {
-			obj.HttpsHealthCheck.Port = direct.PtrTo(int32(443))
-		}
-		if obj.HttpsHealthCheck.RequestPath == nil {
-			obj.HttpsHealthCheck.RequestPath = direct.PtrTo("/")
-		}
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

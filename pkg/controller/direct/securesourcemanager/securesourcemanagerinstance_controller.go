@@ -25,6 +25,7 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
 	"strings"
@@ -48,6 +49,7 @@ func NewInstanceModel(ctx context.Context, config *config.ControllerConfig) (dir
 }
 
 var _ directbase.Model = &modelInstance{}
+var _ = strings.TrimPrefix
 
 type modelInstance struct {
 	config config.ControllerConfig
@@ -148,6 +150,7 @@ func (a *InstanceAdapter) Create(ctx context.Context, createOp *directbase.Creat
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateInstanceRequest{
 		Parent:     a.id.ParentString(),
@@ -182,6 +185,7 @@ func (a *InstanceAdapter) Update(ctx context.Context, updateOp *directbase.Updat
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	diffs, updateMask, err := compareInstance(ctx, a.actual, desired)
 	if err != nil {
@@ -209,6 +213,7 @@ func compareInstance(ctx context.Context, actual, desired *pb.Instance) (*struct
 	if err != nil {
 		return nil, nil, err
 	}
+	maskedActual.Labels = actual.Labels
 	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err

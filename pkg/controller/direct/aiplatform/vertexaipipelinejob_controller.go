@@ -17,9 +17,6 @@ package aiplatform
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/aiplatform/apiv1"
-	pb "cloud.google.com/go/aiplatform/apiv1/aiplatformpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/aiplatform/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -27,11 +24,17 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/aiplatform/apiv1"
+	pb "cloud.google.com/go/aiplatform/apiv1/aiplatformpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -42,80 +45,66 @@ func init() {
 }
 
 func NewPipelineJobModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &pipelineJobModel{config: config}, nil
+	return &modelPipelineJob{config: *config}, nil
 }
 
-var _ directbase.Model = &pipelineJobModel{}
+var _ directbase.Model = &modelPipelineJob{}
+var _ = strings.TrimPrefix
 
-type pipelineJobModel struct {
-	config *config.ControllerConfig
+type modelPipelineJob struct {
+	config config.ControllerConfig
 }
 
-func (m *pipelineJobModel) client(ctx context.Context, location string) (*gcp.PipelineClient, error) {
+func (m *modelPipelineJob) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.VertexAIPipelineJob{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.VertexAIPipelineJobIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &PipelineJobAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelPipelineJob) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelPipelineJob) client(ctx context.Context) (*gcp.PipelineClient, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.GRPCClientOptions()
 	if err != nil {
 		return nil, err
 	}
-	endpoint := fmt.Sprintf("%s-aiplatform.googleapis.com:443", location)
-	opts = append(opts, option.WithEndpoint(endpoint))
+
 	gcpClient, err := gcp.NewPipelineClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building PipelineClient client: %w", err)
+		return nil, fmt.Errorf("building PipelineJob client: %w", err)
 	}
 	return gcpClient, err
-}
-
-func (m *pipelineJobModel) AdapterForObject(ctx context.Context, reader *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	obj := &krm.VertexAIPipelineJob{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(reader.Object.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader.Reader)
-	if err != nil {
-		return nil, err
-	}
-
-	// Always call common.NormalizeReferences to resolve any resource references
-	if err := common.NormalizeReferences(ctx, reader.Reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	typedID, ok := id.(*krm.VertexAIPipelineJobIdentity)
-	if !ok {
-		return nil, fmt.Errorf("expected VertexAIPipelineJobIdentity, got %T", id)
-	}
-
-	// Get PipelineClient client
-	gcpClient, err := m.client(ctx, typedID.Location)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desiredpb := VertexAIPipelineJobSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, fmt.Errorf("mapping spec to proto: %w", mapCtx.Err())
-	}
-
-	return &PipelineJobAdapter{
-		id:        typedID,
-		gcpClient: gcpClient,
-		desiredpb: desiredpb,
-		desired:   obj,
-	}, nil
-}
-
-func (m *pipelineJobModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// TODO: Support AdapterForURL
-	return nil, nil
 }
 
 type PipelineJobAdapter struct {
 	id        *krm.VertexAIPipelineJobIdentity
 	gcpClient *gcp.PipelineClient
-	desiredpb *pb.PipelineJob
 	desired   *krm.VertexAIPipelineJob
 	actual    *pb.PipelineJob
 }
@@ -124,72 +113,102 @@ var _ directbase.Adapter = &PipelineJobAdapter{}
 
 func (a *PipelineJobAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting VertexAIPipelineJob", "name", a.id.String())
+	log.V(2).Info("getting PipelineJob", "name", a.id)
 
 	req := &pb.GetPipelineJobRequest{
 		Name: a.id.String(),
 	}
-
-	pipelineJobpb, err := a.gcpClient.GetPipelineJob(ctx, req)
+	resp, err := a.gcpClient.GetPipelineJob(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting VertexAIPipelineJob %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting PipelineJob %q: %w", a.id, err)
 	}
 
-	a.actual = pipelineJobpb
-
-	mapCtx := &direct.MapContext{}
-	observedState := VertexAIPipelineJobObservedState_FromProto(mapCtx, pipelineJobpb)
-	if mapCtx.Err() != nil {
-		return false, fmt.Errorf("mapping from proto to observed state: %w", mapCtx.Err())
-	}
-	a.desired.Status.ObservedState = observedState
-	a.desired.Status.ExternalRef = direct.LazyPtr(a.id.String())
+	a.actual = resp
 	return true, nil
 }
 
 func (a *PipelineJobAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating VertexAIPipelineJob", "name", a.id.String())
+	log.V(2).Info("creating PipelineJob", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := VertexAIPipelineJobSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreatePipelineJobRequest{
 		Parent:        a.id.ParentString(),
 		PipelineJobId: a.id.PipelineJob,
-		PipelineJob:   a.desiredpb,
+		PipelineJob:   resource,
 	}
-
-	created, err := a.gcpClient.CreatePipelineJob(ctx, req)
+	op, err := a.gcpClient.CreatePipelineJob(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating VertexAIPipelineJob %q: %w", a.id.String(), err)
+		return fmt.Errorf("creating PipelineJob %s: %w", a.id, err)
 	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create PipelineJob %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created PipelineJob", "name", a.id)
 
-	log.V(2).Info("successfully created VertexAIPipelineJob", "name", a.id.String())
-
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.VertexAIPipelineJobStatus{}
+	status.ObservedState = VertexAIPipelineJobObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *PipelineJobAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating VertexAIPipelineJob", "name", a.id.String())
+	log.V(2).Info("updating PipelineJob", "name", a.id)
 
-	a.desiredpb.Name = a.id.String()
+	mapCtx := &direct.MapContext{}
+	desired := VertexAIPipelineJobSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	diffs, _, err := comparePipelineJob(ctx, a.actual, a.desiredpb)
+	diffs, updateMask, err := comparePipelineJob(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("VertexAIPipelineJob resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
+	status := &krm.VertexAIPipelineJobStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = VertexAIPipelineJobObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
 
-	return fmt.Errorf("VertexAIPipelineJob is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+func comparePipelineJob(ctx context.Context, actual, desired *pb.PipelineJob) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, VertexAIPipelineJobSpec_FromProto, VertexAIPipelineJobSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *PipelineJobAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -204,127 +223,42 @@ func (a *PipelineJobAdapter) Export(ctx context.Context) (*unstructured.Unstruct
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ProjectRef = &refs.ProjectRef{Name: a.id.Project}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = a.id.Location
-	obj.Spec.ResourceID = &a.id.PipelineJob
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.PipelineJob)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("converting to unstructured: %w", err)
+		return nil, err
 	}
 
 	u.Object = uObj
 	u.SetName(a.id.PipelineJob)
 	u.SetGroupVersionKind(krm.VertexAIPipelineJobGVK)
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
-}
-
-func (a *PipelineJobAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.PipelineJob) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.VertexAIPipelineJobStatus{}
-	status.ObservedState = VertexAIPipelineJobObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return fmt.Errorf("mapping status: %w", mapCtx.Err())
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
 }
 
 func (a *PipelineJobAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting VertexAIPipelineJob", "name", a.id.String())
+	log.V(2).Info("deleting PipelineJob", "name", a.id)
 
-	// 1. Get the current state of the PipelineJob first
-	getReq := &pb.GetPipelineJobRequest{
-		Name: a.id.String(),
-	}
-	actual, err := a.gcpClient.GetPipelineJob(ctx, getReq)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("getting PipelineJob before deletion %q: %w", a.id.String(), err)
-	}
-
-	// 2. If the state is not terminal, initiate/wait for cancellation
-	isTerminal := func(state pb.PipelineState) bool {
-		return state == pb.PipelineState_PIPELINE_STATE_SUCCEEDED ||
-			state == pb.PipelineState_PIPELINE_STATE_FAILED ||
-			state == pb.PipelineState_PIPELINE_STATE_CANCELLED
-	}
-
-	if !isTerminal(actual.State) {
-		if actual.State != pb.PipelineState_PIPELINE_STATE_CANCELLING {
-			log.V(2).Info("cancelling VertexAIPipelineJob before deletion", "name", a.id.String(), "currentState", actual.State)
-			cancelReq := &pb.CancelPipelineJobRequest{
-				Name: a.id.String(),
-			}
-			if err := a.gcpClient.CancelPipelineJob(ctx, cancelReq); err != nil {
-				log.Error(err, "error cancelling VertexAIPipelineJob", "name", a.id.String())
-				return false, fmt.Errorf("cancelling VertexAIPipelineJob %q: %w", a.id.String(), err)
-			}
-		}
-		return false, fmt.Errorf("VertexAIPipelineJob %q is in state %s; waiting for terminal state before deletion", a.id.String(), actual.State)
-	}
-
-	// 3. Delete the PipelineJob
 	req := &pb.DeletePipelineJobRequest{
 		Name: a.id.String(),
 	}
-
 	op, err := a.gcpClient.DeletePipelineJob(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting VertexAIPipelineJob %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting PipelineJob %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted PipelineJob", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for deletion of VertexAIPipelineJob %q: %w", a.id.String(), err)
-	}
-
-	return true, nil
-}
-
-func comparePipelineJob(ctx context.Context, actual, desired *pb.PipelineJob) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, VertexAIPipelineJobSpec_FromProto, VertexAIPipelineJobSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *pb.PipelineJob) {
-		// populate any defaults if necessary
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	// Since PipelineJob is immutable, we only compare user-specified spec fields.
-	// We align or copy server-populated / restructured fields to avoid false positive diffs.
-	if clonedDesired.ServiceAccount == "" {
-		clonedDesired.ServiceAccount = maskedActual.ServiceAccount
-	}
-	if len(clonedDesired.Labels) == 0 {
-		clonedDesired.Labels = maskedActual.Labels
-	} else {
-		for k, v := range maskedActual.Labels {
-			if _, ok := clonedDesired.Labels[k]; !ok {
-				clonedDesired.Labels[k] = v
-			}
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete PipelineJob %s: %w", a.id, err)
 		}
 	}
-	// Copy PipelineSpec to avoid structural/restructuring diffs in the complex proto.Struct
-	clonedDesired.PipelineSpec = maskedActual.PipelineSpec
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return diffs, updateMask, nil
+	return true, nil
 }

@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,310 +17,209 @@ package privilegedaccessmanager
 import (
 	"context"
 	"fmt"
-	"reflect"
-	"strings"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/privilegedaccessmanager/v1beta1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/privilegedaccessmanager/apiv1"
 	privilegedaccessmanagerpb "cloud.google.com/go/privilegedaccessmanager/apiv1/privilegedaccessmanagerpb"
-	"github.com/google/go-cmp/cmp"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
-const (
-	ctrlName      = "privilegedaccessmanager-controller"
-	serviceDomain = "//privilegedaccessmanager.googleapis.com"
-)
-
 func init() {
-	registry.RegisterModel(krm.PrivilegedAccessManagerEntitlementGVK, NewModel)
+	registry.RegisterModel(krm.PrivilegedAccessManagerEntitlementGVK, NewEntitlementModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &entitlementModel{config: *config}, nil
+func NewEntitlementModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelEntitlement{config: *config}, nil
 }
 
-var _ directbase.Model = &entitlementModel{}
+var _ directbase.Model = &modelEntitlement{}
+var _ = strings.TrimPrefix
 
-type entitlementModel struct {
+type modelEntitlement struct {
 	config config.ControllerConfig
 }
 
-func (m *entitlementModel) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building PrivilegedAccessManager client for Entitlement: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *entitlementModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelEntitlement) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
-
+	_ = reader
 	obj := &krm.PrivilegedAccessManagerEntitlement{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	identity, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := identity.(*krm.PrivilegedAccessManagerEntitlementIdentity)
+	id := i.(*krm.PrivilegedAccessManagerEntitlementIdentity)
 
-	if obj.Spec.RequesterJustificationConfig.NotMandatory == nil && obj.Spec.RequesterJustificationConfig.Unstructured == nil {
-		return nil, fmt.Errorf("one and only one of 'spec.requesterJustificationConfig.notMandatory' " +
-			"and 'spec.requesterJustificationConfig.unstructured' should be configured: neither is configured")
-	}
-	if obj.Spec.RequesterJustificationConfig.NotMandatory != nil && obj.Spec.RequesterJustificationConfig.Unstructured != nil {
-		return nil, fmt.Errorf("one and only one of 'spec.requesterJustificationConfig.notMandatory' " +
-			"and 'spec.requesterJustificationConfig.unstructured' should be configured: both configured")
-	}
-
-	// Get privilegedaccessmanager GCP client
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{
+	return &EntitlementAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *entitlementModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelEntitlement) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
+func (m *modelEntitlement) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Entitlement client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type EntitlementAdapter struct {
 	id        *krm.PrivilegedAccessManagerEntitlementIdentity
 	gcpClient *gcp.Client
 	desired   *krm.PrivilegedAccessManagerEntitlement
 	actual    *privilegedaccessmanagerpb.Entitlement
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &EntitlementAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *EntitlementAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting PrivilegedAccessManagerEntitlement", "name", a.id.FullyQualifiedName())
+	log.V(2).Info("getting Entitlement", "name", a.id)
 
-	req := &privilegedaccessmanagerpb.GetEntitlementRequest{Name: a.id.FullyQualifiedName()}
-	entitlementpb, err := a.gcpClient.GetEntitlement(ctx, req)
+	req := &privilegedaccessmanagerpb.GetEntitlementRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetEntitlement(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("error getting PrivilegedAccessManagerEntitlement %q: %w", a.id.FullyQualifiedName(), err)
+		return false, fmt.Errorf("getting Entitlement %q: %w", a.id, err)
 	}
 
-	a.actual = entitlementpb
+	a.actual = resp
 	return true, nil
 }
 
-func getResourceTypeAndResourceFromContainer(container string) (string, string, error) {
-	tokens := strings.Split(container, "/")
-	if len(tokens) != 2 {
-		return "", "", fmt.Errorf("container should be one of projects/<project>, "+
-			"folders/<folder> or organizations/<organization>, but got %s", container)
-	}
-	resource := fmt.Sprintf("//cloudresourcemanager.googleapis.com/%s", container)
-	switch tokens[0] {
-	case "projects":
-		return "cloudresourcemanager.googleapis.com/Project", resource, nil
-	case "folders":
-		return "cloudresourcemanager.googleapis.com/Folder", resource, nil
-	case "organizations":
-		return "cloudresourcemanager.googleapis.com/Organization", resource, nil
-	default:
-		return "", "", fmt.Errorf("container must start with 'projects', "+
-			"'folders', or 'organizations', but it starts with %v", tokens[0])
-	}
-}
-
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
-	u := createOp.GetUnstructured()
-
+func (a *EntitlementAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating PrivilegedAccessManagerEntitlement", "name", a.id.FullyQualifiedName())
+	log.V(2).Info("creating Entitlement", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
-	resourceType, resource, err := getResourceTypeAndResourceFromContainer(a.id.Container())
-	if err != nil {
-		return fmt.Errorf("error getting resourceType and resource from container: %w", err)
-	}
-	hiddenFields := gcpIAMAccessResource{resourceType: resourceType, resource: resource}
-	entitlement := PrivilegedAccessManagerEntitlementSpec_ToProto(mapCtx, &desired.Spec, hiddenFields)
+	resource := PrivilegedAccessManagerEntitlementSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
 	req := &privilegedaccessmanagerpb.CreateEntitlementRequest{
 		Parent:        a.id.ParentString(),
-		EntitlementId: a.id.Entitlement,
-		Entitlement:   entitlement,
+		EntitlementId: a.id.FullyQualifiedName,
+		Entitlement:   resource,
 	}
 	op, err := a.gcpClient.CreateEntitlement(ctx, req)
 	if err != nil {
-		return fmt.Errorf("error creating PrivilegedAccessManagerEntitlement %s: %w", a.id.FullyQualifiedName(), err)
+		return fmt.Errorf("creating Entitlement %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("error waiting for PrivilegedAccessManagerEntitlement %s to be created: %w", a.id.FullyQualifiedName(), err)
+		return fmt.Errorf("waiting create Entitlement %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created PrivilegedAccessManagerEntitlement", "name", a.id.FullyQualifiedName())
+	log.V(2).Info("successfully created Entitlement", "name", a.id)
 
 	status := &krm.PrivilegedAccessManagerEntitlementStatus{}
-	observedState := PrivilegedAccessManagerEntitlementObservedState_FromProto(mapCtx, created)
+	status.ObservedState = PrivilegedAccessManagerEntitlementObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ObservedState = observedState
-	status.ExternalRef = a.id.AsExternalRef()
-	return setStatus(u, status)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	u := updateOp.GetUnstructured()
-
+func (a *EntitlementAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating PrivilegedAccessManagerEntitlement", "name", a.id.FullyQualifiedName())
+	log.V(2).Info("updating Entitlement", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-
-	updateMask := &fieldmaskpb.FieldMask{}
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	parsedActual := PrivilegedAccessManagerEntitlementSpec_FromProto(mapCtx, a.actual)
+	desired := PrivilegedAccessManagerEntitlementSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
-		return fmt.Errorf("error generating update mask: %w", mapCtx.Err())
-	}
-	sortPrincipalsInSpec(parsedActual)
-	parsedDesired := a.desired.DeepCopy()
-	sortPrincipalsInSpec(&parsedDesired.Spec)
-
-	if !reflect.DeepEqual(parsedActual.AdditionalNotificationTargets, parsedDesired.Spec.AdditionalNotificationTargets) {
-		report.AddField("additional_notification_targets", parsedActual.AdditionalNotificationTargets, parsedDesired.Spec.AdditionalNotificationTargets)
-		log.V(2).Info("'spec.additionalNotificationTargets' field is updated (-old +new)", cmp.Diff(parsedActual.AdditionalNotificationTargets, parsedDesired.Spec.AdditionalNotificationTargets))
-		updateMask.Paths = append(updateMask.Paths, "additional_notification_targets")
+		return mapCtx.Err()
 	}
 
-	// If '.spec.approvalWorkflow.manualApprovals.requireApproverJustification'
-	// is unset in the desired state, the corresponding field will be 'false' in
-	// the returned actual state when 'approvalWorkflow.manualApprovals' is not
-	// an empty struct. So the diffing needs to be handled differently.
-	if !(isApprovalWorkflowManualApprovalsRequireApproverJustificationUnset(&parsedDesired.Spec) &&
-		isApprovalWorkflowManualApprovalsRequireApproverJustificationSetToFalse(parsedActual)) {
-		if !reflect.DeepEqual(parsedActual.ApprovalWorkflow, parsedDesired.Spec.ApprovalWorkflow) {
-			report.AddField("approval_workflow", parsedActual.ApprovalWorkflow, parsedDesired.Spec.ApprovalWorkflow)
-			log.V(2).Info("'spec.approvalWorkflow' field is updated (-old +new)", cmp.Diff(parsedActual.ApprovalWorkflow, parsedDesired.Spec.ApprovalWorkflow))
-			updateMask.Paths = append(updateMask.Paths, "approval_workflow")
+	diffs, updateMask, err := compareEntitlement(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &privilegedaccessmanagerpb.UpdateEntitlementRequest{
+			Entitlement: desired,
+			UpdateMask:  updateMask,
 		}
-	}
-	if !reflect.DeepEqual(parsedActual.EligibleUsers, parsedDesired.Spec.EligibleUsers) {
-		report.AddField("eligible_users", parsedActual.EligibleUsers, parsedDesired.Spec.EligibleUsers)
-		log.V(2).Info("'spec.eligibleUsers' field is updated (-old +new)", cmp.Diff(parsedActual.EligibleUsers, parsedDesired.Spec.EligibleUsers))
-		updateMask.Paths = append(updateMask.Paths, "eligible_users")
-	}
-	if !reflect.DeepEqual(a.actual.MaxRequestDuration.AsDuration(), direct.StringDuration_ToProto(mapCtx, parsedDesired.Spec.MaxRequestDuration).AsDuration()) {
-		report.AddField("max_request_duration.as_duration", a.actual.MaxRequestDuration.AsDuration(), direct.StringDuration_ToProto(mapCtx, parsedDesired.Spec.MaxRequestDuration).AsDuration())
-		log.V(2).Info("'spec.maxRequestDuration' field is updated (-old +new)", cmp.Diff(a.actual.MaxRequestDuration.AsDuration(), direct.StringDuration_ToProto(mapCtx, parsedDesired.Spec.MaxRequestDuration).AsDuration()))
-		updateMask.Paths = append(updateMask.Paths, "max_request_duration")
-	}
-	if !reflect.DeepEqual(parsedActual.PrivilegedAccess, parsedDesired.Spec.PrivilegedAccess) {
-		report.AddField("privileged_access", parsedActual.PrivilegedAccess, parsedDesired.Spec.PrivilegedAccess)
-		log.V(2).Info("'spec.privilegedAccess' field is updated (-old +new)", cmp.Diff(parsedActual.PrivilegedAccess, parsedDesired.Spec.PrivilegedAccess))
-		updateMask.Paths = append(updateMask.Paths, "privileged_access")
-	}
-	if !reflect.DeepEqual(parsedActual.RequesterJustificationConfig, parsedDesired.Spec.RequesterJustificationConfig) {
-		report.AddField("requester_justification_config", parsedActual.RequesterJustificationConfig, parsedDesired.Spec.RequesterJustificationConfig)
-		log.V(2).Info("'spec.requesterJustificationConfig' field is updated (-old +new)", cmp.Diff(parsedActual.RequesterJustificationConfig, parsedDesired.Spec.RequesterJustificationConfig))
-		updateMask.Paths = append(updateMask.Paths, "requester_justification_config")
-	}
-	if len(updateMask.Paths) == 0 {
-		log.V(2).Info("underlying PrivilegedAccessManagerEntitlement already up to date", "name", a.id.FullyQualifiedName())
+		op, err := a.gcpClient.UpdateEntitlement(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Entitlement %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Entitlement %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Entitlement", "name", a.id)
 
 		status := &krm.PrivilegedAccessManagerEntitlementStatus{}
-		observedState := PrivilegedAccessManagerEntitlementObservedState_FromProto(mapCtx, a.actual)
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = PrivilegedAccessManagerEntitlementObservedState_FromProto(mapCtx, updated)
 		if mapCtx.Err() != nil {
 			return mapCtx.Err()
 		}
-		status.ObservedState = observedState
-		status.ExternalRef = a.id.AsExternalRef()
-		return setStatus(u, status)
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	structuredreporting.ReportDiff(ctx, report)
-
-	desired := a.desired.DeepCopy()
-	resourceType, resource, err := getResourceTypeAndResourceFromContainer(a.id.Container())
-	if err != nil {
-		return fmt.Errorf("error getting resourceType and resource from container: %w", err)
-	}
-	hiddenFields := gcpIAMAccessResource{resourceType: resourceType, resource: resource}
-	entitlement := PrivilegedAccessManagerEntitlementSpec_ToProto(mapCtx, &desired.Spec, hiddenFields)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	entitlement.Name = a.id.FullyQualifiedName()
-	entitlement.Etag = a.actual.Etag
-	req := &privilegedaccessmanagerpb.UpdateEntitlementRequest{
-		UpdateMask:  updateMask,
-		Entitlement: entitlement,
-	}
-	op, err := a.gcpClient.UpdateEntitlement(ctx, req)
-	if err != nil {
-		return fmt.Errorf("error updating PrivilegedAccessManagerEntitlement %s: %w", a.id.FullyQualifiedName(), err)
-	}
-	updated, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("error waiting for PrivilegedAccessManagerEntitlement %s to be updated: %w", a.id.FullyQualifiedName(), err)
-	}
-	log.V(2).Info("successfully updated PrivilegedAccessManagerEntitlement", "name", a.id.FullyQualifiedName())
-
-	status := &krm.PrivilegedAccessManagerEntitlementStatus{}
-	observedState := PrivilegedAccessManagerEntitlementObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ObservedState = observedState
-	return setStatus(u, status)
+	return nil
 }
 
-func isApprovalWorkflowManualApprovalsRequireApproverJustificationUnset(spec *krm.PrivilegedAccessManagerEntitlementSpec) bool {
-	return spec.ApprovalWorkflow == nil ||
-		spec.ApprovalWorkflow.ManualApprovals == nil ||
-		spec.ApprovalWorkflow.ManualApprovals.RequireApproverJustification == nil
+func compareEntitlement(ctx context.Context, actual, desired *privilegedaccessmanagerpb.Entitlement) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, PrivilegedAccessManagerEntitlementSpec_FromProto, PrivilegedAccessManagerEntitlementSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func isApprovalWorkflowManualApprovalsRequireApproverJustificationSetToFalse(spec *krm.PrivilegedAccessManagerEntitlementSpec) bool {
-	return spec.ApprovalWorkflow != nil &&
-		spec.ApprovalWorkflow.ManualApprovals != nil &&
-		spec.ApprovalWorkflow.ManualApprovals.RequireApproverJustification != nil &&
-		*spec.ApprovalWorkflow.ManualApprovals.RequireApproverJustification == false
-}
-
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *EntitlementAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -332,62 +231,40 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	if strings.HasPrefix(a.id.Container(), "projects/") {
-		obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Container()}
-	} else if strings.HasPrefix(a.id.Container(), "folders/") {
-		obj.Spec.FolderRef = &refs.FolderRef{External: a.id.Container()}
-	} else if strings.HasPrefix(a.id.Container(), "organizations/") {
-		obj.Spec.OrganizationRef = &refs.OrganizationRef{External: a.id.Container()}
-	} else {
-		return nil, fmt.Errorf("invalid container format for %q", a.id.Container())
-	}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 
-	obj.Spec.Location = &a.id.Location
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
+	u.SetName(a.id.FullyQualifiedName)
+	u.SetGroupVersionKind(krm.PrivilegedAccessManagerEntitlementGVK)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *EntitlementAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting PrivilegedAccessManagerEntitlement", "name", a.id.FullyQualifiedName())
+	log.V(2).Info("deleting Entitlement", "name", a.id)
 
-	req := &privilegedaccessmanagerpb.DeleteEntitlementRequest{Name: a.id.FullyQualifiedName()}
+	req := &privilegedaccessmanagerpb.DeleteEntitlementRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteEntitlement(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("error deleting PrivilegedAccessManagerEntitlement %s: %w", a.id.FullyQualifiedName(), err)
+		return false, fmt.Errorf("deleting Entitlement %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	log.V(2).Info("successfully deleted Entitlement", "name", a.id)
+	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("error waiting for PrivilegedAccessManagerEntitlement %s to be deleted: %w", a.id.FullyQualifiedName(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Entitlement %s: %w", a.id, err)
+		}
 	}
-
-	log.V(2).Info("successfully deleted PrivilegedAccessManagerEntitlement", "name", a.id.FullyQualifiedName())
 	return true, nil
-}
-
-func setStatus(u *unstructured.Unstructured, typedStatus any) error {
-	status, err := runtime.DefaultUnstructuredConverter.ToUnstructured(typedStatus)
-	if err != nil {
-		return fmt.Errorf("error converting status to unstructured: %w", err)
-	}
-
-	old, _, _ := unstructured.NestedMap(u.Object, "status")
-	if old != nil {
-		status["conditions"] = old["conditions"]
-		status["observedGeneration"] = old["observedGeneration"]
-		status["externalRef"] = old["externalRef"]
-	}
-
-	u.Object["status"] = status
-
-	return nil
 }

@@ -17,191 +17,201 @@ package apihubcuration
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/apihub/apiv1"
-	pb "cloud.google.com/go/apihub/apiv1/apihubpb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/apihub/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/apihub"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
-)
+	"strings"
 
-const (
-	ctrlName = "apihub-curation-controller"
+	gcp "cloud.google.com/go/apihub/apiv1"
+	pb "cloud.google.com/go/apihub/apiv1/apihubpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.APIHubCurationGVK, NewModel)
+	registry.RegisterModel(krm.APIHubCurationGVK, NewCurationModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewCurationModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelCuration{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelCuration{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelCuration struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.ApiHubCurateClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewApiHubCurateRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building APIHubCurate client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelCuration) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.APIHubCuration{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	idBase, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idBase.(*krm.APIHubCurationIdentity)
+	id := i.(*krm.APIHubCurationIdentity)
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := apihub.APIHubCurationSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Name = id.String()
-
-	return &Adapter{
+	return &CurationAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelCuration) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
+func (m *modelCuration) client(ctx context.Context) (*gcp.ApiHubCurateClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewApiHubCurateRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Curation client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type CurationAdapter struct {
 	id        *krm.APIHubCurationIdentity
 	gcpClient *gcp.ApiHubCurateClient
-	desired   *pb.Curation
+	desired   *krm.APIHubCuration
 	actual    *pb.Curation
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &CurationAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *CurationAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting APIHubCuration", "name", a.id.String())
+	log.V(2).Info("getting Curation", "name", a.id)
 
-	req := &pb.GetCurationRequest{Name: a.id.String()}
-	pbObj, err := a.gcpClient.GetCuration(ctx, req)
+	req := &pb.GetCurationRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetCuration(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting APIHubCuration %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Curation %q: %w", a.id, err)
 	}
 
-	a.actual = pbObj
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *CurationAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating APIHubCuration")
+	log.V(2).Info("creating Curation", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := APIHubCurationSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateCurationRequest{
 		Parent:     a.id.ParentString(),
 		CurationId: a.id.Curation,
-		Curation:   a.desired,
+		Curation:   resource,
 	}
-
 	created, err := a.gcpClient.CreateCuration(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating APIHubCuration %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating Curation %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created APIHubCuration", "name", a.id.String())
+	log.V(2).Info("successfully created Curation", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.APIHubCurationStatus{}
+	status.ObservedState = APIHubCurationObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *CurationAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating APIHubCuration", "name", a.id.String())
+	log.V(2).Info("updating Curation", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-
-	// Mask actual to only contain spec fields for correct diffing
-	maskedActualSpec := apihub.APIHubCurationSpec_FromProto(mapCtx, a.actual)
+	desired := APIHubCurationSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	maskedActual := apihub.APIHubCurationSpec_ToProto(mapCtx, maskedActualSpec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	maskedActual.Name = a.id.String()
 
-	clonedDesired := proto.Clone(a.desired).(*pb.Curation)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := compareCuration(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
-	}
+		desired.Name = a.id.String()
 
-	for _, path := range diffs.Fields {
-		if path.ID == "endpoint" {
-			_ = a.updateStatus(ctx, updateOp, a.actual)
-			return fmt.Errorf("field %q is immutable and cannot be updated", path.ID)
+		req := &pb.UpdateCurationRequest{
+			Curation:   desired,
+			UpdateMask: updateMask,
 		}
+		updated, err := a.gcpClient.UpdateCuration(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Curation %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Curation", "name", a.id)
+
+		status := &krm.APIHubCurationStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = APIHubCurationObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateCurationRequest{
-		Curation:   a.desired,
-		UpdateMask: updateMask,
-	}
-
-	updated, err := a.gcpClient.UpdateCuration(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating APIHubCuration %s: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, updateOp, updated)
+	return nil
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareCuration(ctx context.Context, actual, desired *pb.Curation) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, APIHubCurationSpec_FromProto, APIHubCurationSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *CurationAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -209,48 +219,39 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 
 	obj := &krm.APIHubCuration{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(apihub.APIHubCurationSpec_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(APIHubCurationSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.Location = &a.id.Location
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: fmt.Sprintf("projects/%s", a.id.Project)}
-	obj.Spec.ResourceID = &a.id.Curation
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Curation)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
+	u.SetName(a.id.Curation)
+	u.SetGroupVersionKind(krm.APIHubCurationGVK)
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *CurationAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting APIHubCuration", "name", a.id.String())
+	log.V(2).Info("deleting Curation", "name", a.id)
 
-	req := &pb.DeleteCurationRequest{Name: a.id.String()}
+	req := &pb.DeleteCurationRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteCuration(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting APIHubCuration %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Curation %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted Curation", "name", a.id)
 	return true, nil
-}
-
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Curation) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.APIHubCurationStatus{}
-	status.ObservedState = apihub.APIHubCurationObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	externalRef := latest.Name
-	status.ExternalRef = &externalRef
-	return op.UpdateStatus(ctx, status, nil)
 }

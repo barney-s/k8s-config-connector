@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,26 +16,21 @@ package tags
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	_ "github.com/GoogleCloudPlatform/k8s-config-connector/apis/artifactregistry/v1beta1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/common/projects"
-	_ "github.com/GoogleCloudPlatform/k8s-config-connector/apis/run/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/tags/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
-	"google.golang.org/api/iterator"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"strings"
 
-	api "cloud.google.com/go/resourcemanager/apiv3"
+	gcp "cloud.google.com/go/resourcemanager/apiv3"
 	pb "cloud.google.com/go/resourcemanager/apiv3/resourcemanagerpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,308 +42,197 @@ func init() {
 }
 
 func NewTagsLocationTagBindingModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &TagsLocationTagBindingModel{config: config}, nil
+	return &modelTagsLocationTagBinding{config: *config}, nil
 }
 
-var _ directbase.Model = &TagsLocationTagBindingModel{}
+var _ directbase.Model = &modelTagsLocationTagBinding{}
+var _ = strings.TrimPrefix
 
-type TagsLocationTagBindingModel struct {
-	config *config.ControllerConfig
+type modelTagsLocationTagBinding struct {
+	config config.ControllerConfig
 }
 
-func (m *TagsLocationTagBindingModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelTagsLocationTagBinding) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.TagsLocationTagBinding{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.TagsLocationTagBindingIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	location := direct.ValueOf(obj.Spec.Location)
-	if location == "" {
-		return nil, fmt.Errorf("spec.location must be specified for TagsLocationTagBinding")
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
+	return &TagsLocationTagBindingAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
 
-	tagBindingsClient, err := newLocationTagBindingsClient(ctx, m.config, location)
+func (m *modelTagsLocationTagBinding) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelTagsLocationTagBinding) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	var id *krm.TagsLocationTagBindingIdentity
-	if obj.Spec.ResourceID != nil || obj.Status.ExternalRef != nil {
-		idFromObject, err := obj.GetIdentity(ctx, reader)
-		if err != nil {
-			return nil, err
-		}
-		id = idFromObject.(*krm.TagsLocationTagBindingIdentity)
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building TagsLocationTagBinding client: %w", err)
 	}
-
-	var desired *pb.TagBinding
-	{
-		mapCtx := &direct.MapContext{}
-		desired = TagsLocationTagBindingSpec_ToProto(mapCtx, &obj.Spec)
-		if mapCtx.Err() != nil {
-			return nil, mapCtx.Err()
-		}
-	}
-
-	return &TagsLocationTagBindingAdapter{
-		id:                id,
-		tagBindingsClient: tagBindingsClient,
-		desired:           desired,
-		projectMapper:     m.config.ProjectMapper,
-	}, nil
-}
-
-func (m *TagsLocationTagBindingModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// Not implemented, because we need a way to encode the location in the URL
-	return nil, nil
+	return gcpClient, err
 }
 
 type TagsLocationTagBindingAdapter struct {
-	id                *krm.TagsLocationTagBindingIdentity
-	tagBindingsClient *api.TagBindingsClient
-	desired           *pb.TagBinding
-	actual            *pb.TagBinding
-	projectMapper     *projects.ProjectMapper
+	id        *krm.TagsLocationTagBindingIdentity
+	gcpClient *gcp.Client
+	desired   *krm.TagsLocationTagBinding
+	actual    *pb.TagsLocationTagBinding
 }
 
 var _ directbase.Adapter = &TagsLocationTagBindingAdapter{}
 
 func (a *TagsLocationTagBindingAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
+	log.V(2).Info("getting TagsLocationTagBinding", "name", a.id)
 
-	if a.id == nil {
-		return false, nil
+	req := &pb.GetTagsLocationTagBindingRequest{
+		Name: a.id.String(),
 	}
-
-	fqn := a.id.String()
-	log.V(0).Info("getting TagsLocationTagBinding", "name", fqn)
-
-	// There is not GetTagBindingRequest, we can only List
-	var found *pb.TagBinding
-	parent := a.desired.GetParent()
-	req := &pb.ListTagBindingsRequest{Parent: parent}
-	it := a.tagBindingsClient.ListTagBindings(ctx, req)
-	for {
-		tagBinding, err := it.Next()
-		if err != nil {
-			if errors.Is(err, iterator.Done) {
-				break
-			}
-			return false, fmt.Errorf("listing tag bindings: %w", err)
+	resp, err := a.gcpClient.GetTagsLocationTagBinding(ctx, req)
+	if err != nil {
+		if direct.IsNotFound(err) {
+			return false, nil
 		}
-		if tagBinding.TagValue == a.desired.GetTagValue() {
-			if found != nil {
-				return false, fmt.Errorf("found multiple tag bindings matching %q and %q", parent, a.desired.GetTagValue())
-			}
-			found = tagBinding
-		}
-	}
-	if found == nil {
-		return false, nil
+		return false, fmt.Errorf("getting TagsLocationTagBinding %q: %w", a.id, err)
 	}
 
-	a.actual = found
+	a.actual = resp
 	return true, nil
 }
 
 func (a *TagsLocationTagBindingAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
-	// There no FQN until after creation (server generated id).
-
 	log := klog.FromContext(ctx)
-	log.V(0).Info("creating TagsLocationTagBinding")
+	log.V(2).Info("creating TagsLocationTagBinding", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	req := &pb.CreateTagBindingRequest{
-		TagBinding: proto.CloneOf(a.desired),
+	desired := a.desired.DeepCopy()
+	resource := TagsLocationTagBindingSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
 
-	op, err := a.tagBindingsClient.CreateTagBinding(ctx, req)
+	req := &pb.CreateTagsLocationTagBindingRequest{
+		Parent:                   a.id.ParentString(),
+		TagsLocationTagBindingId: a.id.TagsLocationTagBinding,
+		TagsLocationTagBinding:   resource,
+	}
+	op, err := a.gcpClient.CreateTagsLocationTagBinding(ctx, req)
 	if err != nil {
-		if direct.IsAlreadyExists(err) {
-			log.V(0).Info("TagsLocationTagBinding already exists, attempting to acquire", "parent", a.desired.GetParent(), "tagValue", a.desired.GetTagValue())
-			return a.acquireExistingTagBinding(ctx, createOp)
-		}
-		return fmt.Errorf("creating TagsLocationTagBinding: %w", err)
+		return fmt.Errorf("creating TagsLocationTagBinding %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		if direct.IsAlreadyExists(err) {
-			log.V(0).Info("TagsLocationTagBinding already exists, attempting to acquire", "parent", a.desired.GetParent(), "tagValue", a.desired.GetTagValue())
-			return a.acquireExistingTagBinding(ctx, createOp)
-		}
-		return fmt.Errorf("waiting for creation of TagsLocationTagBinding: %w", err)
+		return fmt.Errorf("waiting create TagsLocationTagBinding %s: %w", a.id, err)
 	}
-	log.V(0).Info("created TagsLocationTagBinding", "name", created.GetName())
+	log.V(2).Info("successfully created TagsLocationTagBinding", "name", a.id)
 
-	return a.setResourceIDAndStatus(ctx, createOp, created)
-}
-
-// acquireExistingTagBinding looks up an existing TagBinding by parent and tagValue after an ALREADY_EXISTS error,
-// then sets the resourceID and status to adopt the resource.
-func (a *TagsLocationTagBindingAdapter) acquireExistingTagBinding(ctx context.Context, createOp *directbase.CreateOperation) error {
-	log := klog.FromContext(ctx)
-
-	existing, err := a.findTagBindingByValue(ctx)
-	if err != nil {
-		return err
+	status := &krm.TagsLocationTagBindingStatus{}
+	status.ObservedState = TagsLocationTagBindingObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	if existing == nil {
-		return fmt.Errorf("TagsLocationTagBinding with tagValue %q not found under %q despite ALREADY_EXISTS error", a.desired.GetTagValue(), a.desired.GetParent())
-	}
-	log.V(0).Info("acquired existing TagsLocationTagBinding", "name", existing.GetName())
-
-	return a.setResourceIDAndStatus(ctx, createOp, existing)
-}
-
-// setResourceIDAndStatus sets spec.resourceID and updates status from the given TagBinding.
-// For compatibility, we set spec.resourceID after creation because this is a server-generated-id resource that we are migrating from terraform/DCL.
-// More info in .gemini/skills/kcc-direct-service-generated-id/SKILL.md
-func (a *TagsLocationTagBindingAdapter) setResourceIDAndStatus(ctx context.Context, createOp *directbase.CreateOperation, tagBinding *pb.TagBinding) error {
-	resourceID := tagBinding.GetName()
-	if err := createOp.SetSpecResourceID(ctx, resourceID); err != nil {
-		return err
-	}
-	return a.updateStatus(ctx, createOp, tagBinding)
-}
-
-// findTagBindingByValue lists TagBindings under the parent and returns the one matching the desired tagValue.
-func (a *TagsLocationTagBindingAdapter) findTagBindingByValue(ctx context.Context) (*pb.TagBinding, error) {
-	parent := a.desired.GetParent()
-	req := &pb.ListTagBindingsRequest{Parent: parent}
-	it := a.tagBindingsClient.ListTagBindings(ctx, req)
-	for {
-		tagBinding, err := it.Next()
-		if err != nil {
-			if errors.Is(err, iterator.Done) {
-				break
-			}
-			return nil, fmt.Errorf("listing tag bindings under %q: %w", parent, err)
-		}
-		if tagBinding.TagValue == a.desired.GetTagValue() {
-			return tagBinding, nil
-		}
-	}
-	return nil, nil
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *TagsLocationTagBindingAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	fqn := a.id.String()
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating TagsLocationTagBinding", "name", a.id)
 
-	diff, updateMask, err := a.changedFields(ctx)
+	mapCtx := &direct.MapContext{}
+	desired := TagsLocationTagBindingSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareTagsLocationTagBinding(ctx, a.actual, desired)
 	if err != nil {
-		return fmt.Errorf("getting changed fields for TagsLocationTagBinding %q: %w", fqn, err)
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("TagsLocationTagBinding resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	if diff != nil {
-		diff.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diff)
+	status := &krm.TagsLocationTagBindingStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = TagsLocationTagBindingObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	if len(updateMask.Paths) != 0 {
-		return fmt.Errorf("cannot update TagsLocationTagBinding %q: fields changed: %v; TagBindings are immutable after creation", fqn, updateMask.Paths)
-	}
-
-	return a.updateStatus(ctx, updateOp, a.actual)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *TagsLocationTagBindingAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.TagBinding) error {
-	status := &krm.TagsLocationTagBindingStatus{}
-
-	// NOTYET: observedState
-	// {
-	// 	mapCtx := &direct.MapContext{}
-	// 	status.ObservedState = TagsLocationTagBindingObservedState_v1alpha1_FromProto(mapCtx, latest)
-	// 	if mapCtx.Err() != nil {
-	// 		return mapCtx.Err()
-	// 	}
-	// }
-
-	status.ExternalRef = direct.PtrTo(latest.GetName())
-
-	// Legacy status fields
-	status.Name = direct.PtrTo(latest.GetName())
-
-	return op.UpdateStatus(ctx, status, nil)
+func compareTagsLocationTagBinding(ctx context.Context, actual, desired *pb.TagsLocationTagBinding) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, TagsLocationTagBindingSpec_FromProto, TagsLocationTagBindingSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *TagsLocationTagBindingAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	// Not implemented, because we need a way to encode the location in the URL.
-	return nil, nil
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.TagsLocationTagBinding{}
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(TagsLocationTagBindingSpec_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
+	}
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.TagsLocationTagBinding)
+
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+
+	u.Object = uObj
+	u.SetName(a.id.TagsLocationTagBinding)
+	u.SetGroupVersionKind(krm.TagsLocationTagBindingGVK)
+	return u, nil
 }
 
-// Delete implements the Adapter interface.
 func (a *TagsLocationTagBindingAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-
-	fqn := a.id.String()
-
-	log.V(0).Info("deleting TagsLocationTagBinding", "name", fqn)
-
-	req := &pb.DeleteTagBindingRequest{}
-	req.Name = fqn
-
-	op, err := a.tagBindingsClient.DeleteTagBinding(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(0).Info("skipping delete for non-existent TagsLocationTagBinding, assuming it was already deleted", "name", fqn)
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting TagsLocationTagBinding %s: %w", fqn, err)
-	}
-	log.V(0).Info("successfully deleted TagsLocationTagBinding", "name", fqn)
-
-	if err := op.Wait(ctx); err != nil {
-		return false, fmt.Errorf("waiting for delete of TagsLocationTagBinding %s: %w", fqn, err)
-	}
-
+	log.V(2).Info("deletion not supported for TagsLocationTagBinding, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-// TODO: Make this function generic and reuse across models.
-func (a *TagsLocationTagBindingAdapter) changedFields(ctx context.Context) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	// Normalize desired state
-	desired := proto.CloneOf(a.desired)
-	if desired.GetParent() != "" {
-		normalized, err := a.projectMapper.ReplaceProjectNumberWithIDInLink(ctx, desired.GetParent())
-		if err != nil {
-			return nil, nil, fmt.Errorf("normalizing desired parent link %q: %w", desired.GetParent(), err)
-		}
-		desired.Parent = normalized
-	}
-
-	// Compute the actual with only the spec fields populated.
-	var actualMasked protoreflect.Message
-	{
-		// Normalize actual state
-		actual := proto.CloneOf(a.actual)
-		if actual.GetParent() != "" {
-			normalized, err := a.projectMapper.ReplaceProjectNumberWithIDInLink(ctx, actual.GetParent())
-			if err != nil {
-				return nil, nil, fmt.Errorf("normalizing actual parent link %q: %w", actual.GetParent(), err)
-			}
-			actual.Parent = normalized
-		}
-
-		mapCtx := &direct.MapContext{}
-		actualSpec := TagsLocationTagBindingSpec_FromProto(mapCtx, actual)
-		if mapCtx.Err() != nil {
-			return nil, nil, mapCtx.Err()
-		}
-
-		mapCtx = &direct.MapContext{}
-		specProto := TagsLocationTagBindingSpec_ToProto(mapCtx, actualSpec)
-		if mapCtx.Err() != nil {
-			return nil, nil, mapCtx.Err()
-		}
-		actualMasked = specProto.ProtoReflect()
-	}
-
-	return common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), actualMasked)
 }

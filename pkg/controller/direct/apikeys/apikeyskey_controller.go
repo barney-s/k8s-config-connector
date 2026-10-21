@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,281 +17,214 @@ package apikeys
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	api "cloud.google.com/go/apikeys/apiv2"
-	pb "cloud.google.com/go/apikeys/apiv2/apikeyspb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/apikeys/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
-	. "github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/mappings" //nolint:revive
+	gcp "cloud.google.com/go/apikeys/apiv2"
+	pb "cloud.google.com/go/apikeys/apiv2/apikeyspb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.APIKeysKeyGVK, newAPIKeysModel)
+	registry.RegisterModel(krm.APIKeysKeyGVK, NewAPIKeysKeyModel)
 }
 
-func newAPIKeysModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewAPIKeysKeyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelAPIKeysKey{config: *config}, nil
 }
 
-type model struct {
+var _ directbase.Model = &modelAPIKeysKey{}
+var _ = strings.TrimPrefix
+
+type modelAPIKeysKey struct {
 	config config.ControllerConfig
 }
 
-// model implements the Model interface.
-var _ directbase.Model = &model{}
+func (m *modelAPIKeysKey) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.APIKeysKey{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.APIKeysKeyIdentity)
 
-var keyMapping = NewMapping(&pb.Key{}, &krm.APIKeysKey{},
-	Spec("displayName"),
-	Spec("restrictions"),
-	// Status("uid"),
-	Ignore("createTime"),
-	Ignore("updateTime"),
-	Ignore("deleteTime"),
-	Ignore("etag"),
-	Ignore("name"),        // TODO: Should be ResourceID?
-	Ignore("annotations"), // TODO: Should not ignore
-).
-	MapNested(&pb.Restrictions{}, &krm.Restrictions{}, "apiTargets",
-		"androidKeyRestrictions", "browserKeyRestrictions", "iosKeyRestrictions", "serverKeyRestrictions").
-	MapNested(&pb.AndroidKeyRestrictions{}, &krm.AndroidKeyRestrictions{}, "allowedApplications").
-	MapNested(&pb.AndroidApplication{}, &krm.AndroidApplication{}, "packageName", "sha1Fingerprint").
-	MapNested(&pb.ApiTarget{}, &krm.APITarget{}, "methods", "service").
-	MapNested(&pb.BrowserKeyRestrictions{}, &krm.BrowserKeyRestrictions{}, "allowedReferrers").
-	MapNested(&pb.IosKeyRestrictions{}, &krm.IosKeyRestrictions{}, "allowedBundleIds").
-	MapNested(&pb.ServerKeyRestrictions{}, &krm.ServerKeyRestrictions{}, "allowedIps").
-	MustBuild()
-
-type adapter struct {
-	id *krm.APIKeysKeyIdentity
-
-	desired *krm.APIKeysKey
-	actual  *krm.APIKeysKey
-
-	gcp *api.Client
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &APIKeysKeyAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
 }
 
-// adapter implements the Adapter interface.
-var _ directbase.Adapter = &adapter{}
+func (m *modelAPIKeysKey) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
 
-func (m *model) client(ctx context.Context) (*api.Client, error) {
+func (m *modelAPIKeysKey) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	gcpClient, err := api.NewRESTClient(ctx, opts...)
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building apikeys client: %w", err)
+		return nil, fmt.Errorf("building APIKeysKey client: %w", err)
 	}
 	return gcpClient, err
 }
 
-// AdapterForObject implements the Model interface.
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	gcp, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	obj := &krm.APIKeysKey{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	return &adapter{
-		id:      id.(*krm.APIKeysKeyIdentity),
-		desired: obj,
-		gcp:     gcp,
-	}, nil
+type APIKeysKeyAdapter struct {
+	id        *krm.APIKeysKeyIdentity
+	gcpClient *gcp.Client
+	desired   *krm.APIKeysKey
+	actual    *pb.APIKeysKey
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	return nil, nil
-}
+var _ directbase.Adapter = &APIKeysKeyAdapter{}
 
-// Find implements the Adapter interface.
-func (a *adapter) Find(ctx context.Context) (bool, error) {
-	if a.id.Key == "" {
-		return false, nil
-	}
-
-	req := &pb.GetKeyRequest{
-		Name: a.fullyQualifiedName(),
-	}
-	key, err := a.gcp.GetKey(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			klog.Warningf("key was not found: %v", err)
-			return false, nil
-		}
-		return false, err
-	}
-
-	u := &krm.APIKeysKey{}
-	if err := keyMapping.Map(key, u); err != nil {
-		return false, err
-	}
-	a.actual = u
-
-	return true, nil
-}
-
-// Delete implements the Adapter interface.
-func (a *adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	// TODO: Delete via status selfLink?
-	req := &pb.DeleteKeyRequest{
-		Name: a.fullyQualifiedName(),
-	}
-	op, err := a.gcp.DeleteKey(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("deleting key: %w", err)
-	}
-
-	if _, err := op.Wait(ctx); err != nil {
-		return false, fmt.Errorf("waiting for key deletion to complete: %w", err)
-	}
-
-	return true, nil
-}
-
-func (a *adapter) buildCreateRequest() (*pb.CreateKeyRequest, error) {
-	// You can configure only the `display_name`, `restrictions`, and
-	// `annotations` fields.
-	desired := &pb.Key{}
-	if err := keyMapping.Map(a.desired, desired); err != nil {
-		return nil, err
-	}
-
-	return &pb.CreateKeyRequest{
-		Parent: fmt.Sprintf("projects/%s/locations/%s", a.id.Project, a.id.Location),
-		KeyId:  a.id.Key,
-		Key:    desired,
-	}, nil
-}
-
-// Create implements the Adapter interface.
-func (a *adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
-	u := createOp.GetUnstructured()
-
+func (a *APIKeysKeyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating object", "u", u)
+	log.V(2).Info("getting APIKeysKey", "name", a.id)
 
-	req, err := a.buildCreateRequest()
+	req := &pb.GetAPIKeysKeyRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetAPIKeysKey(ctx, req)
 	if err != nil {
-		return err
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("getting APIKeysKey %q: %w", a.id, err)
 	}
 
-	op, err := a.gcp.CreateKey(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating key: %w", err)
+	a.actual = resp
+	return true, nil
+}
+
+func (a *APIKeysKeyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("creating APIKeysKey", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := APIKeysKeySpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	// TODO: Is the resourceID returned if it is dynamically created?  Maybe we should create the UUID?
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	req := &pb.CreateAPIKeysKeyRequest{
+		Parent:     a.id.ParentString(),
+		KeyId:      a.id.Key,
+		APIKeysKey: resource,
+	}
+	op, err := a.gcpClient.CreateAPIKeysKey(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating APIKeysKey %s: %w", a.id, err)
+	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for key creation: %w", err)
+		return fmt.Errorf("waiting create APIKeysKey %s: %w", a.id, err)
 	}
-	log.V(2).Info("created key", "key", created)
-	// TODO: Return created object
-	return nil
+	log.V(2).Info("successfully created APIKeysKey", "name", a.id)
+
+	status := &krm.APIKeysKeyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update implements the Adapter interface.
-func (a *adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	// u := Op.GetUnstructured()
+func (a *APIKeysKeyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating APIKeysKey", "name", a.id)
 
-	// TODO: Skip updates if no changes
-	// TODO: Where/how do we want to enforce immutability?
-	updateMask := &fieldmaskpb.FieldMask{}
-
-	// TODO: I think we can do this with a helper
-	if !reflect.DeepEqual(a.desired.Spec.DisplayName, a.actual.Spec.DisplayName) {
-		updateMask.Paths = append(updateMask.Paths, "display_name")
+	mapCtx := &direct.MapContext{}
+	desired := APIKeysKeySpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	if !reflect.DeepEqual(a.desired.Spec.Restrictions, a.actual.Spec.Restrictions) {
-		updateMask.Paths = append(updateMask.Paths, "restrictions")
-	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	// TODO: Annotations
-	// if !reflect.DeepEqual(a.desired.Annotations, a.actual.Annotations) {
-	// 	updateMask.Paths = append(updateMask.Paths, "annotations")
-	// }
-
-	if len(updateMask.Paths) == 0 {
-		klog.Warningf("unexpected empty update mask, desired: %v, actual: %v", a.desired, a.actual)
-		return nil
-	}
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-	for _, path := range updateMask.Paths {
-		report.AddField(path, nil, nil)
-	}
-	structuredreporting.ReportDiff(ctx, report)
-
-	key := &pb.Key{}
-	if err := keyMapping.Map(a.desired, key); err != nil {
-		return err
-	}
-
-	req := &pb.UpdateKeyRequest{
-		Key:        key,
-		UpdateMask: updateMask,
-	}
-
-	req.Key.Name = a.fullyQualifiedName()
-
-	_, err := a.gcp.UpdateKey(ctx, req)
+	diffs, updateMask, err := compareAPIKeysKey(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-	// TODO: update status in u
-	return nil
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("APIKeysKey resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.APIKeysKeyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareAPIKeysKey(ctx context.Context, actual, desired *pb.APIKeysKey) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, APIKeysKeySpec_FromProto, APIKeysKeySpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *APIKeysKeyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
-		return nil, fmt.Errorf("apikeyskey %q not found", a.fullyQualifiedName())
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.APIKeysKey{}
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(APIKeysKeySpec_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
 	}
 
-	spec := direct.LazyPtr(a.actual.Spec)
-	specObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(spec)
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("error converting apikeyskey spec to unstructured: %w", err)
+		return nil, err
 	}
 
-	u := &unstructured.Unstructured{
-		Object: make(map[string]interface{}),
-	}
+	u.Object = uObj
 	u.SetName(a.id.Key)
 	u.SetGroupVersionKind(krm.APIKeysKeyGVK)
-	u.SetLabels(a.actual.Labels)
-	if err := unstructured.SetNestedField(u.Object, specObj, "spec"); err != nil {
-		return nil, fmt.Errorf("setting spec: %w", err)
-	}
-
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-func (a *adapter) fullyQualifiedName() string {
-	return fmt.Sprintf("projects/%s/locations/%s/keys/%s", a.id.Project, a.id.Location, a.id.Key)
+func (a *APIKeysKeyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for APIKeysKey, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

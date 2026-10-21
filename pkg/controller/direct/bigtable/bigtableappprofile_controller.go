@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,125 +17,116 @@ package bigtable
 import (
 	"context"
 	"fmt"
-	"strings"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/bigtable/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/bigtable"
 	bigtablepb "cloud.google.com/go/bigtable/admin/apiv2/adminpb"
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.BigtableAppProfileGVK, NewBigtableAppProfileModel)
+	registry.RegisterModel(krm.BigtableAppProfileGVK, NewAppProfileModel)
 }
 
-func NewBigtableAppProfileModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &modelBigtableAppProfile{config: *config}, nil
+func NewAppProfileModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelAppProfile{config: *config}, nil
 }
 
-var _ directbase.Model = &modelBigtableAppProfile{}
+var _ directbase.Model = &modelAppProfile{}
+var _ = strings.TrimPrefix
 
-type modelBigtableAppProfile struct {
+type modelAppProfile struct {
 	config config.ControllerConfig
 }
 
-func (m *modelBigtableAppProfile) client(ctx context.Context, parentProject string) (*gcp.InstanceAdminClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	gcpClient, err := gcp.NewInstanceAdminClient(ctx, parentProject, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building BigtableAppProfile client: %w", err)
-	}
-	return gcpClient, err
-}
-
-// This helper function converts a fully qualified project like "projects/myproject" into
-// the unqualified project ID, like "myproject".
-func (m *modelBigtableAppProfile) getProjectId(fullyQualifiedProject string) (string, error) {
-	tokens := strings.Split(fullyQualifiedProject, "/")
-	if len(tokens) != 2 || tokens[0] != "projects" {
-		return "", fmt.Errorf("Unexpected format for AppProfile Parent Project ID=%q was not known (expected projects/{projectID})", fullyQualifiedProject)
-	}
-	return tokens[1], nil
-}
-
-func (m *modelBigtableAppProfile) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelAppProfile) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.BigtableAppProfile{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	identity, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := identity.(*krm.BigtableAppProfileIdentity)
+	id := i.(*krm.BigtableAppProfileIdentity)
 
-	// Get bigtable instance admin GCP client. Accepts the non-fully qualified project ID.
-	// E.G. "myproject" instead of "projects/myproject"
-	parentProjectId := id.Project
-	instanceAdminClient, err := m.client(ctx, parentProjectId)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("error creating instance admin client: %w", err)
+		return nil, err
 	}
-	return &BigtableAppProfileAdapter{
+	return &AppProfileAdapter{
 		id:        id,
-		gcpClient: instanceAdminClient,
+		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *modelBigtableAppProfile) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelAppProfile) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type BigtableAppProfileAdapter struct {
+func (m *modelAppProfile) client(ctx context.Context) (*gcp.InstanceAdminClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewInstanceAdminClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building AppProfile client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type AppProfileAdapter struct {
 	id        *krm.BigtableAppProfileIdentity
 	gcpClient *gcp.InstanceAdminClient
 	desired   *krm.BigtableAppProfile
 	actual    *bigtablepb.AppProfile
 }
 
-var _ directbase.Adapter = &BigtableAppProfileAdapter{}
+var _ directbase.Adapter = &AppProfileAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
-func (a *BigtableAppProfileAdapter) Find(ctx context.Context) (bool, error) {
+func (a *AppProfileAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting BigtableAppProfile", "name", a.id)
+	log.V(2).Info("getting AppProfile", "name", a.id)
 
-	bigtableappprofilepb, err := a.gcpClient.GetAppProfile(ctx, a.id.Instance, a.id.AppProfile)
+	req := &bigtablepb.GetAppProfileRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetAppProfile(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting BigtableAppProfile %q: %w", a.id, err)
+		return false, fmt.Errorf("getting AppProfile %q: %w", a.id, err)
 	}
 
-	a.actual = bigtableappprofilepb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *BigtableAppProfileAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *AppProfileAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating BigtableAppProfile", "name", a.id)
+	log.V(2).Info("creating AppProfile", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
@@ -144,152 +135,81 @@ func (a *BigtableAppProfileAdapter) Create(ctx context.Context, createOp *direct
 		return mapCtx.Err()
 	}
 
-	var routingConfig gcp.RoutingPolicyConfig
-	if multiClusterRouting := resource.GetMultiClusterRoutingUseAny(); multiClusterRouting != nil {
-		routingConfig = &gcp.MultiClusterRoutingUseAnyConfig{
-			ClusterIDs: resource.GetMultiClusterRoutingUseAny().ClusterIds,
-		}
-	} else {
-		routingConfig = &gcp.SingleClusterRoutingConfig{
-			ClusterID:                resource.GetSingleClusterRouting().GetClusterId(),
-			AllowTransactionalWrites: resource.GetSingleClusterRouting().AllowTransactionalWrites,
-		}
+	req := &bigtablepb.CreateAppProfileRequest{
+		Parent:       a.id.ParentString(),
+		AppProfileId: a.id.Instance,
+		AppProfile:   resource,
 	}
-	var isolation gcp.AppProfileIsolation
-	if dataBoostIsolationReadOnly := resource.GetDataBoostIsolationReadOnly(); dataBoostIsolationReadOnly != nil {
-		isolation = &gcp.DataBoostIsolationReadOnly{
-			ComputeBillingOwner: gcp.IsolationComputeBillingOwner(resource.GetDataBoostIsolationReadOnly().GetComputeBillingOwner()),
-		}
-	} else if standardIsolation := resource.GetStandardIsolation(); standardIsolation != nil {
-		isolation = &gcp.StandardIsolation{
-			Priority: gcp.AppProfilePriority(resource.GetStandardIsolation().GetPriority()),
-		}
-	}
-	if isolation == nil {
-		isolation = &gcp.StandardIsolation{
-			Priority: gcp.AppProfilePriority(bigtablepb.AppProfile_PRIORITY_HIGH),
-		}
-	}
-	profileConf := &gcp.ProfileConf{
-		Name:          "", /*Name is not used in the RPC*/
-		ProfileID:     a.id.AppProfile,
-		InstanceID:    a.id.Instance,
-		Etag:          resource.Etag,
-		Description:   resource.Description,
-		RoutingConfig: routingConfig,
-		Isolation:     isolation,
-	}
-
-	// Support legacy annotation for backwards compatibility
-	annotations := createOp.GetUnstructured().GetAnnotations()
-	if annotations["cnrm.cloud.google.com/ignore-warnings"] == "true" {
-		profileConf.IgnoreWarnings = true
-	}
-
-	// TODO: Make use of returned app profile in ObservedState below
-	_, err := a.gcpClient.CreateAppProfile(ctx, *profileConf)
+	created, err := a.gcpClient.CreateAppProfile(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating BigtableAppProfile %s: %w", a.id, err)
+		return fmt.Errorf("creating AppProfile %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created BigtableAppProfile", "name", a.id)
+	log.V(2).Info("successfully created AppProfile", "name", a.id)
 
 	status := &krm.BigtableAppProfileStatus{}
-	// TODO: Add Observed State
-	// status.ObservedState = BigtableAppProfileObservedState_FromProto(mapCtx, created)
-	// if mapCtx.Err() != nil {
-	// 	return mapCtx.Err()
-	// }
+	status.ObservedState = BigtableAppProfileObservedState_v1beta1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-	status.Name = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *BigtableAppProfileAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *AppProfileAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating BigtableAppProfile", "name", a.id)
-	mapCtx := &direct.MapContext{}
+	log.V(2).Info("updating AppProfile", "name", a.id)
 
-	desired := a.desired.DeepCopy()
-	resource := BigtableAppProfileSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	mapCtx := &direct.MapContext{}
+	desired := BigtableAppProfileSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	// TODO: Add updated profile to ObservedState below after reconciling what the new profile looks like
-	// var updated *bigtablepb.AppProfile
-	// updated = a.actual
-	var fieldsToUpdate gcp.ProfileAttrsToUpdate
-	// Several field changes (single -> multi cluster; turning on data boost) require us to ignore warnings if we want the update to go through.
-	hasChanges := false
+	diffs, updateMask, err := compareAppProfile(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	// Support legacy annotation for backwards compatibility
-	annotations := updateOp.GetUnstructured().GetAnnotations()
-	if annotations["cnrm.cloud.google.com/ignore-warnings"] == "true" {
-		fieldsToUpdate.IgnoreWarnings = true
-	}
+		desired.Name = a.id.String()
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	if desired.Spec.Description != nil && !cmp.Equal(resource.Description, a.actual.Description) {
-		report.AddField("description", a.actual.Description, resource.Description)
-		fieldsToUpdate.Description = resource.Description
-		hasChanges = true
-	}
-	if desired.Spec.MultiClusterRoutingUseAny != nil && !cmp.Equal(resource.GetMultiClusterRoutingUseAny(), a.actual.GetMultiClusterRoutingUseAny(), cmpopts.IgnoreUnexported(bigtablepb.AppProfile_MultiClusterRoutingUseAny{})) {
-		report.AddField("multi_cluster_routing_use_any", a.actual.GetMultiClusterRoutingUseAny(), resource.GetMultiClusterRoutingUseAny())
-		fieldsToUpdate.RoutingConfig = &gcp.MultiClusterRoutingUseAnyConfig{
-			ClusterIDs: resource.GetMultiClusterRoutingUseAny().ClusterIds,
+		req := &bigtablepb.UpdateAppProfileRequest{
+			AppProfile: desired,
 		}
-		hasChanges = true
-	}
-	if desired.Spec.SingleClusterRouting != nil && !cmp.Equal(resource.GetSingleClusterRouting(), a.actual.GetSingleClusterRouting(), cmpopts.IgnoreUnexported(bigtablepb.AppProfile_SingleClusterRouting{})) {
-		report.AddField("single_cluster_routing", a.actual.GetSingleClusterRouting(), resource.GetSingleClusterRouting())
-		fieldsToUpdate.RoutingConfig = &gcp.SingleClusterRoutingConfig{
-			ClusterID:                resource.GetSingleClusterRouting().GetClusterId(),
-			AllowTransactionalWrites: resource.GetSingleClusterRouting().AllowTransactionalWrites,
-		}
-		hasChanges = true
-	}
-	if desired.Spec.StandardIsolation != nil && !cmp.Equal(resource.GetStandardIsolation(), a.actual.GetStandardIsolation(), cmpopts.IgnoreUnexported(bigtablepb.AppProfile_StandardIsolation{})) {
-		report.AddField("standard_isolation", a.actual.GetStandardIsolation(), resource.GetStandardIsolation())
-		fieldsToUpdate.Isolation = &gcp.StandardIsolation{
-			Priority: gcp.AppProfilePriority(resource.GetStandardIsolation().Priority),
-		}
-		hasChanges = true
-	}
-	if desired.Spec.DataBoostIsolationReadOnly != nil && !cmp.Equal(resource.GetDataBoostIsolationReadOnly(), a.actual.GetDataBoostIsolationReadOnly(), cmpopts.IgnoreUnexported(bigtablepb.AppProfile_DataBoostIsolationReadOnly{})) {
-		report.AddField("data_boost_isolation_read_only", a.actual.GetDataBoostIsolationReadOnly(), resource.GetDataBoostIsolationReadOnly())
-		fieldsToUpdate.Isolation = &gcp.DataBoostIsolationReadOnly{
-			ComputeBillingOwner: gcp.IsolationComputeBillingOwner(resource.GetDataBoostIsolationReadOnly().GetComputeBillingOwner()),
-		}
-		hasChanges = true
-	}
-
-	if !hasChanges {
-		log.V(2).Info("no changes to update", "name", a.id)
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		err := a.gcpClient.UpdateAppProfile(ctx, a.id.Instance, a.id.AppProfile, fieldsToUpdate)
+		updated, err := a.gcpClient.UpdateAppProfile(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating BigtableAppProfile %s: %w", a.id, err)
+			return fmt.Errorf("updating AppProfile %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated BigtableAppProfile", "name", a.id)
+		log.V(2).Info("successfully updated AppProfile", "name", a.id)
+
+		status := &krm.BigtableAppProfileStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = BigtableAppProfileObservedState_v1beta1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	status := &krm.BigtableAppProfileStatus{}
-	status.Name = direct.LazyPtr(a.id.String())
-	// TODO: Add ObservedState
-	// status.ObservedState = AppProfileObservedState_FromProto(mapCtx, updated)
-	// if mapCtx.Err() != nil {
-	// 	return mapCtx.Err()
-	// }
-	return updateOp.UpdateStatus(ctx, status, nil)
-
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *BigtableAppProfileAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareAppProfile(ctx context.Context, actual, desired *bigtablepb.AppProfile) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BigtableAppProfileSpec_v1beta1_FromProto, BigtableAppProfileSpec_v1beta1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *AppProfileAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -301,35 +221,32 @@ func (a *BigtableAppProfileAdapter) Export(ctx context.Context) (*unstructured.U
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.InstanceRef = &krm.InstanceRef{External: a.id.Instance}
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.id.AppProfile)
-	u.SetGroupVersionKind(krm.BigtableAppProfileGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.Instance)
+	u.SetGroupVersionKind(krm.BigtableAppProfileGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *BigtableAppProfileAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *AppProfileAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting BigtableAppProfile", "name", a.id)
+	log.V(2).Info("deleting AppProfile", "name", a.id)
 
-	err := a.gcpClient.DeleteAppProfile(ctx, a.id.Instance, a.id.AppProfile)
+	req := &bigtablepb.DeleteAppProfileRequest{
+		Name: a.id.String(),
+	}
+	err := a.gcpClient.DeleteAppProfile(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent BigtableAppProfile, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting BigtableAppProfile %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting AppProfile %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted BigtableAppProfile", "name", a.id)
-
+	log.V(2).Info("successfully deleted AppProfile", "name", a.id)
 	return true, nil
 }

@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,27 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.eventarc.v1.Eventarc
-// proto.message: google.cloud.eventarc.v1.Channel
-// crd.type: EventarcChannel
-// crd.version: v1alpha1
-
 package eventarc
 
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/eventarc/apiv1"
-	pb "cloud.google.com/go/eventarc/apiv1/eventarcpb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/eventarc/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -40,7 +24,18 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/eventarc/apiv1"
+	pb "cloud.google.com/go/eventarc/apiv1/eventarcpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -48,192 +43,182 @@ func init() {
 }
 
 func NewChannelModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &channelModel{config: *config}, nil
+	return &modelChannel{config: *config}, nil
 }
 
-var _ directbase.Model = &channelModel{}
+var _ directbase.Model = &modelChannel{}
+var _ = strings.TrimPrefix
 
-type channelModel struct {
+type modelChannel struct {
 	config config.ControllerConfig
 }
 
-func (m *channelModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelChannel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.EventarcChannel{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := krm.NewChannelIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
+	id := &krm.ChannelIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	// Get eventarc GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	eventarcClient, err := gcpClient.newEventarcClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &channelAdapter{
-		gcpClient: eventarcClient,
+	return &ChannelAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *channelModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelChannel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type channelAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.ChannelIdentity
-	desired   *krm.EventarcChannel
-	actual    *pb.Channel
-	reader    client.Reader
+func (m *modelChannel) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Channel client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &channelAdapter{}
+type ChannelAdapter struct {
+	id        *krm.ChannelIdentity
+	gcpClient *gcp.Client
+	desired   *krm.EventarcChannel
+	actual    *pb.Channel
+}
 
-func (a *channelAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &ChannelAdapter{}
+
+func (a *ChannelAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting eventarc channel", "name", a.id)
+	log.V(2).Info("getting Channel", "name", a.id)
 
-	req := &pb.GetChannelRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetChannel(ctx, req)
+	req := &pb.GetChannelRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetChannel(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting eventarc channel %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Channel %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *channelAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ChannelAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating eventarc channel", "name", a.id)
+	log.V(2).Info("creating Channel", "name", a.id)
 	mapCtx := &direct.MapContext{}
-
-	if err := a.normalizeReferenceFields(ctx); err != nil {
-		return err
-	}
 
 	desired := a.desired.DeepCopy()
 	resource := EventarcChannelSpec_ToProto(mapCtx, &desired.Spec)
-	resource.Name = a.id.String()
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
 	req := &pb.CreateChannelRequest{
 		Parent:    a.id.Parent().String(),
-		Channel:   resource,
 		ChannelId: a.id.ID(),
+		Channel:   resource,
 	}
-
 	op, err := a.gcpClient.CreateChannel(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating eventarc channel %q: %w", a.id.String(), err)
+		return fmt.Errorf("creating Channel %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for eventarc channel creation %q: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create Channel %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created eventarc channel", "name", a.id)
+	log.V(2).Info("successfully created Channel", "name", a.id)
 
 	status := &krm.EventarcChannelStatus{}
 	status.ObservedState = EventarcChannelObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.LazyPtr(created.Name)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *channelAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ChannelAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating eventarc channel", "name", a.id)
+	log.V(2).Info("updating Channel", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-
-	if err := a.normalizeReferenceFields(ctx); err != nil {
-		return err
-	}
-
-	desired := a.desired.DeepCopy()
-	resource := EventarcChannelSpec_ToProto(mapCtx, &desired.Spec)
+	desired := EventarcChannelSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	allowedPaths := make(sets.Set[string])
-	allowedPaths.Insert("crypto_key_name")
-	allowedPaths.Insert("provider")
-	paths := make(sets.Set[string])
-	var err error
-	paths, err = common.CompareProtoMessage(resource, a.actual, common.BasicDiff)
+	diffs, updateMask, err := compareChannel(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-	// Retain updateable fields only
-	paths = paths.Intersection(allowedPaths)
-	var updated *pb.Channel
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		// even though there is no update, we still want to update KRM status
-		return nil
-	} else {
-		report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-		for path := range paths {
-			report.AddField(path, nil, nil)
-		}
-		structuredreporting.ReportDiff(ctx, report)
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-		resource.Name = a.id.String() // we need to set the name so that GCP API can identify the resource
+		desired.Name = a.id.String()
+
 		req := &pb.UpdateChannelRequest{
-			Channel:    resource,
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: sets.List(paths)},
+			Channel:    desired,
+			UpdateMask: updateMask,
 		}
-
 		op, err := a.gcpClient.UpdateChannel(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating eventarc channel %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating Channel %s: %w", a.id, err)
 		}
-
-		updated, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("waiting for eventarc channel update %s: %w", a.id.String(), err)
+			return fmt.Errorf("waiting update Channel %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated eventarc channel", "name", a.id)
+		log.V(2).Info("successfully updated Channel", "name", a.id)
+
+		status := &krm.EventarcChannelStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = EventarcChannelObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	status := &krm.EventarcChannelStatus{}
-	status.ObservedState = EventarcChannelObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(updated.Name)
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *channelAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareChannel(ctx context.Context, actual, desired *pb.Channel) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, EventarcChannelSpec_FromProto, EventarcChannelSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *ChannelAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -245,9 +230,8 @@ func (a *channelAdapter) Export(ctx context.Context) (*unstructured.Unstructured
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
-	obj.Spec.Location = a.id.Parent().Location
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.ID())
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
@@ -255,46 +239,32 @@ func (a *channelAdapter) Export(ctx context.Context) (*unstructured.Unstructured
 		return nil, err
 	}
 
-	u.SetName(a.id.String())
-	u.SetNamespace(obj.Namespace) // This is required KCC controller code convention
-	u.SetGroupVersionKind(krm.EventarcChannelGVK)
 	u.Object = uObj
-
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.EventarcChannelGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *channelAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ChannelAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting eventarc channel", "name", a.id)
+	log.V(2).Info("deleting Channel", "name", a.id)
 
-	req := &pb.DeleteChannelRequest{Name: a.id.String()}
+	req := &pb.DeleteChannelRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteChannel(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("eventarc channel not found", "name", a.id)
-			return false, nil // Resource is gone, consider the delete successful.
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting eventarc channel %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Channel %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	log.V(2).Info("successfully deleted Channel", "name", a.id)
+	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for eventarc channel deletion %q: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully deleted eventarc channel", "name", a.id)
-	return true, nil
-}
-
-func (a *channelAdapter) normalizeReferenceFields(ctx context.Context) error {
-	obj := a.desired
-	if obj.Spec.ProviderRef != nil {
-		providerRef, err := obj.Spec.ProviderRef.NormalizedExternal(ctx, a.reader, obj.Namespace)
-		if err != nil {
-			return err
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Channel %s: %w", a.id, err)
 		}
-		obj.Spec.ProviderRef.External = providerRef
 	}
-	return nil
+	return true, nil
 }

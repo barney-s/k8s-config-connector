@@ -12,29 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.compute.v1.Images
-// proto.message: google.cloud.compute.v1.Image
-// crd.type: ComputeImage
-// crd.version: v1beta1
-
 package compute
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	computepb "cloud.google.com/go/compute/apiv1/computepb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -45,6 +27,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	computepb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -52,86 +44,78 @@ func init() {
 }
 
 func NewComputeImageModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeImageModel{config: config}, nil
+	return &modelComputeImage{config: *config}, nil
 }
 
-var _ directbase.Model = &computeImageModel{}
+var _ directbase.Model = &modelComputeImage{}
+var _ = strings.TrimPrefix
 
-type computeImageModel struct {
-	config *config.ControllerConfig
+type modelComputeImage struct {
+	config config.ControllerConfig
 }
 
-func (m *computeImageModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeImage) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeImage{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	imagesClient, err := gcpClient.newImagesClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+	id := i.(*krm.ComputeImageIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desired := obj.DeepCopy()
-	resource := ComputeImageSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
-
-	resource.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
 	return &ComputeImageAdapter{
-		gcpClient: imagesClient,
-		id:        id.(*krm.ComputeImageIdentity),
-		desired:   resource,
-		reader:    reader,
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *computeImageModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeImage) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.ComputeImageIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := newGCPClient(m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
+		return nil, err
 	}
-	imagesClient, err := gcpClient.newImagesClient(ctx)
+	return &ComputeImageAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelComputeImage) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	return &ComputeImageAdapter{
-		gcpClient: imagesClient,
-		id:        id,
-	}, nil
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeImage client: %w", err)
+	}
+	return gcpClient, err
 }
 
 type ComputeImageAdapter struct {
-	gcpClient *compute.ImagesClient
 	id        *krm.ComputeImageIdentity
-	desired   *computepb.Image
-	actual    *computepb.Image
-	reader    client.Reader
+	gcpClient *gcp.Client
+	desired   *krm.ComputeImage
+	actual    *computepb.ComputeImage
 }
 
 var _ directbase.Adapter = &ComputeImageAdapter{}
@@ -140,11 +124,10 @@ func (a *ComputeImageAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeImage", "name", a.id)
 
-	req := &computepb.GetImageRequest{
-		Project: a.id.Project,
-		Image:   a.id.Image,
+	req := &computepb.GetComputeImageRequest{
+		Name: a.id.String(),
 	}
-	actual, err := a.gcpClient.Get(ctx, req)
+	resp, err := a.gcpClient.GetComputeImage(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -152,7 +135,7 @@ func (a *ComputeImageAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting ComputeImage %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
@@ -161,110 +144,71 @@ func (a *ComputeImageAdapter) Create(ctx context.Context, createOp *directbase.C
 	log.V(2).Info("creating ComputeImage", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
-	a.desired.Name = direct.LazyPtr(a.id.Image)
-
-	req := &computepb.InsertImageRequest{
-		Project:       a.id.Project,
-		ImageResource: a.desired,
-	}
-	op, err := a.gcpClient.Insert(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating ComputeImage %s: %w", a.id, err)
-	}
-
-	err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("compute ComputeImage %s waiting creation: %w", a.id.String(), err)
-	}
-	log.Info("successfully created compute ComputeImage in gcp", "name", a.id)
-
-	// Get the created resource
-	created, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeImage %s: %w", a.id, err)
-	}
-
-	status := ComputeImageStatus_v1beta1_FromProto(mapCtx, created)
+	desired := a.desired.DeepCopy()
+	resource := ComputeImageSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	req := &computepb.CreateComputeImageRequest{
+		Parent:         a.id.ParentString(),
+		ComputeImageId: a.id.Image,
+		ComputeImage:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeImage(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating ComputeImage %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeImage %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created ComputeImage", "name", a.id)
+
+	status := &krm.ComputeImageStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeImageAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeImage", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-
-	// Update labels if needed
-	desiredLabels := updateOp.GetUnstructured().GetLabels()
-	actualLabels := a.actual.Labels
-	labelsChanged := !reflect.DeepEqual(desiredLabels, actualLabels)
-
-	diffs, _, err := compareComputeImage(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	var updated *computepb.Image
-	if !diffs.HasDiff() && !labelsChanged {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		updated = a.actual
-	} else {
-		if diffs.HasDiff() {
-			diffs.Object = updateOp.GetUnstructured()
-			structuredreporting.ReportDiff(ctx, diffs)
-
-			a.desired.Name = direct.LazyPtr(a.id.Image)
-
-			req := &computepb.PatchImageRequest{
-				Project:       a.id.Project,
-				Image:         a.id.Image,
-				ImageResource: a.desired,
-			}
-			op, err := a.gcpClient.Patch(ctx, req)
-			if err != nil {
-				return fmt.Errorf("updating compute ComputeImage %s: %w", a.id.String(), err)
-			}
-			log.V(2).Info("successfully updated compute ComputeImage", "name", a.id.String())
-
-			err = op.Wait(ctx)
-			if err != nil {
-				return fmt.Errorf("compute ComputeImage %s waiting for update: %w", a.id.String(), err)
-			}
-		}
-
-		if labelsChanged {
-			log.Info("updating labels", "name", a.id)
-			req := &computepb.SetLabelsImageRequest{
-				Project:  a.id.Project,
-				Resource: a.id.Image,
-				GlobalSetLabelsRequestResource: &computepb.GlobalSetLabelsRequest{
-					LabelFingerprint: a.actual.LabelFingerprint,
-					Labels:           desiredLabels,
-				},
-			}
-			op, err := a.gcpClient.SetLabels(ctx, req)
-			if err != nil {
-				return fmt.Errorf("setting labels: %w", err)
-			}
-			if err := op.Wait(ctx); err != nil {
-				return fmt.Errorf("waiting for labels update: %w", err)
-			}
-		}
-
-		// Get the updated resource
-		updated, err = a.get(ctx)
-		if err != nil {
-			return fmt.Errorf("getting ComputeImage %s: %w", a.id, err)
-		}
-	}
-
-	status := ComputeImageStatus_v1beta1_FromProto(mapCtx, updated)
+	desired := ComputeImageSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareComputeImage(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeImage resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.ComputeImageStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return updateOp.UpdateStatus(ctx, status, nil)
+}
+
+func compareComputeImage(ctx context.Context, actual, desired *computepb.ComputeImage) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeImageSpec_v1beta1_FromProto, ComputeImageSpec_v1beta1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *ComputeImageAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -279,7 +223,6 @@ func (a *ComputeImageAdapter) Export(ctx context.Context) (*unstructured.Unstruc
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.Image)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
@@ -290,60 +233,12 @@ func (a *ComputeImageAdapter) Export(ctx context.Context) (*unstructured.Unstruc
 	u.Object = uObj
 	u.SetName(a.id.Image)
 	u.SetGroupVersionKind(krm.ComputeImageGVK)
-
-	export.SetProjectID(u, a.id.Project)
 	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
 func (a *ComputeImageAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeImage", "name", a.id)
-
-	req := &computepb.DeleteImageRequest{
-		Project: a.id.Project,
-		Image:   a.id.Image,
-	}
-	op, err := a.gcpClient.Delete(ctx, req)
-	if err != nil {
-		return false, fmt.Errorf("deleting compute ComputeImage %s: %w", a.id.String(), err)
-	}
-	log.Info("successfully deleted compute ComputeImage", "name", a.id)
-
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return false, fmt.Errorf("waiting for deletion of compute ComputeImage %s: %w", a.id.String(), err)
-		}
-	}
-
+	log.V(2).Info("deletion not supported for ComputeImage, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func (a *ComputeImageAdapter) get(ctx context.Context) (*computepb.Image, error) {
-	getReq := &computepb.GetImageRequest{
-		Project: a.id.Project,
-		Image:   a.id.Image,
-	}
-	resource, err := a.gcpClient.Get(ctx, getReq)
-	if err != nil {
-		return nil, fmt.Errorf("getting ComputeImage %s: %w", a.id, err)
-	}
-	return resource, nil
-}
-
-func compareComputeImage(ctx context.Context, actual, desired *computepb.Image) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, ComputeImageSpec_v1beta1_FromProto, ComputeImageSpec_v1beta1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

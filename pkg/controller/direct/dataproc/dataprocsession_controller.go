@@ -12,245 +12,210 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.dataproc.v1.SessionController
-// proto.message: google.cloud.dataproc.v1.Session
-// crd.type: DataprocSession
-// crd.version: v1alpha1
-
 package dataproc
 
 import (
 	"context"
 	"fmt"
-
-	dataproc "cloud.google.com/go/dataproc/v2/apiv1"
-	pb "cloud.google.com/go/dataproc/v2/apiv1/dataprocpb"
-	"google.golang.org/api/option"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dataproc/v1alpha1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/dataproc/v2/apiv1"
+	pb "cloud.google.com/go/dataproc/v2/apiv1/dataprocpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.DataprocSessionGVK, NewDataprocSessionModel)
+	registry.RegisterModel(krm.DataprocSessionGVK, NewSessionModel)
 }
 
-func NewDataprocSessionModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &sessionModel{config: *config}, nil
+func NewSessionModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelSession{config: *config}, nil
 }
 
-var _ directbase.Model = &sessionModel{}
+var _ directbase.Model = &modelSession{}
+var _ = strings.TrimPrefix
 
-type sessionModel struct {
+type modelSession struct {
 	config config.ControllerConfig
 }
 
-func (m *sessionModel) client(ctx context.Context, projectID string) (*dataproc.SessionControllerClient, error) {
-	var opts []option.ClientOption
-
-	config := m.config
-
-	// Workaround for an unusual behaviour (bug?):
-	//  the service requires that a quota project be set
-	if !config.UserProjectOverride || config.BillingProject == "" {
-		config.UserProjectOverride = true
-		config.BillingProject = projectID
-	}
-
-	opts, err := config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-
-	gcpClient, err := dataproc.NewSessionControllerRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building dataproc session client: %w", err)
-	}
-
-	return gcpClient, err
-}
-
-func (m *sessionModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelSession) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DataprocSession{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	sessionID, ok := id.(*krm.DataprocSessionIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", id)
-	}
-
+	id := i.(*krm.DataprocSessionIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	gcpClient, err := m.client(ctx, sessionID.Project)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := DataprocSessionSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desired.Name = sessionID.String()
-	if desired.Labels == nil {
-		desired.Labels = make(map[string]string)
-	}
-	for k, v := range obj.GetLabels() {
-		desired.Labels[k] = v
-	}
-	desired.Labels["managed-by-cnrm"] = "true"
-
-	return &sessionAdapter{
+	return &SessionAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		id:        sessionID,
-		desired:   desired,
-		obj:       obj,
+		desired:   obj,
 	}, nil
 }
 
-func (m *sessionModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelSession) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type sessionAdapter struct {
-	gcpClient *dataproc.SessionControllerClient
+func (m *modelSession) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Session client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type SessionAdapter struct {
 	id        *krm.DataprocSessionIdentity
-	desired   *pb.Session
-	obj       *krm.DataprocSession
+	gcpClient *gcp.Client
+	desired   *krm.DataprocSession
 	actual    *pb.Session
 }
 
-var _ directbase.Adapter = &sessionAdapter{}
+var _ directbase.Adapter = &SessionAdapter{}
 
-func (a *sessionAdapter) Find(ctx context.Context) (bool, error) {
+func (a *SessionAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting dataproc session", "name", a.id)
+	log.V(2).Info("getting Session", "name", a.id)
 
-	req := &pb.GetSessionRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetSession(ctx, req)
+	req := &pb.GetSessionRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetSession(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting dataproc session %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Session %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *sessionAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *SessionAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating dataproc session", "name", a.id)
+	log.V(2).Info("creating Session", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := DataprocSessionSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateSessionRequest{
 		Parent:    a.id.ParentString(),
-		Session:   a.desired,
 		SessionId: a.id.Session,
+		Session:   resource,
 	}
 	op, err := a.gcpClient.CreateSession(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating dataproc session %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating Session %s: %w", a.id, err)
 	}
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for dataproc session %s creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create Session %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created dataproc session in gcp", "name", a.id)
+	log.V(2).Info("successfully created Session", "name", a.id)
 
-	getReq := &pb.GetSessionRequest{Name: a.id.String()}
-	latest, err := a.gcpClient.GetSession(ctx, getReq)
-	if err != nil {
-		return fmt.Errorf("getting dataproc session %s after creation: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, createOp, latest)
-}
-
-func (a *sessionAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating dataproc session", "name", a.id)
-
-	paths, err := common.CompareProtoMessage(a.desired, a.actual, common.BasicDiff)
-	if err != nil {
-		return err
-	}
-	if len(paths) != 0 {
-		report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-		for path := range paths {
-			report.AddField(path, nil, nil)
-		}
-		structuredreporting.ReportDiff(ctx, report)
-		return fmt.Errorf("DataprocSession is immutable and cannot be updated")
-	}
-
-	return a.updateStatus(ctx, updateOp, a.actual)
-}
-
-func (a *sessionAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting dataproc session", "name", a.id)
-
-	req := &pb.DeleteSessionRequest{Name: a.id.String()}
-	op, err := a.gcpClient.DeleteSession(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting dataproc session %s: %w", a.id.String(), err)
-	}
-	_, err = op.Wait(ctx)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("waiting for dataproc session %s deletion: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully deleted dataproc session", "name", a.id)
-
-	return true, nil
-}
-
-func (a *sessionAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Session) error {
-	mapCtx := &direct.MapContext{}
 	status := &krm.DataprocSessionStatus{}
-	status.ObservedState = DataprocSessionObservedState_v1alpha1_FromProto(mapCtx, latest)
+	status.ObservedState = DataprocSessionObservedState_v1alpha1_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export implements the Adapter interface.
-func (a *sessionAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *SessionAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
+	log.V(2).Info("updating Session", "name", a.id)
 
+	mapCtx := &direct.MapContext{}
+	desired := DataprocSessionSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareSession(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("DataprocSession resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.DataprocSessionStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = DataprocSessionObservedState_v1alpha1_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
+
+func compareSession(ctx context.Context, actual, desired *pb.Session) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DataprocSessionSpec_v1alpha1_FromProto, DataprocSessionSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *SessionAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
 	obj := &krm.DataprocSession{}
 	mapCtx := &direct.MapContext{}
@@ -258,18 +223,41 @@ func (a *sessionAdapter) Export(ctx context.Context) (*unstructured.Unstructured
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 
-	obj.Spec.ProjectRef = &v1beta1.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = &a.id.Location
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u := &unstructured.Unstructured{Object: uObj}
+	u.Object = uObj
 	u.SetName(a.id.Session)
 	u.SetGroupVersionKind(krm.DataprocSessionGVK)
-
-	log.Info("exported object", "obj", u, "gvk", u.GroupVersionKind())
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
+}
+
+func (a *SessionAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deleting Session", "name", a.id)
+
+	req := &pb.DeleteSessionRequest{
+		Name: a.id.String(),
+	}
+	op, err := a.gcpClient.DeleteSession(ctx, req)
+	if err != nil {
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deleting Session %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully deleted Session", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Session %s: %w", a.id, err)
+		}
+	}
+	return true, nil
 }

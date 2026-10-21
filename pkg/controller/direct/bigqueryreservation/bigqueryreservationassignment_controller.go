@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,17 +17,17 @@ package bigqueryreservation
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/bigqueryreservation/v1beta1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/bigquery/reservation/apiv1"
-
 	pb "cloud.google.com/go/bigquery/reservation/apiv1/reservationpb"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -38,270 +38,163 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.BigQueryReservationAssignmentGVK, NewAssignmentModel)
+	registry.RegisterModel(krm.BigQueryReservationAssignmentGVK, NewBigQueryReservationAssignmentModel)
 }
 
-func NewAssignmentModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &modelAssignment{config: *config}, nil
+func NewBigQueryReservationAssignmentModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelBigQueryReservationAssignment{config: *config}, nil
 }
 
-var _ directbase.Model = &modelAssignment{}
+var _ directbase.Model = &modelBigQueryReservationAssignment{}
+var _ = strings.TrimPrefix
 
-type modelAssignment struct {
+type modelBigQueryReservationAssignment struct {
 	config config.ControllerConfig
 }
 
-func (m *modelAssignment) client(ctx context.Context) (*gcp.Client, error) {
+func (m *modelBigQueryReservationAssignment) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.BigQueryReservationAssignment{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	id := &krm.AssignmentIdentity{}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &BigQueryReservationAssignmentAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelBigQueryReservationAssignment) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelBigQueryReservationAssignment) client(ctx context.Context) (*gcp.Client, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building Assignment client: %w", err)
+		return nil, fmt.Errorf("building BigQueryReservationAssignment client: %w", err)
 	}
 	return gcpClient, err
 }
 
-func (m *modelAssignment) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.BigQueryReservationAssignment{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := krm.NewAssignmentIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get bigqueryreservation GCP client
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Normalize Assignee
-	if obj.Spec.Assignee.ProjectRef != nil {
-		project, err := refsv1beta1.ResolveProject(ctx, reader, u.GetNamespace(), obj.Spec.Assignee.ProjectRef)
-		if err != nil {
-			return nil, err
-		}
-		obj.Spec.Assignee.ProjectRef.External = project.ProjectID
-	}
-	if obj.Spec.Assignee.FolderRef != nil {
-		folder, err := refsv1beta1.ResolveFolder(ctx, reader, u, obj.Spec.Assignee.FolderRef)
-		if err != nil {
-			return nil, err
-		}
-		obj.Spec.Assignee.FolderRef.External = folder.FolderID
-	}
-	if obj.Spec.Assignee.OrganizationRef != nil {
-		org, err := refsv1beta1.ResolveOrganization(ctx, reader, u, obj.Spec.Assignee.OrganizationRef)
-		if err != nil {
-			return nil, err
-		}
-		obj.Spec.Assignee.OrganizationRef.External = org.OrganizationID
-	}
-
-	return &AssignmentAdapter{
-		id:            id,
-		gcpClient:     gcpClient,
-		desired:       obj,
-		destinationId: obj.Spec.ReservationRef.External,
-	}, nil
-}
-
-func (m *modelAssignment) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// TODO: Support URLs
-	return nil, nil
-}
-
-type AssignmentAdapter struct {
+type BigQueryReservationAssignmentAdapter struct {
 	id        *krm.AssignmentIdentity
 	gcpClient *gcp.Client
 	desired   *krm.BigQueryReservationAssignment
-	actual    *pb.Assignment
-	// The reservation to move the assignment to
-	destinationId string
+	actual    *pb.BigQueryReservationAssignment
 }
 
-var _ directbase.Adapter = &AssignmentAdapter{}
+var _ directbase.Adapter = &BigQueryReservationAssignmentAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggersAdapter `Update` call.
-// Return false means the object is not found. This triggersAdapter `Create` call.
-// Return a non-nil error requeues the requests.
-func (a *AssignmentAdapter) Find(ctx context.Context) (bool, error) {
+func (a *BigQueryReservationAssignmentAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting BigqueryReservationAssignment", "name", a.id.String())
+	log.V(2).Info("getting BigQueryReservationAssignment", "name", a.id)
 
-	req := &pb.ListAssignmentsRequest{Parent: a.id.Parent().String()}
-	assignmentIterator := a.gcpClient.ListAssignments(ctx, req)
-	if assignmentIterator == nil {
-		fmt.Printf("not found Assignment %q\n", a.id.String())
-		return false, nil
+	req := &pb.GetBigQueryReservationAssignmentRequest{
+		Name: a.id.String(),
 	}
-
-	// There is no more items when error is iterator.Done.
-	for assignmentpb, err := assignmentIterator.Next(); err == nil; {
-		if assignmentpb.Name == a.id.String() {
-			a.actual = assignmentpb
-			return true, nil
+	resp, err := a.gcpClient.GetBigQueryReservationAssignment(ctx, req)
+	if err != nil {
+		if direct.IsNotFound(err) {
+			return false, nil
 		}
-		assignmentpb, err = assignmentIterator.Next()
+		return false, fmt.Errorf("getting BigQueryReservationAssignment %q: %w", a.id, err)
 	}
 
-	return false, nil
+	a.actual = resp
+	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on theGCP response.
-func (a *AssignmentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *BigQueryReservationAssignmentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating Assignment", "name", a.id.String())
+	log.V(2).Info("creating BigQueryReservationAssignment", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
-	assignment := BigQueryReservationAssignmentSpec_ToProto(mapCtx, &desired.Spec)
+	resource := BigQueryReservationAssignmentSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	req := &pb.CreateAssignmentRequest{
-		Parent:       a.id.Parent().String(),
-		AssignmentId: a.id.AssignmentID(),
-		Assignment:   assignment,
+	req := &pb.CreateBigQueryReservationAssignmentRequest{
+		Parent:                        a.id.Parent().String(),
+		AssignmentId:                  a.id.AssignmentID,
+		BigQueryReservationAssignment: resource,
 	}
-	created, err := a.gcpClient.CreateAssignment(ctx, req)
+	created, err := a.gcpClient.CreateBigQueryReservationAssignment(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating Assignment %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating BigQueryReservationAssignment %s: %w", a.id, err)
 	}
-
-	log.V(2).Info("successfully created Assignment", "name", a.id.String())
+	log.V(2).Info("successfully created BigQueryReservationAssignment", "name", a.id)
 
 	status := &krm.BigQueryReservationAssignmentStatus{}
 	status.ObservedState = BigQueryReservationAssignmentObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-
-	// update the externalRef in the KRM resoruce
-	status.ExternalRef = direct.LazyPtr(created.GetName())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Parent is changed. Move the assignment to another reservation
-func (a *AssignmentAdapter) moveAssignment(ctx context.Context, updateOp *directbase.UpdateOperation, desiredSpec *krm.BigQueryReservationAssignmentSpec, currentReservation string) error {
+func (a *BigQueryReservationAssignmentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("moving assignment to another reservation", "name", a.id.String())
-
-	req := &pb.MoveAssignmentRequest{
-		Name:          a.actual.GetName(),
-		DestinationId: a.destinationId,
-		AssignmentId:  a.id.AssignmentID(),
-	}
-
-	updated, err := a.gcpClient.MoveAssignment(ctx, req)
-	if err != nil {
-		return fmt.Errorf("moving assignment %s: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully moved assignment", "name", a.id.String())
-
-	status := &krm.BigQueryReservationAssignmentStatus{}
-	// Rebuild the externalRef
-	status.ExternalRef = direct.LazyPtr(updated.GetName())
-	mapCtx := &direct.MapContext{}
-	status.ObservedState = BigQueryReservationAssignmentObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	return updateOp.UpdateStatus(ctx, status, nil)
-}
-
-// Otherwise, handle fields update
-func (a *AssignmentAdapter) updateAssignment(ctx context.Context, updateOp *directbase.UpdateOperation, desiredSpec *krm.BigQueryReservationAssignmentSpec) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating assignment", "name", a.id.String())
+	log.V(2).Info("updating BigQueryReservationAssignment", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	desiredPb := BigQueryReservationAssignmentSpec_ToProto(mapCtx, desiredSpec)
+	desired := BigQueryReservationAssignmentSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	paths := []string{}
-	// TODO
-	// The current proto file doesn't have mutable fields
-
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		status := &krm.BigQueryReservationAssignmentStatus{}
-		status.ObservedState = BigQueryReservationAssignmentObservedState_FromProto(mapCtx, a.actual)
-		if mapCtx.Err() != nil {
-			return mapCtx.Err()
-		}
-		return updateOp.UpdateStatus(ctx, status, nil)
-	}
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-	for _, path := range paths {
-		report.AddField(path, nil, nil)
-	}
-	structuredreporting.ReportDiff(ctx, report)
-
-	updateMask := &fieldmaskpb.FieldMask{
-		Paths: paths}
-
-	req := &pb.UpdateAssignmentRequest{
-		UpdateMask: updateMask,
-		Assignment: desiredPb,
-	}
-	updated, err := a.gcpClient.UpdateAssignment(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating assignment %s: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully updated assignment", "name", a.id.String())
-
-	status := &krm.BigQueryReservationAssignmentStatus{}
-	status.ObservedState = BigQueryReservationAssignmentObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	return updateOp.UpdateStatus(ctx, status, nil)
-}
-
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on theGCP response.
-func (a *AssignmentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating or moving the assignment", "name", a.id.String())
-
-	desiredSpec := &a.desired.DeepCopy().Spec
-
-	// Get the reservation to move the assignment from
-	currentReservation, _, err := krm.ParseAssignmentExternal(a.actual.GetName())
+	diffs, updateMask, err := compareBigQueryReservationAssignment(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	// Case1: Move the assignment to another reservation
-	if currentReservation.String() != a.destinationId {
-		report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-		report.AddField("reservation_id", currentReservation, a.destinationId)
-		structuredreporting.ReportDiff(ctx, report)
-		return a.moveAssignment(ctx, updateOp, desiredSpec, currentReservation.String())
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("BigQueryReservationAssignment resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	return a.updateAssignment(ctx, updateOp, desiredSpec)
+	status := &krm.BigQueryReservationAssignmentStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = BigQueryReservationAssignmentObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *AssignmentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareBigQueryReservationAssignment(ctx context.Context, actual, desired *pb.BigQueryReservationAssignment) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BigQueryReservationAssignmentSpec_FromProto, BigQueryReservationAssignmentSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *BigQueryReservationAssignmentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -313,35 +206,20 @@ func (a *AssignmentAdapter) Export(ctx context.Context) (*unstructured.Unstructu
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ReservationRef = &krm.ReservationRef{External: a.destinationId}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.actual.Name)
-	u.SetGroupVersionKind(krm.BigQueryReservationAssignmentGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.AssignmentID)
+	u.SetGroupVersionKind(krm.BigQueryReservationAssignmentGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *AssignmentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *BigQueryReservationAssignmentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting assignment", "name", a.id.String())
-
-	req := &pb.DeleteAssignmentRequest{Name: a.id.String()}
-	err := a.gcpClient.DeleteAssignment(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent assignment, assuming it was already deleted", "name", a.id.String())
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting assignment %s: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully deleted assignment", "name", a.id.String())
-
+	log.V(2).Info("deletion not supported for BigQueryReservationAssignment, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
 }

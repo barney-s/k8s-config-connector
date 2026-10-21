@@ -12,22 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.dataplex.v1.CatalogService
-// proto.message: google.cloud.dataplex.v1.MetadataFeed
-// crd.type: DataplexMetadataFeed
-// crd.version: v1alpha1
-
 package dataplex
 
 import (
 	"context"
 	"fmt"
-	"time"
-
-	gcp "cloud.google.com/go/dataplex/apiv1"
-	pb "cloud.google.com/go/dataplex/apiv1/dataplexpb"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/common/projects"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dataplex/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -35,13 +24,20 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
-	"google.golang.org/protobuf/proto"
+	"strings"
+
+	gcp "cloud.google.com/go/dataplex/apiv1"
+	pb "cloud.google.com/go/dataplex/apiv1/dataplexpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -49,306 +45,193 @@ func init() {
 }
 
 func NewMetadataFeedModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &metadataFeedModel{config: config}, nil
+	return &modelMetadataFeed{config: *config}, nil
 }
 
-var _ directbase.Model = &metadataFeedModel{}
+var _ directbase.Model = &modelMetadataFeed{}
+var _ = strings.TrimPrefix
 
-type metadataFeedModel struct {
-	config *config.ControllerConfig
+type modelMetadataFeed struct {
+	config config.ControllerConfig
 }
 
-func (m *metadataFeedModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelMetadataFeed) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DataplexMetadataFeed{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.MetadataFeedIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	copied := obj.DeepCopy()
-	mapCtx := &direct.MapContext{}
-	desired := DataplexMetadataFeedSpec_ToProto(mapCtx, &copied.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	labels := label.GCPLabels(u)
-	if labels == nil {
-		labels = make(map[string]string)
-	}
-	for k, v := range desired.Labels {
-		labels[k] = v
-	}
-	desired.Labels = labels
-
-	idI, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := idI.(*krm.MetadataFeedIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type %T", idI)
-	}
-
-	adapter := &metadataFeedAdapter{
-		id:            id,
-		desired:       desired,
-		reader:        reader,
-		projectMapper: m.config.ProjectMapper,
-	}
-
-	// Get GCP client
-	gcpClient, err := newGCPClient(ctx, m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	catalogClient, err := gcpClient.catalogRESTClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	adapter.gcpClient = catalogClient
-
-	return adapter, nil
+	return &MetadataFeedAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
 }
 
-func (m *metadataFeedModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelMetadataFeed) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type metadataFeedAdapter struct {
-	gcpClient     *gcp.CatalogClient
-	id            *krm.MetadataFeedIdentity
-	desired       *pb.MetadataFeed
-	actual        *pb.MetadataFeed
-	reader        client.Reader
-	projectMapper *projects.ProjectMapper
+func (m *modelMetadataFeed) client(ctx context.Context) (*gcp.CatalogClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building MetadataFeed client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &metadataFeedAdapter{}
+type MetadataFeedAdapter struct {
+	id        *krm.MetadataFeedIdentity
+	gcpClient *gcp.CatalogClient
+	desired   *krm.DataplexMetadataFeed
+	actual    *pb.MetadataFeed
+}
 
-func (a *metadataFeedAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &MetadataFeedAdapter{}
+
+func (a *MetadataFeedAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting dataplex metadatafeed", "name", a.id)
+	log.V(2).Info("getting MetadataFeed", "name", a.id)
 
-	req := &pb.GetMetadataFeedRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetMetadataFeed(ctx, req)
+	req := &pb.GetMetadataFeedRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetMetadataFeed(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting dataplex metadatafeed %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting MetadataFeed %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *metadataFeedAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *MetadataFeedAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating dataplex metadatafeed", "name", a.id)
+	log.V(2).Info("creating MetadataFeed", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := DataplexMetadataFeedSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateMetadataFeedRequest{
 		Parent:         a.id.ParentString(),
 		MetadataFeedId: a.id.MetadataFeed,
-		MetadataFeed:   a.desired,
+		MetadataFeed:   resource,
 	}
-
 	op, err := a.gcpClient.CreateMetadataFeed(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating dataplex metadatafeed %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating MetadataFeed %s: %w", a.id, err)
 	}
-
-	_, err = common.WaitForOperation(ctx, 2*time.Second, func(res *pb.MetadataFeed) (bool, error) {
-		return op.Done(), nil
-	}, func() (*pb.MetadataFeed, error) {
-		return op.Poll(ctx)
-	})
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting create dataplex metadatafeed %s failed: %w", a.id, err)
+		return fmt.Errorf("waiting create MetadataFeed %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created MetadataFeed", "name", a.id)
 
-	log.V(2).Info("successfully created dataplex metadatafeed in gcp", "name", a.id)
-
-	// Fetch fully-populated resource after creation
-	actual, err := a.gcpClient.GetMetadataFeed(ctx, &pb.GetMetadataFeedRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("fetching dataplex metadatafeed %s after create: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, createOp, actual)
-}
-
-func (a *metadataFeedAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating dataplex metadatafeed", "name", a.id)
-
-	mapCtx := &direct.MapContext{}
-
-	// Mask actual to only contain spec fields for correct diffing
-	maskedActualSpec := DataplexMetadataFeedSpec_FromProto(mapCtx, a.actual)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	maskedActual := DataplexMetadataFeedSpec_ToProto(mapCtx, maskedActualSpec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	if err := normalizeActualMetadataFeed(ctx, a.projectMapper, a.desired, maskedActual); err != nil {
-		return err
-	}
-
-	clonedDesired := proto.Clone(a.desired).(*pb.MetadataFeed)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return err
-	}
-
-	if diffs == nil || !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
-	}
-
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateMetadataFeedRequest{
-		MetadataFeed: clonedDesired,
-		UpdateMask:   updateMask,
-	}
-	req.MetadataFeed.Name = a.id.String()
-
-	op, err := a.gcpClient.UpdateMetadataFeed(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating dataplex metadatafeed %s: %w", a.id.String(), err)
-	}
-
-	_, err = common.WaitForOperation(ctx, 2*time.Second, func(res *pb.MetadataFeed) (bool, error) {
-		return op.Done(), nil
-	}, func() (*pb.MetadataFeed, error) {
-		return op.Poll(ctx)
-	})
-	if err != nil {
-		return fmt.Errorf("waiting for update of dataplex metadatafeed %s: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully updated dataplex metadatafeed", "name", a.id)
-
-	// Fetch fully-populated resource after update
-	actual, err := a.gcpClient.GetMetadataFeed(ctx, &pb.GetMetadataFeedRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("fetching dataplex metadatafeed %s after update: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, updateOp, actual)
-}
-
-func normalizeActualMetadataFeed(ctx context.Context, projectMapper *projects.ProjectMapper, desired *pb.MetadataFeed, actual *pb.MetadataFeed) error {
-	if desired == nil || actual == nil || projectMapper == nil {
-		return nil
-	}
-	if err := normalizeActualScope(ctx, projectMapper, desired.GetScope(), actual.GetScope()); err != nil {
-		return err
-	}
-	if err := normalizeActualFilters(ctx, projectMapper, desired.GetFilters(), actual.GetFilters()); err != nil {
-		return err
-	}
-	if actual.GetPubsubTopic() != "" {
-		normalized, err := projectMapper.ReplaceProjectNumberWithIDInLink(ctx, actual.GetPubsubTopic())
-		if err != nil {
-			return fmt.Errorf("normalizing pubsub topic link %q: %w", actual.GetPubsubTopic(), err)
-		}
-		if desired.GetPubsubTopic() == normalized {
-			actual.Endpoint = &pb.MetadataFeed_PubsubTopic{PubsubTopic: normalized}
-		}
-	}
-	return nil
-}
-
-func normalizeActualScope(ctx context.Context, projectMapper *projects.ProjectMapper, desired *pb.MetadataFeed_Scope, actual *pb.MetadataFeed_Scope) error {
-	if desired == nil || actual == nil || projectMapper == nil {
-		return nil
-	}
-	for i, actualProj := range actual.GetProjects() {
-		normalized, err := projectMapper.ReplaceProjectNumberWithIDInLink(ctx, actualProj)
-		if err != nil {
-			return fmt.Errorf("normalizing project link %q: %w", actualProj, err)
-		}
-		for _, desiredProj := range desired.GetProjects() {
-			if desiredProj == normalized {
-				actual.Projects[i] = normalized
-				break
-			}
-		}
-	}
-	for i, actualEG := range actual.GetEntryGroups() {
-		normalized, err := projectMapper.ReplaceProjectNumberWithIDInLink(ctx, actualEG)
-		if err != nil {
-			return fmt.Errorf("normalizing entry group link %q: %w", actualEG, err)
-		}
-		for _, desiredEG := range desired.GetEntryGroups() {
-			if desiredEG == normalized {
-				actual.EntryGroups[i] = normalized
-				break
-			}
-		}
-	}
-	return nil
-}
-
-func normalizeActualFilters(ctx context.Context, projectMapper *projects.ProjectMapper, desired *pb.MetadataFeed_Filters, actual *pb.MetadataFeed_Filters) error {
-	if desired == nil || actual == nil || projectMapper == nil {
-		return nil
-	}
-	for i, actualET := range actual.GetEntryTypes() {
-		normalized, err := projectMapper.ReplaceProjectNumberWithIDInLink(ctx, actualET)
-		if err != nil {
-			return fmt.Errorf("normalizing entry type link %q: %w", actualET, err)
-		}
-		for _, desiredET := range desired.GetEntryTypes() {
-			if desiredET == normalized {
-				actual.EntryTypes[i] = normalized
-				break
-			}
-		}
-	}
-	for i, actualAT := range actual.GetAspectTypes() {
-		normalized, err := projectMapper.ReplaceProjectNumberWithIDInLink(ctx, actualAT)
-		if err != nil {
-			return fmt.Errorf("normalizing aspect type link %q: %w", actualAT, err)
-		}
-		for _, desiredAT := range desired.GetAspectTypes() {
-			if desiredAT == normalized {
-				actual.AspectTypes[i] = normalized
-				break
-			}
-		}
-	}
-	return nil
-}
-
-func (a *metadataFeedAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.MetadataFeed) error {
-	mapCtx := &direct.MapContext{}
 	status := &krm.DataplexMetadataFeedStatus{}
-	status.ObservedState = DataplexMetadataFeedObservedState_FromProto(mapCtx, latest)
+	status.ObservedState = DataplexMetadataFeedObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *metadataFeedAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *MetadataFeedAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
+	log.V(2).Info("updating MetadataFeed", "name", a.id)
 
+	mapCtx := &direct.MapContext{}
+	desired := DataplexMetadataFeedSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareMetadataFeed(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateMetadataFeedRequest{
+			MetadataFeed: desired,
+			UpdateMask:   updateMask,
+		}
+		op, err := a.gcpClient.UpdateMetadataFeed(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating MetadataFeed %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update MetadataFeed %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated MetadataFeed", "name", a.id)
+
+		status := &krm.DataplexMetadataFeedStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = DataplexMetadataFeedObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareMetadataFeed(ctx context.Context, actual, desired *pb.MetadataFeed) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DataplexMetadataFeedSpec_FromProto, DataplexMetadataFeedSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *MetadataFeedAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
 	obj := &krm.DataplexMetadataFeed{}
 	mapCtx := &direct.MapContext{}
@@ -357,24 +240,23 @@ func (a *metadataFeedAdapter) Export(ctx context.Context) (*unstructured.Unstruc
 		return nil, mapCtx.Err()
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = &a.id.Location
+	obj.Spec.Location = a.id.Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u := &unstructured.Unstructured{Object: uObj}
+	u.Object = uObj
 	u.SetName(a.id.MetadataFeed)
 	u.SetGroupVersionKind(krm.DataplexMetadataFeedGVK)
-
-	log.Info("exported object", "obj", u, "gvk", u.GroupVersionKind())
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *metadataFeedAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *MetadataFeedAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting dataplex metadatafeed", "name", a.id)
+	log.V(2).Info("deleting MetadataFeed", "name", a.id)
 
 	req := &pb.DeleteMetadataFeedRequest{
 		Name: a.id.String(),
@@ -382,24 +264,16 @@ func (a *metadataFeedAdapter) Delete(ctx context.Context, deleteOp *directbase.D
 	op, err := a.gcpClient.DeleteMetadataFeed(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent dataplex metadatafeed, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting dataplex metadatafeed %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting MetadataFeed %s: %w", a.id, err)
 	}
-
-	_, err = common.WaitForOperation(ctx, 2*time.Second, func(_ struct{}) (bool, error) {
-		return op.Done(), nil
-	}, func() (struct{}, error) {
-		return struct{}{}, op.Poll(ctx)
-	})
+	log.V(2).Info("successfully deleted MetadataFeed", "name", a.id)
+	err = op.Wait(ctx)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete MetadataFeed %s: %w", a.id, err)
 		}
-		return false, fmt.Errorf("waiting for deletion of dataplex metadatafeed %s: %w", a.id.String(), err)
 	}
-	log.V(2).Info("successfully deleted dataplex metadatafeed", "name", a.id)
-
 	return true, nil
 }

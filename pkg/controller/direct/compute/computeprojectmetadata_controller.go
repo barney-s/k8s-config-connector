@@ -17,16 +17,6 @@ package compute
 import (
 	"context"
 	"fmt"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	computepb "cloud.google.com/go/compute/apiv1/computepb"
-	pb "cloud.google.com/go/compute/apiv1/computepb"
-	"google.golang.org/protobuf/proto"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -35,6 +25,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	pb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -42,268 +42,196 @@ func init() {
 }
 
 func NewComputeProjectMetadataModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeProjectMetadataModel{config: config}, nil
+	return &modelComputeProjectMetadata{config: *config}, nil
 }
 
-type computeProjectMetadataModel struct {
-	config *config.ControllerConfig
+var _ directbase.Model = &modelComputeProjectMetadata{}
+var _ = strings.TrimPrefix
+
+type modelComputeProjectMetadata struct {
+	config config.ControllerConfig
 }
 
-var _ directbase.Model = &computeProjectMetadataModel{}
-
-func (m *computeProjectMetadataModel) client(ctx context.Context) (*compute.ProjectsClient, error) {
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	return gcpClient.newProjectsClient(ctx)
-}
-
-func (m *computeProjectMetadataModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeProjectMetadata) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeProjectMetadata{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.ComputeProjectMetadataIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	idVal, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := idVal.(*krm.ComputeProjectMetadataIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", idVal)
-	}
-
-	projectsClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	return &ComputeProjectMetadataAdapter{
-		gcpClient: projectsClient,
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *computeProjectMetadataModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeProjectMetadata) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.ComputeProjectMetadataIdentity{}
 	if err := id.FromExternal(url); err != nil {
 		return nil, nil
 	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ComputeProjectMetadataAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
 
-	projectsClient, err := m.client(ctx)
+func (m *modelComputeProjectMetadata) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	return &ComputeProjectMetadataAdapter{
-		gcpClient: projectsClient,
-		id:        id,
-	}, nil
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeProjectMetadata client: %w", err)
+	}
+	return gcpClient, err
 }
 
 type ComputeProjectMetadataAdapter struct {
-	gcpClient *compute.ProjectsClient
 	id        *krm.ComputeProjectMetadataIdentity
+	gcpClient *gcp.Client
 	desired   *krm.ComputeProjectMetadata
-	actual    *pb.Metadata
-	reader    client.Reader
+	actual    *pb.ComputeProjectMetadata
 }
 
 var _ directbase.Adapter = &ComputeProjectMetadataAdapter{}
 
 func (a *ComputeProjectMetadataAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting ComputeProjectMetadata", "project", a.id.Project)
+	log.V(2).Info("getting ComputeProjectMetadata", "name", a.id)
 
-	req := &computepb.GetProjectRequest{
-		Project: a.id.Project,
+	req := &pb.GetComputeProjectMetadataRequest{
+		Name: a.id.String(),
 	}
-	project, err := a.gcpClient.Get(ctx, req)
+	resp, err := a.gcpClient.GetComputeProjectMetadata(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting compute project %q: %w", a.id.Project, err)
+		return false, fmt.Errorf("getting ComputeProjectMetadata %q: %w", a.id, err)
 	}
 
-	a.actual = project.GetCommonInstanceMetadata()
-	if a.actual == nil {
-		a.actual = &computepb.Metadata{}
-	}
+	a.actual = resp
 	return true, nil
 }
 
 func (a *ComputeProjectMetadataAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("creating ComputeProjectMetadata", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	desired := ComputeProjectMetadataSpec_ToProto(mapCtx, &a.desired.Spec)
+
+	desired := a.desired.DeepCopy()
+	resource := ComputeProjectMetadataSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	return a.save(ctx, createOp.GetUnstructured(), createOp, desired)
+
+	req := &pb.CreateComputeProjectMetadataRequest{
+		Parent:                   a.id.ParentString(),
+		ComputeProjectMetadataId: a.id.ComputeProjectMetadata,
+		ComputeProjectMetadata:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeProjectMetadata(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating ComputeProjectMetadata %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeProjectMetadata %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created ComputeProjectMetadata", "name", a.id)
+
+	status := &krm.ComputeProjectMetadataStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeProjectMetadataAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating ComputeProjectMetadata", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
 	desired := ComputeProjectMetadataSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	return a.save(ctx, updateOp.GetUnstructured(), updateOp, desired)
-}
 
-func (a *ComputeProjectMetadataAdapter) save(ctx context.Context, u *unstructured.Unstructured, op directbase.Operation, desired *pb.Metadata) error {
-	log := klog.FromContext(ctx)
-
-	if a.actual == nil {
-		found, err := a.Find(ctx)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return fmt.Errorf("compute project %q not found", a.id.Project)
-		}
-	}
-
-	diffs, err := compareComputeProjectMetadata(ctx, a.actual, desired)
+	diffs, updateMask, err := compareComputeProjectMetadata(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
+	_ = updateMask
 	if diffs.HasDiff() {
-		log.V(2).Info("updating ComputeProjectMetadata", "project", a.id.Project)
-		diffs.Object = u
+		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
-
-		metadataResource := proto.Clone(desired).(*pb.Metadata)
-		metadataResource.Fingerprint = a.actual.Fingerprint
-
-		req := &computepb.SetCommonInstanceMetadataProjectRequest{
-			Project:          a.id.Project,
-			MetadataResource: metadataResource,
-		}
-		callOp, err := a.gcpClient.SetCommonInstanceMetadata(ctx, req)
-		if err != nil {
-			return fmt.Errorf("setting common instance metadata for %q: %w", a.id.Project, err)
-		}
-		if err := callOp.Wait(ctx); err != nil {
-			return fmt.Errorf("waiting for setCommonInstanceMetadata for %q: %w", a.id.Project, err)
-		}
-
-		latestProject, err := a.gcpClient.Get(ctx, &computepb.GetProjectRequest{Project: a.id.Project})
-		if err != nil {
-			return fmt.Errorf("getting project after update %q: %w", a.id.Project, err)
-		}
-		a.actual = latestProject.GetCommonInstanceMetadata()
-		if a.actual == nil {
-			a.actual = &computepb.Metadata{}
-		}
+		return fmt.Errorf("ComputeProjectMetadata resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	return a.updateStatus(ctx, op, a.actual)
+	status := &krm.ComputeProjectMetadataStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
+
+func compareComputeProjectMetadata(ctx context.Context, actual, desired *pb.ComputeProjectMetadata) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeProjectMetadataSpec_FromProto, ComputeProjectMetadataSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *ComputeProjectMetadataAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.ComputeProjectMetadata{}
 	mapCtx := &direct.MapContext{}
-	spec := ComputeProjectMetadataSpec_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(ComputeProjectMetadataSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
 
-	obj := &krm.ComputeProjectMetadata{}
-	obj.Spec = *spec
-	obj.Name = a.id.Project
-	obj.SetGroupVersionKind(krm.ComputeProjectMetadataGVK)
-
-	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("converting to unstructured: %w", err)
+		return nil, err
 	}
-	return &unstructured.Unstructured{Object: u}, nil
+
+	u.Object = uObj
+	u.SetName(a.id.ComputeProjectMetadata)
+	u.SetGroupVersionKind(krm.ComputeProjectMetadataGVK)
+	return u, nil
 }
 
 func (a *ComputeProjectMetadataAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeProjectMetadata", "project", a.id.Project)
-
-	if a.actual == nil {
-		found, err := a.Find(ctx)
-		if err != nil {
-			return false, err
-		}
-		if !found {
-			return true, nil
-		}
-	}
-
-	if len(a.actual.GetItems()) == 0 {
-		return true, nil
-	}
-
-	emptyMetadata := &computepb.Metadata{
-		Fingerprint: a.actual.Fingerprint,
-	}
-	req := &computepb.SetCommonInstanceMetadataProjectRequest{
-		Project:          a.id.Project,
-		MetadataResource: emptyMetadata,
-	}
-	op, err := a.gcpClient.SetCommonInstanceMetadata(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("clearing common instance metadata for %q: %w", a.id.Project, err)
-	}
-
-	if err := op.Wait(ctx); err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("waiting for clearing common instance metadata for %q: %w", a.id.Project, err)
-	}
-
-	log.V(2).Info("successfully cleared ComputeProjectMetadata", "project", a.id.Project)
+	log.V(2).Info("deletion not supported for ComputeProjectMetadata, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func compareComputeProjectMetadata(ctx context.Context, actual, desired *pb.Metadata) (*structuredreporting.Diff, error) {
-	if actual == nil {
-		actual = &pb.Metadata{}
-	}
-	if desired == nil {
-		desired = &pb.Metadata{}
-	}
-
-	maskedActual, err := mappers.OnlySpecFields(actual, ComputeProjectMetadataSpec_FromProto, ComputeProjectMetadataSpec_ToProto)
-	if err != nil {
-		return nil, err
-	}
-
-	clonedDesired := proto.Clone(desired).(*pb.Metadata)
-
-	diffs, _, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, err
-	}
-	return diffs, nil
-}
-
-func (a *ComputeProjectMetadataAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Metadata) error {
-	mapCtx := &direct.MapContext{}
-	status := ComputeProjectMetadataStatus_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	return op.UpdateStatus(ctx, status, nil)
 }

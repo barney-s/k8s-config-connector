@@ -17,20 +17,22 @@ package tensorboardexperiment
 import (
 	"context"
 	"fmt"
-
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/vertexai/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/aiplatform/apiv1beta1"
 	pb "cloud.google.com/go/aiplatform/apiv1beta1/aiplatformpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -39,88 +41,79 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.VertexAITensorboardExperimentGVK, NewModel)
+	registry.RegisterModel(krm.VertexAITensorboardExperimentGVK, NewTensorboardExperimentModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewTensorboardExperimentModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelTensorboardExperiment{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelTensorboardExperiment{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelTensorboardExperiment struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context, location string) (*gcp.TensorboardClient, error) {
+func (m *modelTensorboardExperiment) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.VertexAITensorboardExperiment{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.VertexAITensorboardExperimentIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &TensorboardExperimentAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelTensorboardExperiment) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelTensorboardExperiment) client(ctx context.Context) (*gcp.TensorboardClient, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
-	endpoint := fmt.Sprintf("https://%s-aiplatform.googleapis.com:443", location)
-	opts = append(opts, option.WithEndpoint(endpoint))
+
 	gcpClient, err := gcp.NewTensorboardRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building Tensorboard client: %w", err)
+		return nil, fmt.Errorf("building TensorboardExperiment client: %w", err)
 	}
-	return gcpClient, nil
+	return gcpClient, err
 }
 
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.VertexAITensorboardExperiment{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	vertexaiID := id.(*krm.VertexAITensorboardExperimentIdentity)
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	// Get vertexai GCP client
-	gcpClient, err := m.client(ctx, vertexaiID.Location)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := VertexAITensorboardExperimentSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &Adapter{
-		id:        vertexaiID,
-		gcpClient: gcpClient,
-		desired:   desired,
-	}, nil
-}
-
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// TODO: Support URLs
-	return nil, nil
-}
-
-type Adapter struct {
+type TensorboardExperimentAdapter struct {
 	id        *krm.VertexAITensorboardExperimentIdentity
 	gcpClient *gcp.TensorboardClient
-	desired   *pb.TensorboardExperiment
+	desired   *krm.VertexAITensorboardExperiment
 	actual    *pb.TensorboardExperiment
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &TensorboardExperimentAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *TensorboardExperimentAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting VertexAITensorboardExperiment", "name", a.id)
+	log.V(2).Info("getting TensorboardExperiment", "name", a.id)
 
 	req := &pb.GetTensorboardExperimentRequest{
 		Name: a.id.String(),
@@ -130,100 +123,111 @@ func (a *Adapter) Find(ctx context.Context) (bool, error) {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting VertexAITensorboardExperiment %q: %w", a.id, err)
+		return false, fmt.Errorf("getting TensorboardExperiment %q: %w", a.id, err)
 	}
 
 	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *TensorboardExperimentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating VertexAITensorboardExperiment", "name", a.id)
+	log.V(2).Info("creating TensorboardExperiment", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := VertexAITensorboardExperimentSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateTensorboardExperimentRequest{
 		Parent:                  a.id.ParentString(),
-		TensorboardExperiment:   a.desired,
 		TensorboardExperimentId: a.id.Experiment,
+		TensorboardExperiment:   resource,
 	}
-	_, err := a.gcpClient.CreateTensorboardExperiment(ctx, req)
+	op, err := a.gcpClient.CreateTensorboardExperiment(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating VertexAITensorboardExperiment %s: %w", a.id, err)
+		return fmt.Errorf("creating TensorboardExperiment %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created VertexAITensorboardExperiment", "name", a.id)
-
-	actual, err := a.gcpClient.GetTensorboardExperiment(ctx, &pb.GetTensorboardExperimentRequest{Name: a.id.String()})
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("getting VertexAITensorboardExperiment after creation %s: %w", a.id, err)
+		return fmt.Errorf("waiting create TensorboardExperiment %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created TensorboardExperiment", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, actual)
+	status := &krm.VertexAITensorboardExperimentStatus{}
+	status.ObservedState = VertexAITensorboardExperimentObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *TensorboardExperimentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating VertexAITensorboardExperiment", "name", a.id)
+	log.V(2).Info("updating TensorboardExperiment", "name", a.id)
 
-	if a.actual.Source != a.desired.Source {
-		return fmt.Errorf("source is immutable and cannot be updated from %q to %q", a.actual.Source, a.desired.Source)
+	mapCtx := &direct.MapContext{}
+	desired := VertexAITensorboardExperimentSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	diffs, updateMask, err := compareResource(ctx, a.actual, a.desired)
+	diffs, updateMask, err := compareTensorboardExperiment(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no diff detected, skipping update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
-	}
+		desired.Name = a.id.String()
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	clonedDesired := proto.Clone(a.desired).(*pb.TensorboardExperiment)
-	clonedDesired.Name = a.id.String()
-
-	req := &pb.UpdateTensorboardExperimentRequest{
-		TensorboardExperiment: clonedDesired,
-		UpdateMask:            updateMask,
-	}
-	_, err = a.gcpClient.UpdateTensorboardExperiment(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating VertexAITensorboardExperiment %s: %w", a.id, err)
-	}
-
-	actual, err := a.gcpClient.GetTensorboardExperiment(ctx, &pb.GetTensorboardExperimentRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting VertexAITensorboardExperiment after update %s: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, updateOp, actual)
-}
-
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting VertexAITensorboardExperiment", "name", a.id)
-
-	req := &pb.DeleteTensorboardExperimentRequest{Name: a.id.String()}
-	op, err := a.gcpClient.DeleteTensorboardExperiment(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent VertexAITensorboardExperiment, assuming it was already deleted", "name", a.id)
-			return true, nil
+		req := &pb.UpdateTensorboardExperimentRequest{
+			TensorboardExperiment: desired,
+			UpdateMask:            updateMask,
 		}
-		return false, fmt.Errorf("deleting VertexAITensorboardExperiment %s: %w", a.id, err)
-	}
-	log.V(2).Info("successfully deleted VertexAITensorboardExperiment, waiting for operation to complete", "name", a.id)
+		op, err := a.gcpClient.UpdateTensorboardExperiment(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating TensorboardExperiment %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update TensorboardExperiment %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated TensorboardExperiment", "name", a.id)
 
-	err = op.Wait(ctx)
-	if err != nil {
-		return false, fmt.Errorf("waiting delete VertexAITensorboardExperiment %s: %w", a.id, err)
+		status := &krm.VertexAITensorboardExperimentStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = VertexAITensorboardExperimentObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
-	return true, nil
+
+	return nil
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareTensorboardExperiment(ctx context.Context, actual, desired *pb.TensorboardExperiment) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, VertexAITensorboardExperimentSpec_FromProto, VertexAITensorboardExperimentSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *TensorboardExperimentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -235,48 +239,41 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{Name: a.id.Project}
-	obj.Spec.Location = direct.PtrTo(a.id.Location)
-	obj.Spec.TensorboardRef = &krm.VertexAITensorboardRef{External: fmt.Sprintf("projects/%s/locations/%s/tensorboards/%s", a.id.Project, a.id.Location, a.id.Tensorboard)}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.Experiment)
 	u.SetGroupVersionKind(krm.VertexAITensorboardExperimentGVK)
-
-	u.Object = uObj
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.TensorboardExperiment) error {
-	mapCtx := &direct.MapContext{}
-	observedState := VertexAITensorboardExperimentObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func (a *TensorboardExperimentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deleting TensorboardExperiment", "name", a.id)
+
+	req := &pb.DeleteTensorboardExperimentRequest{
+		Name: a.id.String(),
 	}
-
-	status := &krm.VertexAITensorboardExperimentStatus{
-		ObservedState: observedState,
-		ExternalRef:   direct.LazyPtr(a.id.String()),
-	}
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareResource(ctx context.Context, actual, desired *pb.TensorboardExperiment) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual := &pb.TensorboardExperiment{
-		DisplayName: actual.DisplayName,
-		Description: actual.Description,
-		Labels:      actual.Labels,
-		Source:      actual.Source,
-	}
-
-	clonedDesired := proto.Clone(desired).(*pb.TensorboardExperiment)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	op, err := a.gcpClient.DeleteTensorboardExperiment(ctx, req)
 	if err != nil {
-		return nil, nil, err
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deleting TensorboardExperiment %s: %w", a.id, err)
 	}
-	return diffs, updateMask, nil
+	log.V(2).Info("successfully deleted TensorboardExperiment", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete TensorboardExperiment %s: %w", a.id, err)
+		}
+	}
+	return true, nil
 }

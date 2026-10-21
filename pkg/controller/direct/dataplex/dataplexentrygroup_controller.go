@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,36 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.dataplex.v1.CatalogService
-// proto.message: google.cloud.dataplex.v1.EntryGroup
-// crd.type: DataplexEntryGroup
-// crd.version: v1alpha1
-
 package dataplex
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	gcp "cloud.google.com/go/dataplex/apiv1"
-	pb "cloud.google.com/go/dataplex/apiv1/dataplexpb"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/common/parent"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dataplex/v1alpha1"
-	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/dataplex/apiv1"
+	pb "cloud.google.com/go/dataplex/apiv1/dataplexpb"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -49,178 +44,189 @@ func init() {
 }
 
 func NewEntryGroupModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &entryGroupModel{config: config}, nil
+	return &modelEntryGroup{config: *config}, nil
 }
 
-var _ directbase.Model = &entryGroupModel{}
+var _ directbase.Model = &modelEntryGroup{}
+var _ = strings.TrimPrefix
 
-type entryGroupModel struct {
-	config *config.ControllerConfig
+type modelEntryGroup struct {
+	config config.ControllerConfig
 }
 
-func (m *entryGroupModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelEntryGroup) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DataplexEntryGroup{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.EntryGroupIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	copied := obj.DeepCopy()
-	mapCtx := &direct.MapContext{}
-	desired := DataplexEntryGroupSpec_ToProto(mapCtx, &copied.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
-	idI, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := idI.(*krm.EntryGroupIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type %T", idI)
-	}
-
-	// Get GCP client
-	gcpClient, err := newGCPClient(ctx, m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	catalogClient, err := gcpClient.catalogClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &entryGroupAdapter{
-		gcpClient: catalogClient,
+	return &EntryGroupAdapter{
 		id:        id,
-		desired:   desired,
-		reader:    reader,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *entryGroupModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelEntryGroup) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type entryGroupAdapter struct {
-	gcpClient *gcp.CatalogClient
-	id        *krm.EntryGroupIdentity
-	desired   *pb.EntryGroup
-	actual    *pb.EntryGroup
-	reader    client.Reader
+func (m *modelEntryGroup) client(ctx context.Context) (*gcp.CatalogClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building EntryGroup client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &entryGroupAdapter{}
+type EntryGroupAdapter struct {
+	id        *krm.EntryGroupIdentity
+	gcpClient *gcp.CatalogClient
+	desired   *krm.DataplexEntryGroup
+	actual    *pb.EntryGroup
+}
 
-func (a *entryGroupAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &EntryGroupAdapter{}
+
+func (a *EntryGroupAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting dataplex entry group", "name", a.id)
+	log.V(2).Info("getting EntryGroup", "name", a.id)
 
-	req := &pb.GetEntryGroupRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetEntryGroup(ctx, req)
+	req := &pb.GetEntryGroupRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetEntryGroup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting dataplex entry group %q: %w", a.id, err)
+		return false, fmt.Errorf("getting EntryGroup %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *entryGroupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *EntryGroupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating dataplex entry group", "name", a.id)
+	log.V(2).Info("creating EntryGroup", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := DataplexEntryGroupSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateEntryGroupRequest{
-		Parent:       fmt.Sprintf("projects/%s/locations/%s", a.id.Project, a.id.Location),
+		Parent:       a.id.ParentString(),
 		EntryGroupId: a.id.Entrygroup,
-		EntryGroup:   a.desired,
+		EntryGroup:   resource,
 	}
 	op, err := a.gcpClient.CreateEntryGroup(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating dataplex entry group %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating EntryGroup %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting create dataplex entry group %s failed: %w", a.id, err)
+		return fmt.Errorf("waiting create EntryGroup %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created EntryGroup", "name", a.id)
 
-	log.V(2).Info("successfully created dataplex entry group in gcp", "name", a.id)
-	mapCtx := &direct.MapContext{}
 	status := &krm.DataplexEntryGroupStatus{}
 	status.ObservedState = DataplexEntryGroupObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *entryGroupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *EntryGroupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating dataplex entry group", "name", a.id)
-
-	a.desired.Name = a.id.String() // Add name for update request
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	updateMask := &fieldmaskpb.FieldMask{}
-	if !reflect.DeepEqual(a.desired.DisplayName, a.actual.DisplayName) {
-		report.AddField("display_name", a.actual.DisplayName, a.desired.DisplayName)
-		updateMask.Paths = append(updateMask.Paths, "display_name")
-	}
-	if !reflect.DeepEqual(a.desired.Description, a.actual.Description) {
-		report.AddField("description", a.actual.Description, a.desired.Description)
-		updateMask.Paths = append(updateMask.Paths, "description")
-	}
-	if !reflect.DeepEqual(a.desired.Labels, a.actual.Labels) {
-		report.AddField("labels", a.actual.Labels, a.desired.Labels)
-		updateMask.Paths = append(updateMask.Paths, "labels")
-	}
-
-	var updated *pb.EntryGroup
-	if len(updateMask.Paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		// even though there is no update, we still want to update KRM status
-		updated = a.actual
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		req := &pb.UpdateEntryGroupRequest{
-			UpdateMask: updateMask,
-			EntryGroup: a.desired,
-		}
-		op, err := a.gcpClient.UpdateEntryGroup(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating dataplex entry group %s: %w", a.id.String(), err)
-		}
-		updated, err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting for update of dataplex entry group %s: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated dataplex entry group", "name", a.id)
-	}
+	log.V(2).Info("updating EntryGroup", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	status := &krm.DataplexEntryGroupStatus{}
-	status.ObservedState = DataplexEntryGroupObservedState_FromProto(mapCtx, updated)
+	desired := DataplexEntryGroupSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	return updateOp.UpdateStatus(ctx, status, nil)
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareEntryGroup(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateEntryGroupRequest{
+			EntryGroup: desired,
+			UpdateMask: updateMask,
+		}
+		op, err := a.gcpClient.UpdateEntryGroup(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating EntryGroup %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update EntryGroup %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated EntryGroup", "name", a.id)
+
+		status := &krm.DataplexEntryGroupStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = DataplexEntryGroupObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
 }
 
-func (a *entryGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareEntryGroup(ctx context.Context, actual, desired *pb.EntryGroup) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DataplexEntryGroupSpec_FromProto, DataplexEntryGroupSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *EntryGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -232,25 +238,22 @@ func (a *entryGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructu
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ParentRef = &parent.ProjectAndLocationRef{
-		ProjectRef: &refs.ProjectRef{External: a.id.Project},
-		Location:   a.id.Location,
-	}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.id.Entrygroup) // Use the Entry Group ID as the K8s resource name
-	u.SetGroupVersionKind(krm.DataplexEntryGroupGVK)
 	u.Object = uObj
-
+	u.SetName(a.id.Entrygroup)
+	u.SetGroupVersionKind(krm.DataplexEntryGroupGVK)
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-func (a *entryGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *EntryGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting dataplex entry group", "name", a.id)
+	log.V(2).Info("deleting EntryGroup", "name", a.id)
 
 	req := &pb.DeleteEntryGroupRequest{
 		Name: a.id.String(),
@@ -258,20 +261,16 @@ func (a *entryGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.Del
 	op, err := a.gcpClient.DeleteEntryGroup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent dataplex entry group, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting dataplex entry group %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting EntryGroup %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully initiated deletion of dataplex entry group", "name", a.id)
-
-	// Wait for the LRO to complete.
+	log.V(2).Info("successfully deleted EntryGroup", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for deletion of dataplex entry group %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete EntryGroup %s: %w", a.id, err)
+		}
 	}
-	log.V(2).Info("successfully deleted dataplex entry group", "name", a.id)
-
 	return true, nil
 }

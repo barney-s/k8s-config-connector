@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,19 +17,20 @@ package orgpolicy
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/orgpolicy/v1beta1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/orgpolicy/apiv2"
-
 	orgpolicypb "cloud.google.com/go/orgpolicy/apiv2/orgpolicypb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -46,38 +47,22 @@ func NewPolicyModel(ctx context.Context, config *config.ControllerConfig) (direc
 }
 
 var _ directbase.Model = &modelPolicy{}
+var _ = strings.TrimPrefix
 
 type modelPolicy struct {
 	config config.ControllerConfig
 }
 
-func (m *modelPolicy) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building Policy client: %w", err)
-	}
-	return gcpClient, err
-}
-
 func (m *modelPolicy) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.OrgPolicyPolicy{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.PolicyIdentity{}
 
-	id, err := krm.NewPolicyIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get orgpolicy GCP client
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
@@ -94,6 +79,20 @@ func (m *modelPolicy) AdapterForURL(ctx context.Context, url string) (directbase
 	return nil, nil
 }
 
+func (m *modelPolicy) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Policy client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type PolicyAdapter struct {
 	id        *krm.PolicyIdentity
 	gcpClient *gcp.Client
@@ -103,16 +102,14 @@ type PolicyAdapter struct {
 
 var _ directbase.Adapter = &PolicyAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *PolicyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting Policy", "name", a.id)
 
-	req := &orgpolicypb.GetPolicyRequest{Name: a.id.String()}
-	policypb, err := a.gcpClient.GetPolicy(ctx, req)
+	req := &orgpolicypb.GetPolicyRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetPolicy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -120,11 +117,10 @@ func (a *PolicyAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting Policy %q: %w", a.id, err)
 	}
 
-	a.actual = policypb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *PolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating Policy", "name", a.id)
@@ -132,14 +128,14 @@ func (a *PolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateO
 
 	desired := a.desired.DeepCopy()
 	resource := OrgPolicyPolicySpec_ToProto(mapCtx, &desired.Spec)
-	resource.Name = a.id.String()
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
 	req := &orgpolicypb.CreatePolicyRequest{
-		Parent: a.id.Parent().String(),
-		Policy: resource,
+		Parent:   a.id.Parent().String(),
+		PolicyId: a.id.Policy,
+		Policy:   resource,
 	}
 	created, err := a.gcpClient.CreatePolicy(ctx, req)
 	if err != nil {
@@ -156,24 +152,39 @@ func (a *PolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateO
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *PolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating Policy", "name", a.id)
-	mapCtx := &direct.MapContext{}
 
-	desiredPb := OrgPolicyPolicySpec_ToProto(mapCtx, &a.desired.DeepCopy().Spec)
-	desiredPb.Name = a.id.String()
+	mapCtx := &direct.MapContext{}
+	desired := OrgPolicyPolicySpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	if proto.Equal(a.actual.GetSpec(), desiredPb.GetSpec()) && proto.Equal(a.actual.GetDryRunSpec(), desiredPb.GetDryRunSpec()) {
-		log.V(2).Info("Policy is already up to date", "name", a.id)
-		// The resource is already up to date, but we still need to update the status
-		// to reflect the actual state from the backend.
+	diffs, updateMask, err := comparePolicy(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &orgpolicypb.UpdatePolicyRequest{
+			Policy:     desired,
+			UpdateMask: updateMask,
+		}
+		updated, err := a.gcpClient.UpdatePolicy(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Policy %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Policy", "name", a.id)
+
 		status := &krm.OrgPolicyPolicyStatus{}
-		status.ObservedState = OrgPolicyPolicyObservedState_FromProto(mapCtx, a.actual)
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = OrgPolicyPolicyObservedState_FromProto(mapCtx, updated)
 		if mapCtx.Err() != nil {
 			return mapCtx.Err()
 		}
@@ -181,35 +192,21 @@ func (a *PolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateO
 		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	req := &orgpolicypb.UpdatePolicyRequest{
-		Policy: desiredPb,
-	}
-
-	// Let the backend handle validation
-	paths := []string{"policy.spec"}
-	if a.desired.Spec.DryRunSpec != nil {
-		paths = append(paths, "policy.dry_run_spec")
-	}
-	req.UpdateMask = &fieldmaskpb.FieldMask{
-		Paths: paths,
-	}
-
-	updated, err := a.gcpClient.UpdatePolicy(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating Policy %s: %w", a.id, err)
-	}
-	log.V(2).Info("successfully updated Policy", "name", a.id)
-
-	status := &krm.OrgPolicyPolicyStatus{}
-	status.ObservedState = OrgPolicyPolicyObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func comparePolicy(ctx context.Context, actual, desired *orgpolicypb.Policy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, OrgPolicyPolicySpec_FromProto, OrgPolicyPolicySpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
 func (a *PolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -222,45 +219,33 @@ func (a *PolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured,
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	parentRef, _, err := krm.ParsePolicyExternal(a.actual.Name)
-	if parentRef.ProjectID != "" {
-		obj.Spec.ProjectRef = &refs.ProjectRef{External: parentRef.String()}
-	} else if parentRef.FolderID != "" {
-		obj.Spec.FolderRef = &refs.FolderRef{External: parentRef.String()}
-	} else if parentRef.OrganizationID != "" {
-		obj.Spec.OrganizationRef = &refs.OrganizationRef{External: parentRef.String()}
-	} else {
-		return nil, fmt.Errorf("unknown parent type in name %q", a.actual.Name)
-	}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.actual.Name)
-	u.SetGroupVersionKind(krm.OrgPolicyPolicyGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.Policy)
+	u.SetGroupVersionKind(krm.OrgPolicyPolicyGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *PolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting Policy", "name", a.id)
 
-	req := &orgpolicypb.DeletePolicyRequest{Name: a.id.String()}
+	req := &orgpolicypb.DeletePolicyRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeletePolicy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent Policy, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting Policy %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted Policy", "name", a.id)
-
 	return true, nil
 }

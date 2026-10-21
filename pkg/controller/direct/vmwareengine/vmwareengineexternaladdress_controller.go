@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,31 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.vmwareengine.v1.VmwareEngine
-// proto.message: google.cloud.vmwareengine.v1.ExternalAddress
-// crd.type: VMwareEngineExternalAddress
 package vmwareengine
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	gcp "cloud.google.com/go/vmwareengine/apiv1"
-	pb "cloud.google.com/go/vmwareengine/apiv1/vmwareenginepb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/vmwareengine/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/vmwareengine/apiv1"
+	pb "cloud.google.com/go/vmwareengine/apiv1/vmwareenginepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -44,82 +42,89 @@ func init() {
 }
 
 func NewExternalAddressModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &externalAddressModel{config: *config}, nil
+	return &modelExternalAddress{config: *config}, nil
 }
 
-var _ directbase.Model = &externalAddressModel{}
+var _ directbase.Model = &modelExternalAddress{}
+var _ = strings.TrimPrefix
 
-type externalAddressModel struct {
+type modelExternalAddress struct {
 	config config.ControllerConfig
 }
 
-func (m *externalAddressModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelExternalAddress) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.VMwareEngineExternalAddress{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.ExternalAddressIdentity{}
 
-	id, err := krm.NewExternalAddressIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// Get VMwareEngine GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
-	if err != nil {
-		return nil, err
-	}
-	client, err := gcpClient.newClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &externalAddressAdapter{
-		gcpClient: client,
+	return &ExternalAddressAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader, // Added reader for reference normalization
 	}, nil
 }
 
-func (m *externalAddressModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelExternalAddress) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type externalAddressAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.ExternalAddressIdentity
-	desired   *krm.VMwareEngineExternalAddress
-	actual    *pb.ExternalAddress
-	reader    client.Reader // Added reader for reference normalization
+func (m *modelExternalAddress) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ExternalAddress client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &externalAddressAdapter{}
+type ExternalAddressAdapter struct {
+	id        *krm.ExternalAddressIdentity
+	gcpClient *gcp.Client
+	desired   *krm.VMwareEngineExternalAddress
+	actual    *pb.ExternalAddress
+}
 
-func (a *externalAddressAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &ExternalAddressAdapter{}
+
+func (a *ExternalAddressAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting vmwareengine external address", "name", a.id)
+	log.V(2).Info("getting ExternalAddress", "name", a.id)
 
-	req := &pb.GetExternalAddressRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetExternalAddress(ctx, req)
+	req := &pb.GetExternalAddressRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetExternalAddress(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting vmwareengine external address %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting ExternalAddress %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *externalAddressAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ExternalAddressAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating vmwareengine external address", "name", a.id)
-
+	log.V(2).Info("creating ExternalAddress", "name", a.id)
 	mapCtx := &direct.MapContext{}
+
 	desired := a.desired.DeepCopy()
 	resource := VMwareEngineExternalAddressSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
@@ -133,16 +138,16 @@ func (a *externalAddressAdapter) Create(ctx context.Context, createOp *directbas
 	}
 	op, err := a.gcpClient.CreateExternalAddress(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating vmwareengine external address %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating ExternalAddress %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("vmwareengine external address %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create ExternalAddress %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created vmwareengine external address in gcp", "name", a.id)
+	log.V(2).Info("successfully created ExternalAddress", "name", a.id)
 
 	status := &krm.VMwareEngineExternalAddressStatus{}
-	status.ObservedState = VMwareEngineExternalAddressObservedState_FromProto(mapCtx, created)
+	status.ObservedState = VMwareEngineExternalAddressObservedState_v1beta1_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
@@ -150,62 +155,66 @@ func (a *externalAddressAdapter) Create(ctx context.Context, createOp *directbas
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *externalAddressAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ExternalAddressAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating vmwareengine external address", "name", a.id)
+	log.V(2).Info("updating ExternalAddress", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	desired := a.desired.DeepCopy()
-	resource := VMwareEngineExternalAddressSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	desired := VMwareEngineExternalAddressSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	paths := []string{}
-	// UpdateMask for ExternalAddress allows updating description and internal_ip
-	if desired.Spec.Description != nil && !reflect.DeepEqual(resource.Description, a.actual.Description) {
-		report.AddField("description", a.actual.Description, resource.Description)
-		paths = append(paths, "description")
+	diffs, updateMask, err := compareExternalAddress(ctx, a.actual, desired)
+	if err != nil {
+		return err
 	}
-	if desired.Spec.InternalIP != nil && !reflect.DeepEqual(resource.InternalIp, a.actual.InternalIp) {
-		report.AddField("internal_ip", a.actual.InternalIp, resource.InternalIp)
-		paths = append(paths, "internal_ip")
-	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	var updated *pb.ExternalAddress
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		updated = a.actual
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		resource.Name = a.id.String() // we need to set the name so that GCP API can identify the resource
+		desired.Name = a.id.String()
+
 		req := &pb.UpdateExternalAddressRequest{
-			ExternalAddress: resource,
-			UpdateMask:      &fieldmaskpb.FieldMask{Paths: paths},
+			ExternalAddress: desired,
+			UpdateMask:      updateMask,
 		}
 		op, err := a.gcpClient.UpdateExternalAddress(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating vmwareengine external address %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating ExternalAddress %s: %w", a.id, err)
 		}
-		updated, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("vmwareengine external address %s waiting for update: %w", a.id, err)
+			return fmt.Errorf("waiting update ExternalAddress %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated vmwareengine external address", "name", a.id)
+		log.V(2).Info("successfully updated ExternalAddress", "name", a.id)
+
+		status := &krm.VMwareEngineExternalAddressStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = VMwareEngineExternalAddressObservedState_v1beta1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	status := &krm.VMwareEngineExternalAddressStatus{}
-	status.ObservedState = VMwareEngineExternalAddressObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-func (a *externalAddressAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareExternalAddress(ctx context.Context, actual, desired *pb.ExternalAddress) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, VMwareEngineExternalAddressSpec_v1beta1_FromProto, VMwareEngineExternalAddressSpec_v1beta1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *ExternalAddressAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -213,45 +222,42 @@ func (a *externalAddressAdapter) Export(ctx context.Context) (*unstructured.Unst
 
 	obj := &krm.VMwareEngineExternalAddress{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = *VMwareEngineExternalAddressSpec_v1beta1_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(VMwareEngineExternalAddressSpec_v1beta1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	// Add parent references from ID
-	obj.Spec.PrivateCloudRef = &krm.PrivateCloudRef{External: a.id.Parent().String()}
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	// The name in KCC is set from the last segment of the GCP resource name
-	u.SetName(a.id.ID()) // Use the ID() method to get the last segment
-	u.SetGroupVersionKind(krm.VMwareEngineExternalAddressGVK)
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.VMwareEngineExternalAddressGVK)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *externalAddressAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ExternalAddressAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting vmwareengine external address", "name", a.id)
+	log.V(2).Info("deleting ExternalAddress", "name", a.id)
 
-	req := &pb.DeleteExternalAddressRequest{Name: a.id.String()}
+	req := &pb.DeleteExternalAddressRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteExternalAddress(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent ExternalAddress, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting vmwareengine external address %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting ExternalAddress %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully initiated deletion of vmwareengine external address", "name", a.id)
-
+	log.V(2).Info("successfully deleted ExternalAddress", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete ExternalAddress %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete ExternalAddress %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

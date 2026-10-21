@@ -17,9 +17,6 @@ package datalineage
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/datacatalog/lineage/apiv1"
-	pb "cloud.google.com/go/datacatalog/lineage/apiv1/lineagepb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/datalineage/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -27,9 +24,14 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/datacatalog/lineage/apiv1"
+	pb "cloud.google.com/go/datacatalog/lineage/apiv1/lineagepb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,168 +39,181 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.DataLineageProcessGVK, NewModel)
+	registry.RegisterModel(krm.DataLineageProcessGVK, NewProcessModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewProcessModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelProcess{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelProcess{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelProcess struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building DataLineageProcess REST client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelProcess) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DataLineageProcess{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	idBase, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idBase.(*krm.DataLineageProcessIdentity)
-
-	mapCtx := &direct.MapContext{}
-	desired := DataLineageProcessSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	id := i.(*krm.DataLineageProcessIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
-	desired.Name = id.String()
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{
+	return &ProcessAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelProcess) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
+func (m *modelProcess) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Process client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ProcessAdapter struct {
 	id        *krm.DataLineageProcessIdentity
 	gcpClient *gcp.Client
-	desired   *pb.Process
+	desired   *krm.DataLineageProcess
 	actual    *pb.Process
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &ProcessAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *ProcessAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting DataLineageProcess", "name", a.id.String())
+	log.V(2).Info("getting Process", "name", a.id)
 
-	req := &pb.GetProcessRequest{Name: a.id.String()}
-	pbObj, err := a.gcpClient.GetProcess(ctx, req)
+	req := &pb.GetProcessRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetProcess(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting DataLineageProcess %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Process %q: %w", a.id, err)
 	}
 
-	a.actual = pbObj
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ProcessAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating DataLineageProcess")
-
-	req := &pb.CreateProcessRequest{
-		Parent:  a.id.ParentString(),
-		Process: a.desired,
-	}
-
-	created, err := a.gcpClient.CreateProcess(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating DataLineageProcess %s: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully created DataLineageProcess", "name", a.id.String())
-
-	return a.updateStatus(ctx, createOp, created)
-}
-
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating DataLineageProcess", "name", a.id.String())
+	log.V(2).Info("creating Process", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
-	// Mask actual to only contain spec fields for correct diffing
-	maskedActualSpec := DataLineageProcessSpec_FromProto(mapCtx, a.actual)
+	desired := a.desired.DeepCopy()
+	resource := DataLineageProcessSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	maskedActual := DataLineageProcessSpec_ToProto(mapCtx, maskedActualSpec)
+
+	req := &pb.CreateProcessRequest{
+		Parent:    a.id.ParentString(),
+		ProcessId: a.id.Process,
+		Process:   resource,
+	}
+	op, err := a.gcpClient.CreateProcess(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating Process %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create Process %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created Process", "name", a.id)
+
+	status := &krm.DataLineageProcessStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
+}
+
+func (a *ProcessAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating Process", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := DataLineageProcessSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	maskedActual.Name = a.id.String()
 
-	clonedDesired := proto.Clone(a.desired).(*pb.Process)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := compareProcess(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateProcessRequest{
+			Process:    desired,
+			UpdateMask: updateMask,
+		}
+		op, err := a.gcpClient.UpdateProcess(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Process %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Process %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Process", "name", a.id)
+
+		status := &krm.DataLineageProcessStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
+	return nil
+}
 
-	req := &pb.UpdateProcessRequest{
-		Process:    a.desired,
-		UpdateMask: updateMask,
-	}
-
-	updated, err := a.gcpClient.UpdateProcess(ctx, req)
+func compareProcess(ctx context.Context, actual, desired *pb.Process) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DataLineageProcessSpec_FromProto, DataLineageProcessSpec_ToProto)
 	if err != nil {
-		return fmt.Errorf("updating DataLineageProcess %s: %w", a.id.String(), err)
+		return nil, nil, err
 	}
-
-	return a.updateStatus(ctx, updateOp, updated)
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Process) error {
-	status := &krm.DataLineageProcessStatus{}
-	externalRef := latest.Name
-	status.ExternalRef = &externalRef
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ProcessAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -210,38 +225,40 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.Location = &a.id.Location
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: fmt.Sprintf("projects/%s", a.id.Project)}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
+	u.SetName(a.id.Process)
+	u.SetGroupVersionKind(krm.DataLineageProcessGVK)
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ProcessAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting DataLineageProcess", "name", a.id.String())
+	log.V(2).Info("deleting Process", "name", a.id)
 
-	req := &pb.DeleteProcessRequest{Name: a.id.String()}
+	req := &pb.DeleteProcessRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteProcess(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting DataLineageProcess %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Process %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted Process", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Process %s: %w", a.id, err)
 		}
-		return false, fmt.Errorf("waiting for DataLineageProcess deletion %s: %w", a.id.String(), err)
 	}
-
 	return true, nil
 }

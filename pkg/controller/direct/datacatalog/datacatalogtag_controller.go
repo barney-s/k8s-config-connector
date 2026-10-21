@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,373 +12,214 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.datacatalog.v1.DataCatalog
-// proto.message: google.cloud.datacatalog.v1.Tag
-// crd.type: DataCatalogTag
-// crd.version: v1alpha1
-
 package datacatalog
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"reflect"
+	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/datacatalog/v1alpha1"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
-	api "cloud.google.com/go/datacatalog/apiv1"
+	gcp "cloud.google.com/go/datacatalog/apiv1"
 	pb "cloud.google.com/go/datacatalog/apiv1/datacatalogpb"
-	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/datacatalog/v1alpha1"
-	// refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1" // Not directly used here but identity might need it
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
 )
 
 func init() {
-	registry.RegisterModel(krm.DataCatalogTagGVK, NewTagModel)
+	registry.RegisterModel(krm.DataCatalogTagGVK, NewDataCatalogTagModel)
 }
 
-func NewTagModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &tagModel{config: *config}, nil
+func NewDataCatalogTagModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelDataCatalogTag{config: *config}, nil
 }
 
-var _ directbase.Model = &tagModel{}
+var _ directbase.Model = &modelDataCatalogTag{}
+var _ = strings.TrimPrefix
 
-type tagModel struct {
+type modelDataCatalogTag struct {
 	config config.ControllerConfig
 }
 
-func (m *tagModel) client(ctx context.Context, projectID string) (*api.Client, error) {
-	var opts []option.ClientOption
-
-	config := m.config
-
-	// the service requires that a quota project be set
-	if !config.UserProjectOverride || config.BillingProject == "" {
-		config.UserProjectOverride = true
-		config.BillingProject = projectID // Use project from identity
-	}
-
-	opts, err := config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-
-	gcpClient, err := api.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building datacatalog tag client: %w", err)
-	}
-
-	return gcpClient, nil
-}
-
-func (m *tagModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelDataCatalogTag) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DataCatalogTag{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.TagIdentity{}
 
-	// DataCatalogTagIdentity requires the parent KRM object (Entry or EntryGroup)
-	// and the TagTemplate name to construct the potential tag name.
-	// However, the actual Tag ID is server-generated. We'll use the identity mostly
-	// for the parent resource name.
-	id, err := krm.NewTagIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	projectID := id.Parent().ProjectID
-
-	gcpClient, err := m.client(ctx, projectID)
-	if err != nil {
-		return nil, err
-	}
-
-	return &tagAdapter{
+	return &DataCatalogTagAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		id:        id, // Primarily used for parent resolution
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *tagModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelDataCatalogTag) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type tagAdapter struct {
-	gcpClient *api.Client
-	id        *krm.TagIdentity // Primarily for parent resolution
+func (m *modelDataCatalogTag) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building DataCatalogTag client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type DataCatalogTagAdapter struct {
+	id        *krm.TagIdentity
+	gcpClient *gcp.Client
 	desired   *krm.DataCatalogTag
-	actual    *pb.Tag
-	reader    client.Reader
+	actual    *pb.DataCatalogTag
 }
 
-var _ directbase.Adapter = &tagAdapter{}
+var _ directbase.Adapter = &DataCatalogTagAdapter{}
 
-// Find implements directbase.Adapter.
-// Data Catalog Tags don't have a Get RPC. We list tags on the parent and filter.
-func (a *tagAdapter) Find(ctx context.Context) (bool, error) {
+func (a *DataCatalogTagAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
+	log.V(2).Info("getting DataCatalogTag", "name", a.id)
 
-	// This resource has a server-generated ID. This means user should not know
-	// the ID before the resource is created, and 'metadata.name' won't be used
-	// as the default resource ID. So empty value for 'spec.resourceID' should
-	// also be valid:
-	// 1. When 'spec.resourceID' is not set or set to an empty value, the
-	//    intention is to create the resource.
-	// 2. When 'spec.resourceID' is set, the intention is to acquire an existing
-	//    resource.
-	//    2.1. When 'spec.resourceID' is set but the corresponding GCP resource
-	//         is not found, then it is a real error.
-	if a.id.ID() == "" {
-		log.V(2).Info("no resource ID in get indicates the create intention", "name", a.id)
-		return false, nil
+	req := &pb.GetDataCatalogTagRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetDataCatalogTag(ctx, req)
+	if err != nil {
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("getting DataCatalogTag %q: %w", a.id, err)
 	}
 
-	parentName := a.id.Parent().String()
-	log.V(2).Info("listing datacatalog tags", "parent", parentName)
-
-	req := &pb.ListTagsRequest{Parent: parentName}
-	it := a.gcpClient.ListTags(ctx, req)
-	for {
-		tag, err := it.Next()
-		if errors.Is(err, iterator.Done) {
-			break
-		}
-		if err != nil {
-			// PermissionDenied might occur if parent doesn't exist
-			if direct.IsPermissionDenied(err) {
-				log.V(1).Info("permission denied listing tags, parent likely missing", "parent", parentName, "error", err)
-				return false, nil // Treat as not found
-			}
-			return false, fmt.Errorf("listing datacatalog tags for parent %q: %w", parentName, err)
-		}
-
-		// Match based on template and scope (column)
-		if a.id.String() == tag.Name {
-			a.actual = tag
-			return true, nil
-		}
-	}
-
-	log.V(2).Info("no matching datacatalog tag found", "parent", parentName, "id", a.id.ID())
-	return false, nil
+	a.actual = resp
+	return true, nil
 }
 
-// Create implements directbase.Adapter.
-func (a *tagAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *DataCatalogTagAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
+	log.V(2).Info("creating DataCatalogTag", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
-	parentName := a.id.Parent().String()
-	log.V(2).Info("creating datacatalog tag", "parent", parentName)
-
-	// Resolve the tag template reference first to get the full template name.
-	tagTemplateName, err := a.desired.Spec.TemplateRef.NormalizedExternal(ctx, a.reader, a.desired.GetNamespace())
-	if err != nil {
-		return fmt.Errorf("resolving template reference: %w", err)
-	}
-
-	desiredProto := DataCatalogTagSpec_ToProto(mapCtx, &a.desired.Spec)
+	desired := a.desired.DeepCopy()
+	resource := DataCatalogTagSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	// Set the fully resolved template name
-	desiredProto.Template = tagTemplateName
-
-	req := &pb.CreateTagRequest{
-		Parent: parentName,
-		Tag:    desiredProto,
+	req := &pb.CreateDataCatalogTagRequest{
+		Parent:           a.id.Parent().String(),
+		DataCatalogTagId: a.id.ID(),
+		DataCatalogTag:   resource,
 	}
-	created, err := a.gcpClient.CreateTag(ctx, req)
+	created, err := a.gcpClient.CreateDataCatalogTag(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating datacatalog tag for parent %q: %w", parentName, err)
+		return fmt.Errorf("creating DataCatalogTag %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created datacatalog tag in gcp", "name", created.Name)
+	log.V(2).Info("successfully created DataCatalogTag", "name", a.id)
 
 	status := &krm.DataCatalogTagStatus{}
-	status.ObservedState = DataCatalogTagObservedState_v1alpha1_FromProto(mapCtx, created)
+	status.ObservedState = DataCatalogTagObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	// Store the generated name for future Find/Update/Delete operations.
-	status.ExternalRef = direct.LazyPtr(created.Name)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update implements directbase.Adapter.
-// Only the 'fields' map is mutable. Template and scope (column) are immutable.
-func (a *tagAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *DataCatalogTagAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
+	log.V(2).Info("updating DataCatalogTag", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-
-	// The name (including the system-generated ID) is required for update.
-	if a.actual == nil || a.actual.Name == "" {
-		// This should not happen if Find ran successfully.
-		// Could also fetch from status.ExternalRef if needed.
-		return fmt.Errorf("cannot update tag: actual state or name not found")
-	}
-	tagName := a.actual.Name
-	log.V(2).Info("updating datacatalog tag", "name", tagName)
-
-	// Resolve the tag template reference first to get the full template name.
-	_, err := a.desired.Spec.TemplateRef.NormalizedExternal(ctx, a.reader, a.desired.GetNamespace())
-	if err != nil {
-		return fmt.Errorf("resolving template reference: %w", err)
-	}
-
-	desiredProto := DataCatalogTagSpec_ToProto(mapCtx, &a.desired.Spec)
+	desired := DataCatalogTagSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	// Set required fields for the update request payload
-	desiredProto.Name = tagName
-	desiredProto.Template = a.actual.Template // Template is immutable, use actual value
-
-	// Check if only mutable fields ('fields') have changed.
-	updateMask := &fieldmaskpb.FieldMask{}
-	if !reflect.DeepEqual(desiredProto.Fields, a.actual.Fields) {
-		report.AddField("fields", a.actual.Fields, desiredProto.Fields)
-		updateMask.Paths = append(updateMask.Paths, "fields")
+	diffs, updateMask, err := compareDataCatalogTag(ctx, a.actual, desired)
+	if err != nil {
+		return err
 	}
-
-	// Check for immutable field changes (should be rejected by KCC webhook ideally)
-	if desiredProto.GetColumn() != a.actual.GetColumn() {
-		return fmt.Errorf("attempting to update immutable field 'column' for tag %q", tagName)
-	}
-	// No need to check 'template' as we force it to the actual value above.
-
-	var updated *pb.Tag
-	if len(updateMask.Paths) == 0 {
-		log.V(2).Info("no mutable field needs update", "name", tagName)
-		updated = a.actual // Use current actual state for status update
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		log.V(2).Info("updating fields", "name", tagName, "fields", updateMask.Paths)
-		req := &pb.UpdateTagRequest{
-			Tag:        desiredProto,
-			UpdateMask: updateMask,
-		}
-		updated, err = a.gcpClient.UpdateTag(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating datacatalog tag %q: %w", tagName, err)
-		}
-		log.V(2).Info("successfully updated datacatalog tag in gcp", "name", tagName)
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("DataCatalogTag resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
 	status := &krm.DataCatalogTagStatus{}
-	status.ObservedState = DataCatalogTagObservedState_v1alpha1_FromProto(mapCtx, updated)
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = DataCatalogTagObservedState_FromProto(mapCtx, a.actual)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export implements directbase.Adapter.
-func (a *tagAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	if a.actual == nil {
-		return nil, fmt.Errorf("actual state is nil, Find() might not have been called or failed")
+func compareDataCatalogTag(ctx context.Context, actual, desired *pb.DataCatalogTag) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DataCatalogTagSpec_FromProto, DataCatalogTagSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	mapCtx := &direct.MapContext{}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
 
-	// Convert actual proto to KRM spec
-	spec := DataCatalogTagSpec_FromProto(mapCtx, a.actual)
+func (a *DataCatalogTagAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.DataCatalogTag{}
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(DataCatalogTagSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
 
-	// Populate the reference from the identity
-	// Assuming krm.EntryParent has an EntryGroupRef field holding the KRM reference.
-	if parent := a.id.Parent(); parent != nil { // Check parent and nested ref
-		spec.EntryRef.External = parent.String()
-	}
-	// Populate references
-	spec.TemplateRef = &krm.TagTemplateRef{External: a.actual.Template}
-
-	// Build unstructured object
-	obj := &krm.DataCatalogTag{}
-	obj.Spec = direct.ValueOf(spec)
-
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("converting to unstructured: %w", err)
+		return nil, err
 	}
 
-	// Set metadata
-	// Name for KRM is tricky as TagID is server-generated. Use a combination?
-	// Or rely on labels/annotations? Let's use metadata.name from desired.
-	u := &unstructured.Unstructured{Object: uObj}
-	u.SetName(a.desired.GetName())
-	u.SetNamespace(a.desired.GetNamespace())
+	u.Object = uObj
+	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.DataCatalogTagGVK)
-	// Add annotation for the full resource name?
-	// common.SetAnnotation(u, common.AnnotationExternalResourceName, a.actual.Name)
-
-	// Clear output-only fields from spec (already done by _FromProto generally)
-	// unstructured.RemoveNestedField(u.Object, "spec", "templateDisplayName") // Should be handled by ObservedState mapping
-	// unstructured.RemoveNestedField(u.Object, "spec", "dataplexTransferStatus") // Should be handled by ObservedState mapping
-
-	// Clear status
-	unstructured.RemoveNestedField(u.Object, "status")
-
 	return u, nil
 }
 
-// Delete implements directbase.Adapter.
-func (a *tagAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *DataCatalogTagAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-
-	// Get the tag name (including system-generated ID) from actual state or status
-	tagName := ""
-	if a.actual != nil && a.actual.Name != "" {
-		tagName = a.actual.Name
-	} else if a.desired.Status.ExternalRef != nil {
-		tagName = *a.desired.Status.ExternalRef
-	}
-
-	if tagName == "" {
-		// Resource was likely never created or Find failed. Assume deleted.
-		log.V(2).Info("skipping delete for datacatalog tag: resource name not found", "namespace", a.desired.Namespace, "name", a.desired.Name)
-		return true, nil
-	}
-
-	log.V(2).Info("deleting datacatalog tag", "name", tagName)
-
-	req := &pb.DeleteTagRequest{Name: tagName}
-	err := a.gcpClient.DeleteTag(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent datacatalog tag, assuming it was already deleted", "name", tagName)
-			return true, nil
-		}
-		// PermissionDenied might also indicate not found or access removed
-		if direct.IsPermissionDenied(err) {
-			log.V(2).Info("skipping delete for datacatalog tag due to permission denied, potentially already deleted or access revoked", "name", tagName)
-			return true, nil // Treat as deleted
-		}
-		return false, fmt.Errorf("deleting datacatalog tag %q: %w", tagName, err)
-	}
-	log.V(2).Info("successfully deleted datacatalog tag", "name", tagName)
-
+	log.V(2).Info("deletion not supported for DataCatalogTag, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
 }

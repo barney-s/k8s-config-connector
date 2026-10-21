@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,26 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.eventarc.v1.Eventarc
-// proto.message: google.cloud.eventarc.v1.GoogleChannelConfig
-// crd.type: EventarcGoogleChannelConfig
-// crd.version: v1alpha1
-
 package eventarc
 
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/eventarc/apiv1"
-	pb "cloud.google.com/go/eventarc/apiv1/eventarcpb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/eventarc/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -39,7 +24,18 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/eventarc/apiv1"
+	pb "cloud.google.com/go/eventarc/apiv1/eventarcpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -47,94 +43,90 @@ func init() {
 }
 
 func NewGoogleChannelConfigModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &googleChannelConfigModel{config: *config}, nil
+	return &modelGoogleChannelConfig{config: *config}, nil
 }
 
-var _ directbase.Model = &googleChannelConfigModel{}
+var _ directbase.Model = &modelGoogleChannelConfig{}
+var _ = strings.TrimPrefix
 
-type googleChannelConfigModel struct {
+type modelGoogleChannelConfig struct {
 	config config.ControllerConfig
 }
 
-func (m *googleChannelConfigModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelGoogleChannelConfig) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.EventarcGoogleChannelConfig{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := krm.NewGoogleChannelConfigIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
+	id := &krm.GoogleChannelConfigIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	// Get eventarc GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	eventarcClient, err := gcpClient.newEventarcClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &googleChannelConfigAdapter{
-		gcpClient: eventarcClient,
+	return &GoogleChannelConfigAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *googleChannelConfigModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelGoogleChannelConfig) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type googleChannelConfigAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.GoogleChannelConfigIdentity
-	desired   *krm.EventarcGoogleChannelConfig
-	actual    *pb.GoogleChannelConfig
-	reader    client.Reader
+func (m *modelGoogleChannelConfig) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building GoogleChannelConfig client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &googleChannelConfigAdapter{}
+type GoogleChannelConfigAdapter struct {
+	id        *krm.GoogleChannelConfigIdentity
+	gcpClient *gcp.Client
+	desired   *krm.EventarcGoogleChannelConfig
+	actual    *pb.GoogleChannelConfig
+}
 
-func (a *googleChannelConfigAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &GoogleChannelConfigAdapter{}
+
+func (a *GoogleChannelConfigAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting eventarc googlechannelconfig", "name", a.id)
+	log.V(2).Info("getting GoogleChannelConfig", "name", a.id)
 
-	req := &pb.GetGoogleChannelConfigRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetGoogleChannelConfig(ctx, req)
+	req := &pb.GetGoogleChannelConfigRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetGoogleChannelConfig(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting eventarc googlechannelconfig %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting GoogleChannelConfig %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *googleChannelConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
-	// GoogleChannelConfig is a singleton resource that cannot be created.
-	// It can only be fetched and updated.
+func (a *GoogleChannelConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating eventarc googlechannelconfig is a no-op", "name", a.id)
-	return nil
-}
-
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *googleChannelConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating eventarc googlechannelconfig", "name", a.id)
+	log.V(2).Info("creating GoogleChannelConfig", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
@@ -143,45 +135,82 @@ func (a *googleChannelConfigAdapter) Update(ctx context.Context, updateOp *direc
 		return mapCtx.Err()
 	}
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	paths := []string{}
-	if resource.CryptoKeyName != a.actual.CryptoKeyName {
-		report.AddField("crypto_key_name", a.actual.CryptoKeyName, resource.CryptoKeyName)
-		paths = append(paths, "crypto_key_name")
+	req := &pb.CreateGoogleChannelConfigRequest{
+		Parent:                a.id.ParentString(),
+		GoogleChannelConfigId: a.id.GoogleChannelConfig,
+		GoogleChannelConfig:   resource,
 	}
-
-	var updated *pb.GoogleChannelConfig
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		// even though there is no update, we still want to update KRM status
-		updated = a.actual
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		resource.Name = a.id.String() // we need to set the name so that GCP API can identify the resource
-		req := &pb.UpdateGoogleChannelConfigRequest{
-			GoogleChannelConfig: resource,
-			UpdateMask:          &fieldmaskpb.FieldMask{Paths: paths},
-		}
-		var err error
-		updated, err = a.gcpClient.UpdateGoogleChannelConfig(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating eventarc googlechannelconfig %s: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated eventarc googlechannelconfig", "name", a.id)
+	created, err := a.gcpClient.CreateGoogleChannelConfig(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating GoogleChannelConfig %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created GoogleChannelConfig", "name", a.id)
 
 	status := &krm.EventarcGoogleChannelConfigStatus{}
-	status.ObservedState = EventarcGoogleChannelConfigObservedState_FromProto(mapCtx, updated)
+	status.ObservedState = EventarcGoogleChannelConfigObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *googleChannelConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *GoogleChannelConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating GoogleChannelConfig", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := EventarcGoogleChannelConfigSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareGoogleChannelConfig(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateGoogleChannelConfigRequest{
+			GoogleChannelConfig: desired,
+			UpdateMask:          updateMask,
+		}
+		updated, err := a.gcpClient.UpdateGoogleChannelConfig(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating GoogleChannelConfig %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated GoogleChannelConfig", "name", a.id)
+
+		status := &krm.EventarcGoogleChannelConfigStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = EventarcGoogleChannelConfigObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareGoogleChannelConfig(ctx context.Context, actual, desired *pb.GoogleChannelConfig) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, EventarcGoogleChannelConfigSpec_FromProto, EventarcGoogleChannelConfigSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *GoogleChannelConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -193,24 +222,22 @@ func (a *googleChannelConfigAdapter) Export(ctx context.Context) (*unstructured.
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
-	obj.Spec.Location = a.id.Parent().Location
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	// Use the static name for the singleton resource.
-	u.SetName("googlechannelconfig")
-	u.SetGroupVersionKind(krm.EventarcGoogleChannelConfigGVK)
 	u.Object = uObj
+	u.SetName(a.id.GoogleChannelConfig)
+	u.SetGroupVersionKind(krm.EventarcGoogleChannelConfigGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *googleChannelConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *GoogleChannelConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting eventarc googlechannelconfig is a no-op", "name", a.id)
-	// GoogleChannelConfig is a singleton resource that cannot be deleted.
+	log.V(2).Info("deletion not supported for GoogleChannelConfig, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
 }

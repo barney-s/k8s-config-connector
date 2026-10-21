@@ -17,22 +17,21 @@ package firestore
 import (
 	"context"
 	"fmt"
-	"strings"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/firestore/v1alpha1"
-	v1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/firestore/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
-	apiv1 "cloud.google.com/go/firestore/apiv1/admin"
+	gcp "cloud.google.com/go/firestore/apiv1/admin"
 	pb "cloud.google.com/go/firestore/apiv1/admin/adminpb"
-
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -43,259 +42,198 @@ func init() {
 }
 
 func NewFirestoreBackupScheduleModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &firestoreBackupScheduleModel{config: config}, nil
+	return &modelFirestoreBackupSchedule{config: *config}, nil
 }
 
-type firestoreBackupScheduleModel struct {
-	config *config.ControllerConfig
+var _ directbase.Model = &modelFirestoreBackupSchedule{}
+var _ = strings.TrimPrefix
+
+type modelFirestoreBackupSchedule struct {
+	config config.ControllerConfig
 }
 
-var _ directbase.Model = &firestoreBackupScheduleModel{}
-
-func (m *firestoreBackupScheduleModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelFirestoreBackupSchedule) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
-	firestoreAdminClient, err := newFirestoreAdminClient(ctx, m.config)
-	if err != nil {
-		return nil, err
-	}
-
+	_ = reader
 	obj := &krm.FirestoreBackupSchedule{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
+	id := i.(*krm.FirestoreBackupScheduleIdentity)
 
-	mapCtx := &direct.MapContext{}
-	desired := FirestoreBackupScheduleSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
-
-	return &firestoreBackupScheduleAdapter{
-		id:                   id.(*krm.FirestoreBackupScheduleIdentity),
-		firestoreAdminClient: firestoreAdminClient,
-		desired:              desired,
+	return &FirestoreBackupScheduleAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *firestoreBackupScheduleModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	if !strings.HasPrefix(url, "//firestore.googleapis.com/") {
-		return nil, nil
-	}
-
-	url = strings.TrimPrefix(url, "//firestore.googleapis.com/")
-
+func (m *modelFirestoreBackupSchedule) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.FirestoreBackupScheduleIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		log := klog.FromContext(ctx)
-		log.V(2).Info("unrecognized external URL", "url", url, "error", err)
 		return nil, nil
 	}
-
-	firestoreAdminClient, err := newFirestoreAdminClient(ctx, m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &firestoreBackupScheduleAdapter{
-		id:                   id,
-		firestoreAdminClient: firestoreAdminClient,
+	return &FirestoreBackupScheduleAdapter{
+		id:        id,
+		gcpClient: gcpClient,
 	}, nil
 }
 
-type firestoreBackupScheduleAdapter struct {
-	id                   *krm.FirestoreBackupScheduleIdentity
-	firestoreAdminClient *apiv1.FirestoreAdminClient
-	desired              *pb.BackupSchedule
-	actual               *pb.BackupSchedule
-}
-
-var _ directbase.Adapter = &firestoreBackupScheduleAdapter{}
-
-func (a *firestoreBackupScheduleAdapter) Find(ctx context.Context) (bool, error) {
-	log := klog.FromContext(ctx)
-
-	if a.id == nil || a.id.BackupSchedule == "" {
-		return false, nil
+func (m *modelFirestoreBackupSchedule) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
 	}
 
-	fqn := a.id.String()
-	log.V(2).Info("getting FirestoreBackupSchedule", "name", fqn)
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building FirestoreBackupSchedule client: %w", err)
+	}
+	return gcpClient, err
+}
 
-	req := &pb.GetBackupScheduleRequest{Name: fqn}
-	obj, err := a.firestoreAdminClient.GetBackupSchedule(ctx, req)
+type FirestoreBackupScheduleAdapter struct {
+	id        *krm.FirestoreBackupScheduleIdentity
+	gcpClient *gcp.Client
+	desired   *krm.FirestoreBackupSchedule
+	actual    *pb.FirestoreBackupSchedule
+}
+
+var _ directbase.Adapter = &FirestoreBackupScheduleAdapter{}
+
+func (a *FirestoreBackupScheduleAdapter) Find(ctx context.Context) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("getting FirestoreBackupSchedule", "name", a.id)
+
+	req := &pb.GetFirestoreBackupScheduleRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetFirestoreBackupSchedule(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting FirestoreBackupSchedule %q: %w", fqn, err)
+		return false, fmt.Errorf("getting FirestoreBackupSchedule %q: %w", a.id, err)
 	}
 
-	a.actual = obj
+	a.actual = resp
 	return true, nil
 }
 
-func (a *firestoreBackupScheduleAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *FirestoreBackupScheduleAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	parent := fmt.Sprintf("projects/%s/databases/%s", a.id.Project, a.id.Database)
-	log.V(2).Info("creating FirestoreBackupSchedule", "parent", parent)
-
-	resource := proto.CloneOf(a.desired)
-
-	req := &pb.CreateBackupScheduleRequest{
-		Parent:         parent,
-		BackupSchedule: resource,
-	}
-	created, err := a.firestoreAdminClient.CreateBackupSchedule(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating FirestoreBackupSchedule in %s: %w", parent, err)
-	}
-
-	// Update the ID since it was generated
-	if err := a.id.FromExternal("//firestore.googleapis.com/" + created.Name); err != nil {
-		return fmt.Errorf("failed to parse generated backup schedule name %q: %w", created.Name, err)
-	}
-
-	log.V(2).Info("successfully created FirestoreBackupSchedule", "name", created.Name)
-
+	log.V(2).Info("creating FirestoreBackupSchedule", "name", a.id)
 	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := FirestoreBackupScheduleSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	req := &pb.CreateFirestoreBackupScheduleRequest{
+		Parent:                    a.id.ParentString(),
+		FirestoreBackupScheduleId: a.id.BackupSchedule,
+		FirestoreBackupSchedule:   resource,
+	}
+	created, err := a.gcpClient.CreateFirestoreBackupSchedule(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating FirestoreBackupSchedule %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created FirestoreBackupSchedule", "name", a.id)
+
 	status := &krm.FirestoreBackupScheduleStatus{}
 	status.ObservedState = FirestoreBackupScheduleObservedState_v1alpha1_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *firestoreBackupScheduleAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *FirestoreBackupScheduleAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("updating FirestoreBackupSchedule", "name", fqn)
-
-	resource := proto.CloneOf(a.desired)
-	resource.Name = fqn
-
-	paths, report, err := common.CompareProtoMessageStructuredDiff(resource, a.actual, common.BasicDiff)
-	if err != nil {
-		return err
-	}
-
-	var updatePaths []string
-	hasRetention := false
-	hasRecurrence := false
-	for path := range paths {
-		if strings.HasPrefix(path, "retention") {
-			hasRetention = true
-		}
-		if strings.HasPrefix(path, "daily_recurrence") || strings.HasPrefix(path, "weekly_recurrence") {
-			hasRecurrence = true
-		}
-	}
-	if hasRetention {
-		updatePaths = append(updatePaths, "retention")
-	}
-	if hasRecurrence {
-		updatePaths = append(updatePaths, "recurrence")
-	}
-
-	if len(updatePaths) == 0 {
-		mapCtx := &direct.MapContext{}
-		status := &krm.FirestoreBackupScheduleStatus{}
-		status.ObservedState = FirestoreBackupScheduleObservedState_v1alpha1_FromProto(mapCtx, a.actual)
-		if mapCtx.Err() != nil {
-			return mapCtx.Err()
-		}
-		status.ExternalRef = direct.PtrTo(a.id.String())
-		return updateOp.UpdateStatus(ctx, status, nil)
-	}
-
-	report.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, report)
-
-	req := &pb.UpdateBackupScheduleRequest{
-		BackupSchedule: resource,
-		UpdateMask: &fieldmaskpb.FieldMask{
-			Paths: updatePaths,
-		},
-	}
-
-	updated, err := a.firestoreAdminClient.UpdateBackupSchedule(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating FirestoreBackupSchedule %q: %w", fqn, err)
-	}
-
-	log.V(2).Info("successfully updated FirestoreBackupSchedule", "name", updated.Name)
+	log.V(2).Info("updating FirestoreBackupSchedule", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	status := &krm.FirestoreBackupScheduleStatus{}
-	status.ObservedState = FirestoreBackupScheduleObservedState_v1alpha1_FromProto(mapCtx, updated)
+	desired := FirestoreBackupScheduleSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
+
+	diffs, updateMask, err := compareFirestoreBackupSchedule(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("FirestoreBackupSchedule resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.FirestoreBackupScheduleStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = FirestoreBackupScheduleObservedState_v1alpha1_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *firestoreBackupScheduleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	fqn := a.id.String()
-	if a.actual == nil {
-		return nil, fmt.Errorf("FirestoreBackupSchedule %q not found", fqn)
+func compareFirestoreBackupSchedule(ctx context.Context, actual, desired *pb.FirestoreBackupSchedule) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, FirestoreBackupScheduleSpec_v1alpha1_FromProto, FirestoreBackupScheduleSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
 
+func (a *FirestoreBackupScheduleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.FirestoreBackupSchedule{}
 	mapCtx := &direct.MapContext{}
-	objSpec := FirestoreBackupScheduleSpec_v1alpha1_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(FirestoreBackupScheduleSpec_v1alpha1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
 
-	obj := &krm.FirestoreBackupSchedule{
-		Spec: *objSpec,
-	}
-
-	obj.SetGroupVersionKind(krm.FirestoreBackupScheduleGVK)
-	obj.Name = a.id.BackupSchedule
-
-	obj.Spec.DatabaseRef = v1beta1.FirestoreDatabaseRef{
-		External: fmt.Sprintf("projects/%s/databases/%s", a.id.Project, a.id.Database),
-	}
-
-	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("converting FirestoreBackupSchedule to unstructured failed: %w", err)
+		return nil, err
 	}
 
-	u := &unstructured.Unstructured{
-		Object: unstructuredObj,
-	}
-
+	u.Object = uObj
+	u.SetName(a.id.BackupSchedule)
+	u.SetGroupVersionKind(krm.FirestoreBackupScheduleGVK)
 	return u, nil
 }
 
-func (a *firestoreBackupScheduleAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	if a.id == nil || a.id.BackupSchedule == "" {
-		return true, nil
-	}
-
-	fqn := a.id.String()
+func (a *FirestoreBackupScheduleAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting FirestoreBackupSchedule", "name", fqn)
-
-	req := &pb.DeleteBackupScheduleRequest{
-		Name: fqn,
-	}
-	if err := a.firestoreAdminClient.DeleteBackupSchedule(ctx, req); err != nil {
-		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent FirestoreBackupSchedule, assuming it was already deleted", "name", fqn)
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting FirestoreBackupSchedule %s: %w", fqn, err)
-	}
-	log.V(2).Info("successfully deleted FirestoreBackupSchedule", "name", fqn)
-
+	log.V(2).Info("deletion not supported for FirestoreBackupSchedule, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
 }

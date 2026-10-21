@@ -17,12 +17,8 @@ package developerconnect
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	gcp "cloud.google.com/go/developerconnect/apiv1"
-	pb "cloud.google.com/go/developerconnect/apiv1/developerconnectpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/developerconnect/v1alpha1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
@@ -30,9 +26,14 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/developerconnect/apiv1"
+	pb "cloud.google.com/go/developerconnect/apiv1/developerconnectpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,122 +45,90 @@ func init() {
 }
 
 func NewInsightsConfigModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+	return &modelInsightsConfig{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelInsightsConfig{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelInsightsConfig struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.InsightsConfigClient, error) {
+func (m *modelInsightsConfig) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.DevConnectInsightsConfig{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.DevConnectInsightsConfigIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &InsightsConfigAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelInsightsConfig) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.DevConnectInsightsConfigIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &InsightsConfigAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelInsightsConfig) client(ctx context.Context) (*gcp.InsightsConfigClient, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewInsightsConfigRESTClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building InsightsConfig client: %w", err)
 	}
-	return gcpClient, nil
+	return gcpClient, err
 }
 
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.DevConnectInsightsConfig{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	identity, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id := identity.(*krm.DevConnectInsightsConfigIdentity)
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	if obj.Spec.AppHubApplicationRef != nil {
-		normalizedApp, err := obj.Spec.AppHubApplicationRef.NormalizedExternal(ctx, reader, obj.GetNamespace())
-		if err != nil {
-			return nil, err
-		}
-		obj.Spec.AppHubApplicationRef.External = normalizedApp
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := DevConnectInsightsConfigSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desired.Name = id.String()
-	desired.Labels = label.NewGCPLabelsFromK8sLabels(obj.GetLabels())
-
-	// Default to Projects context tracking current project if AppHubApplicationRef is not set
-	if desired.InsightsConfigContext == nil {
-		desired.InsightsConfigContext = &pb.InsightsConfig_Projects{
-			Projects: &pb.Projects{
-				ProjectIds: []string{id.Project},
-			},
-		}
-	}
-
-	return &Adapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   desired,
-		obj:       obj,
-	}, nil
-}
-
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.DevConnectInsightsConfigIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		// Not recognized
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	desired := &pb.InsightsConfig{}
-	desired.Name = id.String()
-
-	return &Adapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   desired,
-	}, nil
-}
-
-type Adapter struct {
+type InsightsConfigAdapter struct {
 	id        *krm.DevConnectInsightsConfigIdentity
 	gcpClient *gcp.InsightsConfigClient
-	desired   *pb.InsightsConfig
-	obj       *krm.DevConnectInsightsConfig
+	desired   *krm.DevConnectInsightsConfig
 	actual    *pb.InsightsConfig
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &InsightsConfigAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *InsightsConfigAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting InsightsConfig", "name", a.id)
 
-	actual, err := a.get(ctx)
+	req := &pb.GetInsightsConfigRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetInsightsConfig(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -167,115 +136,107 @@ func (a *Adapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting InsightsConfig %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) get(ctx context.Context) (*pb.InsightsConfig, error) {
-	req := &pb.GetInsightsConfigRequest{Name: a.id.String()}
-	return a.gcpClient.GetInsightsConfig(ctx, req)
-}
-
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *InsightsConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating InsightsConfig", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := DevConnectInsightsConfigSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateInsightsConfigRequest{
-		Parent:           fmt.Sprintf("projects/%s/locations/%s", a.id.Project, a.id.Location),
-		InsightsConfigId: a.id.Insights_config,
-		InsightsConfig:   a.desired,
+		Parent:           a.id.ParentString(),
+		InsightsConfigId: a.id.Insights,
+		InsightsConfig:   resource,
 	}
 	op, err := a.gcpClient.CreateInsightsConfig(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating InsightsConfig %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for InsightsConfig creation %s: %w", a.id, err)
+		return fmt.Errorf("waiting create InsightsConfig %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created InsightsConfig", "name", a.id)
 
-	actual, err := a.get(ctx)
-	if err != nil {
-		return err
+	status := &krm.DevConnectInsightsConfigStatus{}
+	status.ObservedState = DevConnectInsightsConfigObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	a.actual = actual
-
-	return a.updateStatus(ctx, createOp, actual)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *InsightsConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating InsightsConfig", "name", a.id)
 
-	diffs, err := compareInsightsConfigResource(ctx, a.actual, a.desired, a.id.Project)
+	mapCtx := &direct.MapContext{}
+	desired := DevConnectInsightsConfigSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareInsightsConfig(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no diff detected for InsightsConfig, skipping update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateInsightsConfigRequest{
+			InsightsConfig: desired,
+		}
+		op, err := a.gcpClient.UpdateInsightsConfig(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating InsightsConfig %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update InsightsConfig %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated InsightsConfig", "name", a.id)
+
+		status := &krm.DevConnectInsightsConfigStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = DevConnectInsightsConfigObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	updateDesired := proto.Clone(a.desired).(*pb.InsightsConfig)
-	if a.actual.InsightsConfigContext != nil {
-		updateDesired.InsightsConfigContext = a.actual.InsightsConfigContext
-	}
-	if a.actual.GetProjects() != nil {
-		updateDesired.InsightsConfigContext = nil
-	}
-
-	req := &pb.UpdateInsightsConfigRequest{
-		InsightsConfig: updateDesired,
-	}
-	op, err := a.gcpClient.UpdateInsightsConfig(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating InsightsConfig %s: %w", a.id, err)
-	}
-
-	_, err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for InsightsConfig update %s: %w", a.id, err)
-	}
-
-	actual, err := a.get(ctx)
-	if err != nil {
-		return err
-	}
-	a.actual = actual
-
-	return a.updateStatus(ctx, updateOp, actual)
+	return nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting InsightsConfig", "name", a.id)
-
-	req := &pb.DeleteInsightsConfigRequest{Name: a.id.String()}
-	op, err := a.gcpClient.DeleteInsightsConfig(ctx, req)
+func compareInsightsConfig(ctx context.Context, actual, desired *pb.InsightsConfig) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DevConnectInsightsConfigSpec_FromProto, DevConnectInsightsConfigSpec_ToProto)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting InsightsConfig %s: %w", a.id, err)
+		return nil, nil, err
 	}
-
-	err = op.Wait(ctx)
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("waiting for InsightsConfig deletion %s: %w", a.id, err)
+		return nil, nil, err
 	}
-
-	return true, nil
+	return diffs, updateMask, nil
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *InsightsConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -283,17 +244,12 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 
 	obj := &krm.DevConnectInsightsConfig{}
 	mapCtx := &direct.MapContext{}
-	spec := DevConnectInsightsConfigSpec_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(DevConnectInsightsConfigSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	if spec == nil {
-		spec = &krm.DevConnectInsightsConfigSpec{}
-	}
-	obj.Spec = *spec
-
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = &a.id.Location
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -301,85 +257,32 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	}
 
 	u.Object = uObj
-	u.SetName(a.id.Insights_config)
+	u.SetName(a.id.Insights)
 	u.SetGroupVersionKind(krm.DevConnectInsightsConfigGVK)
-
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.InsightsConfig) error {
-	mapCtx := &direct.MapContext{}
-	observedState := DevConnectInsightsConfigObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func (a *InsightsConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deleting InsightsConfig", "name", a.id)
+
+	req := &pb.DeleteInsightsConfigRequest{
+		Name: a.id.String(),
 	}
-
-	status := &krm.DevConnectInsightsConfigStatus{}
-	status.ObservedState = observedState
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareInsightsConfigResource(ctx context.Context, actual, desired *pb.InsightsConfig, projectID string) (*structuredreporting.Diff, error) {
-	mapCtx := &direct.MapContext{}
-	maskedActualSpec := DevConnectInsightsConfigSpec_FromProto(mapCtx, actual)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	maskedActual := DevConnectInsightsConfigSpec_ToProto(mapCtx, maskedActualSpec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.Clone(desired).(*pb.InsightsConfig)
-
-	// Normalize AppHubApplication references to avoid false diffs (including project numbers)
-	if actual.GetAppHubApplication() != "" {
-		appHub := actual.GetAppHubApplication()
-		const prefix = "//apphub.googleapis.com/"
-		if len(appHub) > len(prefix) && appHub[:len(prefix)] == prefix {
-			appHub = appHub[len(prefix):]
-		}
-		// If appHub starts with "projects/[project_number]/", replace with "projects/[projectID]/"
-		tokens := strings.Split(appHub, "/")
-		if len(tokens) >= 2 && tokens[0] == "projects" {
-			tokens[1] = projectID
-			appHub = strings.Join(tokens, "/")
-		}
-
-		if maskedActual.InsightsConfigContext != nil {
-			if context, ok := maskedActual.InsightsConfigContext.(*pb.InsightsConfig_AppHubApplication); ok {
-				context.AppHubApplication = appHub
-			}
-		}
-		if clonedDesired.InsightsConfigContext != nil {
-			if context, ok := clonedDesired.InsightsConfigContext.(*pb.InsightsConfig_AppHubApplication); ok {
-				context.AppHubApplication = appHub
-			}
-		}
-	}
-
-	// Since Projects is a KCC-internal default and not exposed to KRM users,
-	// copy it from actual to clonedDesired and maskedActual to avoid false diffs.
-	if actual.GetProjects() != nil {
-		clonedDesired.InsightsConfigContext = actual.InsightsConfigContext
-		maskedActual.InsightsConfigContext = actual.InsightsConfigContext
-	}
-
-	maskedActual.Labels = actual.Labels
-	clonedDesired.Labels = desired.Labels
-
-	maskedActual.Annotations = actual.Annotations
-	clonedDesired.Annotations = actual.Annotations
-
-	diffs, _, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	op, err := a.gcpClient.DeleteInsightsConfig(ctx, req)
 	if err != nil {
-		return nil, err
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deleting InsightsConfig %s: %w", a.id, err)
 	}
-	return diffs, nil
+	log.V(2).Info("successfully deleted InsightsConfig", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete InsightsConfig %s: %w", a.id, err)
+		}
+	}
+	return true, nil
 }

@@ -17,21 +17,21 @@ package session
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/devicestreaming/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
-	mapper "github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/devicestreaming"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/devicestreaming/apiv1"
 	pb "cloud.google.com/go/devicestreaming/apiv1/devicestreamingpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -39,46 +39,33 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.DeviceStreamingSessionGVK, NewModel)
+	registry.RegisterModel(krm.DeviceStreamingSessionGVK, NewDeviceSessionModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewDeviceSessionModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelDeviceSession{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelDeviceSession{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelDeviceSession struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.DirectAccessClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewDirectAccessRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building devicestreaming client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelDeviceSession) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DeviceStreamingSession{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	idRaw, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idRaw.(*krm.DeviceStreamingSessionIdentity)
-
+	id := i.(*krm.DeviceStreamingSessionIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
@@ -87,167 +74,173 @@ func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForO
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := mapper.DeviceStreamingSessionSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &DeviceStreamingSessionAdapter{
+	return &DeviceSessionAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelDeviceSession) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type DeviceStreamingSessionAdapter struct {
+func (m *modelDeviceSession) client(ctx context.Context) (*gcp.DirectAccessClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewDirectAccessRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building DeviceSession client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type DeviceSessionAdapter struct {
 	id        *krm.DeviceStreamingSessionIdentity
 	gcpClient *gcp.DirectAccessClient
-	desired   *pb.DeviceSession
+	desired   *krm.DeviceStreamingSession
 	actual    *pb.DeviceSession
 }
 
-var _ directbase.Adapter = &DeviceStreamingSessionAdapter{}
+var _ directbase.Adapter = &DeviceSessionAdapter{}
 
-func (a *DeviceStreamingSessionAdapter) Find(ctx context.Context) (bool, error) {
+func (a *DeviceSessionAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting DeviceStreamingSession", "name", a.id)
+	log.V(2).Info("getting DeviceSession", "name", a.id)
 
-	req := &pb.GetDeviceSessionRequest{Name: a.id.String()}
-	session, err := a.gcpClient.GetDeviceSession(ctx, req)
+	req := &pb.GetDeviceSessionRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetDeviceSession(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting DeviceStreamingSession %q: %w", a.id, err)
+		return false, fmt.Errorf("getting DeviceSession %q: %w", a.id, err)
 	}
 
-	a.actual = session
+	a.actual = resp
 	return true, nil
 }
 
-func (a *DeviceStreamingSessionAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *DeviceSessionAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating DeviceStreamingSession", "name", a.id)
+	log.V(2).Info("creating DeviceSession", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := DeviceStreamingSessionSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateDeviceSessionRequest{
 		Parent:          a.id.ParentString(),
 		DeviceSessionId: a.id.DeviceSession,
-		DeviceSession:   a.desired,
+		DeviceSession:   resource,
 	}
-
 	created, err := a.gcpClient.CreateDeviceSession(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating DeviceStreamingSession %s: %w", a.id, err)
+		return fmt.Errorf("creating DeviceSession %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created DeviceStreamingSession", "name", a.id)
+	log.V(2).Info("successfully created DeviceSession", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.DeviceStreamingSessionStatus{}
+	status.ObservedState = DeviceStreamingSessionObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *DeviceStreamingSessionAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *DeviceSessionAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating DeviceStreamingSession", "name", a.id)
+	log.V(2).Info("updating DeviceSession", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-
-	desired := a.desired
-
-	maskedActualSpec := mapper.DeviceStreamingSessionSpec_FromProto(mapCtx, a.actual)
+	desired := DeviceStreamingSessionSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	maskedActual := mapper.DeviceStreamingSessionSpec_ToProto(mapCtx, maskedActualSpec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	maskedActual.Name = a.id.String()
 
-	clonedDesired := proto.Clone(desired).(*pb.DeviceSession)
-	clonedDesired.Name = a.id.String()
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := compareDeviceSession(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return nil
-	}
+		desired.Name = a.id.String()
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateDeviceSessionRequest{
-		DeviceSession: clonedDesired,
-		UpdateMask:    updateMask,
-	}
-
-	updated, err := a.gcpClient.UpdateDeviceSession(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating DeviceStreamingSession %s: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, updateOp, updated)
-}
-
-func (a *DeviceStreamingSessionAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting DeviceStreamingSession", "name", a.id)
-
-	req := &pb.CancelDeviceSessionRequest{
-		Name: a.id.String(),
-	}
-	err := a.gcpClient.CancelDeviceSession(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
+		req := &pb.UpdateDeviceSessionRequest{
+			DeviceSession: desired,
+			UpdateMask:    updateMask,
 		}
-		return false, fmt.Errorf("deleting DeviceStreamingSession %s: %w", a.id, err)
+		updated, err := a.gcpClient.UpdateDeviceSession(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating DeviceSession %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated DeviceSession", "name", a.id)
+
+		status := &krm.DeviceStreamingSessionStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = DeviceStreamingSessionObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
-	log.V(2).Info("successfully deleted DeviceStreamingSession", "name", a.id)
-	return true, nil
+
+	return nil
 }
 
-func (a *DeviceStreamingSessionAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareDeviceSession(ctx context.Context, actual, desired *pb.DeviceSession) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DeviceStreamingSessionSpec_FromProto, DeviceStreamingSessionSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *DeviceSessionAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
-	log := klog.FromContext(ctx)
-	log.V(2).Info("exporting DeviceStreamingSession", "name", a.id)
+	u := &unstructured.Unstructured{}
 
+	obj := &krm.DeviceStreamingSession{}
 	mapCtx := &direct.MapContext{}
-	spec := mapper.DeviceStreamingSessionSpec_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(DeviceStreamingSessionSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 
-	obj := &krm.DeviceStreamingSession{}
-	obj.Spec = *spec
-	obj.Spec.ProjectRef = &refs.ProjectRef{Name: a.id.Project}
-
-	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("error converting to unstructured: %w", err)
+		return nil, err
 	}
 
-	uObj := &unstructured.Unstructured{Object: u}
-	uObj.SetGroupVersionKind(krm.DeviceStreamingSessionGVK)
-	return uObj, nil
+	u.Object = uObj
+	u.SetName(a.id.DeviceSession)
+	u.SetGroupVersionKind(krm.DeviceStreamingSessionGVK)
+	return u, nil
 }
 
-func (a *DeviceStreamingSessionAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.DeviceSession) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.DeviceStreamingSessionStatus{}
-	status.ObservedState = mapper.DeviceStreamingSessionObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
+func (a *DeviceSessionAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for DeviceSession, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

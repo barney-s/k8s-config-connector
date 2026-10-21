@@ -12,26 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.eventarc.v1.Eventarc
-// proto.message: google.cloud.eventarc.v1.GoogleApiSource
-// crd.type: EventarcGoogleAPISource
-// crd.version: v1alpha1
-
 package eventarc
 
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/eventarc/apiv1"
-	pb "cloud.google.com/go/eventarc/apiv1/eventarcpb"
-	"google.golang.org/protobuf/proto"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/eventarc/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -39,187 +24,206 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/eventarc/apiv1"
+	pb "cloud.google.com/go/eventarc/apiv1/eventarcpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.EventarcGoogleAPISourceGVK, NewGoogleAPISourceModel)
+	registry.RegisterModel(krm.EventarcGoogleAPISourceGVK, NewGoogleApiSourceModel)
 }
 
-func NewGoogleAPISourceModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &googleAPISourceModel{config: *config}, nil
+func NewGoogleApiSourceModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelGoogleApiSource{config: *config}, nil
 }
 
-var _ directbase.Model = &googleAPISourceModel{}
+var _ directbase.Model = &modelGoogleApiSource{}
+var _ = strings.TrimPrefix
 
-type googleAPISourceModel struct {
+type modelGoogleApiSource struct {
 	config config.ControllerConfig
 }
 
-func (m *googleAPISourceModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelGoogleApiSource) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.EventarcGoogleAPISource{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := krm.NewEventarcGoogleAPISourceIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
+	id := &krm.EventarcGoogleAPISourceIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desired := EventarcGoogleAPISourceSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Name = id.String()
-
-	// Get eventarc GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	eventarcClient, err := gcpClient.newEventarcClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &googleAPISourceAdapter{
-		gcpClient: eventarcClient,
+	return &GoogleApiSourceAdapter{
 		id:        id,
-		desired:   desired,
-		reader:    reader,
-		obj:       obj,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *googleAPISourceModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelGoogleApiSource) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type googleAPISourceAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.EventarcGoogleAPISourceIdentity
-	desired   *pb.GoogleApiSource
-	actual    *pb.GoogleApiSource
-	reader    client.Reader
-	obj       *krm.EventarcGoogleAPISource
+func (m *modelGoogleApiSource) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building GoogleApiSource client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &googleAPISourceAdapter{}
+type GoogleApiSourceAdapter struct {
+	id        *krm.EventarcGoogleAPISourceIdentity
+	gcpClient *gcp.Client
+	desired   *krm.EventarcGoogleAPISource
+	actual    *pb.GoogleApiSource
+}
 
-func (a *googleAPISourceAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &GoogleApiSourceAdapter{}
+
+func (a *GoogleApiSourceAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting eventarc GoogleApiSource", "name", a.id)
+	log.V(2).Info("getting GoogleApiSource", "name", a.id)
 
-	req := &pb.GetGoogleApiSourceRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetGoogleApiSource(ctx, req)
+	req := &pb.GetGoogleApiSourceRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetGoogleApiSource(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting eventarc GoogleApiSource %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting GoogleApiSource %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *googleAPISourceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *GoogleApiSourceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating eventarc GoogleApiSource", "name", a.id)
+	log.V(2).Info("creating GoogleApiSource", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := EventarcGoogleAPISourceSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateGoogleApiSourceRequest{
 		Parent:            a.id.ParentString(),
-		GoogleApiSource:   a.desired,
-		GoogleApiSourceId: a.id.Google_api_source,
+		GoogleApiSourceId: a.id.Google,
+		GoogleApiSource:   resource,
 	}
-
 	op, err := a.gcpClient.CreateGoogleApiSource(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating eventarc GoogleApiSource %q: %w", a.id.String(), err)
+		return fmt.Errorf("creating GoogleApiSource %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for eventarc GoogleApiSource creation %q: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create GoogleApiSource %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created eventarc GoogleApiSource", "name", a.id)
+	log.V(2).Info("successfully created GoogleApiSource", "name", a.id)
 
-	// Fetch fully populated resource
-	latest, err := a.gcpClient.GetGoogleApiSource(ctx, &pb.GetGoogleApiSourceRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting created eventarc GoogleApiSource %q: %w", a.id.String(), err)
+	status := &krm.EventarcGoogleAPISourceStatus{}
+	status.ObservedState = EventarcGoogleAPISourceObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *googleAPISourceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *GoogleApiSourceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating eventarc GoogleApiSource", "name", a.id)
+	log.V(2).Info("updating GoogleApiSource", "name", a.id)
 
-	maskedActual, err := mappers.OnlySpecFields(a.actual, EventarcGoogleAPISourceSpec_FromProto, EventarcGoogleAPISourceSpec_ToProto)
+	mapCtx := &direct.MapContext{}
+	desired := EventarcGoogleAPISourceSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareGoogleApiSource(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	maskedActual.Name = a.desired.Name
-	maskedActual.Labels = a.actual.Labels
-	maskedActual.Annotations = a.actual.Annotations
+		desired.Name = a.id.String()
 
-	clonedDesired := proto.Clone(a.desired).(*pb.GoogleApiSource)
+		req := &pb.UpdateGoogleApiSourceRequest{
+			GoogleApiSource: desired,
+			UpdateMask:      updateMask,
+		}
+		op, err := a.gcpClient.UpdateGoogleApiSource(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating GoogleApiSource %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update GoogleApiSource %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated GoogleApiSource", "name", a.id)
 
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return err
+		status := &krm.EventarcGoogleAPISourceStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = EventarcGoogleAPISourceObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return nil
-	}
-
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateGoogleApiSourceRequest{
-		GoogleApiSource: a.desired,
-		UpdateMask:      updateMask,
-	}
-
-	op, err := a.gcpClient.UpdateGoogleApiSource(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating eventarc GoogleApiSource %s: %w", a.id.String(), err)
-	}
-
-	_, err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for eventarc GoogleApiSource update %s: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully updated eventarc GoogleApiSource", "name", a.id)
-
-	// Fetch fully populated resource
-	latest, err := a.gcpClient.GetGoogleApiSource(ctx, &pb.GetGoogleApiSourceRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting updated eventarc GoogleApiSource %q: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *googleAPISourceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareGoogleApiSource(ctx context.Context, actual, desired *pb.GoogleApiSource) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, EventarcGoogleAPISourceSpec_FromProto, EventarcGoogleAPISourceSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *GoogleApiSourceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -231,55 +235,42 @@ func (a *googleAPISourceAdapter) Export(ctx context.Context) (*unstructured.Unst
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = &a.id.Location
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Google_api_source)
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Google)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.id.String())
-	u.SetNamespace(obj.Namespace)
-	u.SetGroupVersionKind(krm.EventarcGoogleAPISourceGVK)
 	u.Object = uObj
-
+	u.SetName(a.id.Google)
+	u.SetGroupVersionKind(krm.EventarcGoogleAPISourceGVK)
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *googleAPISourceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *GoogleApiSourceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting eventarc GoogleApiSource", "name", a.id)
+	log.V(2).Info("deleting GoogleApiSource", "name", a.id)
 
-	req := &pb.DeleteGoogleApiSourceRequest{Name: a.id.String()}
+	req := &pb.DeleteGoogleApiSourceRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteGoogleApiSource(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("eventarc GoogleApiSource not found", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting eventarc GoogleApiSource %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting GoogleApiSource %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	log.V(2).Info("successfully deleted GoogleApiSource", "name", a.id)
+	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for eventarc GoogleApiSource deletion %q: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete GoogleApiSource %s: %w", a.id, err)
+		}
 	}
-
-	log.V(2).Info("successfully deleted eventarc GoogleApiSource", "name", a.id)
 	return true, nil
-}
-
-func (a *googleAPISourceAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.GoogleApiSource) error {
-	status := &krm.EventarcGoogleAPISourceStatus{}
-	mapCtx := &direct.MapContext{}
-	status.ObservedState = EventarcGoogleAPISourceObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(latest.Name)
-	return op.UpdateStatus(ctx, status, nil)
 }

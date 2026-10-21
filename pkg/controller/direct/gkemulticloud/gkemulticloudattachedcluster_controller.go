@@ -17,11 +17,8 @@ package gkemulticloud
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/gkemulticloud/apiv1"
-	pb "cloud.google.com/go/gkemulticloud/apiv1/gkemulticloudpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/gkemulticloud/v1alpha1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
@@ -29,203 +26,213 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/gkemulticloud/apiv1"
+	pb "cloud.google.com/go/gkemulticloud/apiv1/gkemulticloudpb"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
-const (
-	ctrlName = "gkemulticloudattachedcluster-controller"
-)
-
 func init() {
-	registry.RegisterModel(krm.GKEMulticloudAttachedClusterGVK, NewModel)
+	registry.RegisterModel(krm.GKEMulticloudAttachedClusterGVK, NewAttachedClusterModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewAttachedClusterModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelAttachedCluster{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelAttachedCluster{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelAttachedCluster struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context, location string) (*gcp.AttachedClustersClient, error) {
+func (m *modelAttachedCluster) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.GKEMulticloudAttachedCluster{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.GKEMulticloudAttachedClusterIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &AttachedClusterAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelAttachedCluster) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.GKEMulticloudAttachedClusterIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &AttachedClusterAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelAttachedCluster) client(ctx context.Context) (*gcp.AttachedClustersClient, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.GRPCClientOptions()
 	if err != nil {
 		return nil, err
 	}
-	endpoint := fmt.Sprintf("%s-gkemulticloud.googleapis.com:443", location)
-	opts = append(opts, option.WithEndpoint(endpoint))
+
 	gcpClient, err := gcp.NewAttachedClustersClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building AttachedClusters client: %w", err)
+		return nil, fmt.Errorf("building AttachedCluster client: %w", err)
 	}
 	return gcpClient, err
 }
 
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.GKEMulticloudAttachedCluster{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	identity, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id := identity.(*krm.GKEMulticloudAttachedClusterIdentity)
-
-	gcpClient, err := m.client(ctx, id.Location)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desiredProto := GKEMulticloudAttachedClusterSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desiredProto.Name = id.String()
-
-	return &Adapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   desiredProto,
-	}, nil
-}
-
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.GKEMulticloudAttachedClusterIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx, id.Location)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Adapter{
-		id:        id,
-		gcpClient: gcpClient,
-	}, nil
-}
-
-type Adapter struct {
+type AttachedClusterAdapter struct {
 	id        *krm.GKEMulticloudAttachedClusterIdentity
 	gcpClient *gcp.AttachedClustersClient
-	desired   *pb.AttachedCluster
+	desired   *krm.GKEMulticloudAttachedCluster
 	actual    *pb.AttachedCluster
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &AttachedClusterAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *AttachedClusterAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting GKEMulticloudAttachedCluster", "name", a.id.String())
+	log.V(2).Info("getting AttachedCluster", "name", a.id)
 
-	req := &pb.GetAttachedClusterRequest{Name: a.id.String()}
-	attachedClusterpb, err := a.gcpClient.GetAttachedCluster(ctx, req)
+	req := &pb.GetAttachedClusterRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetAttachedCluster(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting GKEMulticloudAttachedCluster %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting AttachedCluster %q: %w", a.id, err)
 	}
 
-	a.actual = attachedClusterpb
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *AttachedClusterAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating GKEMulticloudAttachedCluster", "name", a.id.String())
+	log.V(2).Info("creating AttachedCluster", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := GKEMulticloudAttachedClusterSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateAttachedClusterRequest{
 		Parent:            a.id.ParentString(),
 		AttachedClusterId: a.id.AttachedCluster,
-		AttachedCluster:   a.desired,
+		AttachedCluster:   resource,
 	}
 	op, err := a.gcpClient.CreateAttachedCluster(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating GKEMulticloudAttachedCluster %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating AttachedCluster %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("GKEMulticloudAttachedCluster %s waiting creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create AttachedCluster %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created GKEMulticloudAttachedCluster", "name", a.id.String())
+	log.V(2).Info("successfully created AttachedCluster", "name", a.id)
 
-	latest, err := a.gcpClient.GetAttachedCluster(ctx, &pb.GetAttachedClusterRequest{Name: a.id.String()})
-	if err != nil {
-		latest = created
-	}
-
-	return a.updateStatus(ctx, createOp, latest)
-}
-
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating GKEMulticloudAttachedCluster", "name", a.id.String())
-
-	diffs, updateMask, err := compareGKEMulticloudAttachedCluster(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	latest := a.actual
-	if len(updateMask.Paths) > 0 {
-		diffs.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diffs)
-
-		req := &pb.UpdateAttachedClusterRequest{
-			UpdateMask:      updateMask,
-			AttachedCluster: a.desired,
-		}
-		op, err := a.gcpClient.UpdateAttachedCluster(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating GKEMulticloudAttachedCluster %s: %w", a.id.String(), err)
-		}
-		updated, err := op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("GKEMulticloudAttachedCluster %s waiting update: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated GKEMulticloudAttachedCluster", "name", a.id.String())
-
-		latest, err = a.gcpClient.GetAttachedCluster(ctx, &pb.GetAttachedClusterRequest{Name: a.id.String()})
-		if err != nil {
-			latest = updated
-		}
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.AttachedCluster) error {
 	status := &krm.GKEMulticloudAttachedClusterStatus{}
-	mapCtx := &direct.MapContext{}
-	status.ObservedState = GKEMulticloudAttachedClusterObservedState_FromProto(mapCtx, latest)
+	status.ObservedState = GKEMulticloudAttachedClusterObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *AttachedClusterAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating AttachedCluster", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := GKEMulticloudAttachedClusterSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareAttachedCluster(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateAttachedClusterRequest{
+			AttachedCluster: desired,
+			UpdateMask:      updateMask,
+		}
+		op, err := a.gcpClient.UpdateAttachedCluster(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating AttachedCluster %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update AttachedCluster %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated AttachedCluster", "name", a.id)
+
+		status := &krm.GKEMulticloudAttachedClusterStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = GKEMulticloudAttachedClusterObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareAttachedCluster(ctx context.Context, actual, desired *pb.AttachedCluster) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, GKEMulticloudAttachedClusterSpec_FromProto, GKEMulticloudAttachedClusterSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *AttachedClusterAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -237,10 +244,9 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.Location = &a.id.Location
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.AttachedCluster)
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{External: a.id.Project}
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -250,90 +256,29 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	u.Object = uObj
 	u.SetName(a.id.AttachedCluster)
 	u.SetGroupVersionKind(krm.GKEMulticloudAttachedClusterGVK)
-
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *AttachedClusterAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting GKEMulticloudAttachedCluster", "name", a.id.String())
+	log.V(2).Info("deleting AttachedCluster", "name", a.id)
 
-	req := &pb.DeleteAttachedClusterRequest{Name: a.id.String()}
+	req := &pb.DeleteAttachedClusterRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteAttachedCluster(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting GKEMulticloudAttachedCluster %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting AttachedCluster %s: %w", a.id, err)
 	}
-
-	log.V(2).Info("successfully deleted GKEMulticloudAttachedCluster", "name", a.id.String())
-
+	log.V(2).Info("successfully deleted AttachedCluster", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete AttachedCluster %s: %w", a.id, err)
 		}
-		return false, fmt.Errorf("waiting delete GKEMulticloudAttachedCluster %s: %w", a.id.String(), err)
 	}
 	return true, nil
-}
-
-func compareGKEMulticloudAttachedCluster(ctx context.Context, actual, desired *pb.AttachedCluster) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, GKEMulticloudAttachedClusterSpec_FromProto, GKEMulticloudAttachedClusterSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	maskedActual.Annotations = actual.Annotations
-
-	// Normalize defaults for omitted fields in desired to prevent false diffs
-	if desired.BinaryAuthorization == nil {
-		maskedActual.BinaryAuthorization = nil
-	}
-	if desired.MonitoringConfig == nil {
-		maskedActual.MonitoringConfig = nil
-	}
-	if desired.LoggingConfig == nil {
-		maskedActual.LoggingConfig = nil
-	}
-	if desired.Authorization == nil {
-		maskedActual.Authorization = nil
-	}
-	if desired.ProxyConfig == nil {
-		maskedActual.ProxyConfig = nil
-	}
-	if desired.SecurityPostureConfig == nil {
-		maskedActual.SecurityPostureConfig = nil
-	}
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Filter updateMask paths to only include valid paths supported by the API and map to exact names expected by MockGCP/GCP API.
-	var filteredPaths []string
-	for _, p := range updateMask.Paths {
-		switch p {
-		case "annotations":
-			filteredPaths = append(filteredPaths, "annotations")
-		case "authorization.admin_users", "authorization.adminUsers":
-			filteredPaths = append(filteredPaths, "authorization.admin_users")
-		case "binary_authorization.evaluation_mode", "binaryAuthorization.evaluationMode":
-			filteredPaths = append(filteredPaths, "binary_authorization.evaluation_mode")
-		case "description":
-			filteredPaths = append(filteredPaths, "description")
-		case "logging_config.component_config.enable_components", "loggingConfig.componentConfig.enableComponents":
-			filteredPaths = append(filteredPaths, "logging_config.component_config.enable_components")
-		case "monitoring_config.managed_prometheus_config.enabled", "monitoringConfig.managedPrometheusConfig.enabled":
-			filteredPaths = append(filteredPaths, "monitoring_config.managed_prometheus_config.enabled")
-		case "platform_version", "platformVersion":
-			filteredPaths = append(filteredPaths, "platform_version")
-		}
-	}
-	updateMask.Paths = filteredPaths
-
-	return diffs, updateMask, nil
 }

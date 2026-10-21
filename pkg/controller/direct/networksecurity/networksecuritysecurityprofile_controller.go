@@ -17,21 +17,20 @@ package networksecurity
 import (
 	"context"
 	"fmt"
-	"time"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/networksecurity/v1alpha1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/networksecurity/apiv1"
 	pb "cloud.google.com/go/networksecurity/apiv1/networksecuritypb"
 	"google.golang.org/api/option"
-	"google.golang.org/api/transport/grpc"
-	longrunningpb "google.golang.org/genproto/googleapis/longrunning"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -44,183 +43,178 @@ func init() {
 }
 
 func NewSecurityProfileModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &securityProfileModel{config: *config}, nil
+	return &modelSecurityProfile{config: *config}, nil
 }
 
-var _ directbase.Model = &securityProfileModel{}
+var _ directbase.Model = &modelSecurityProfile{}
+var _ = strings.TrimPrefix
 
-type securityProfileModel struct {
+type modelSecurityProfile struct {
 	config config.ControllerConfig
 }
 
-func (m *securityProfileModel) client(ctx context.Context) (pb.SecurityProfileGroupServiceClient, longrunningpb.OperationsClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	if err != nil {
-		return nil, nil, err
-	}
-	opts = append(opts, option.WithEndpoint("networksecurity.googleapis.com:443"))
-	conn, err := grpc.Dial(ctx, opts...)
-	if err != nil {
-		return nil, nil, fmt.Errorf("dialing networksecurity service: %w", err)
-	}
-	return pb.NewSecurityProfileGroupServiceClient(conn), longrunningpb.NewOperationsClient(conn), nil
-}
-
-func (m *securityProfileModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelSecurityProfile) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.NetworkSecuritySecurityProfile{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.NetworkSecuritySecurityProfileIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	id, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	gcpClient, operationsClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := NetworkSecuritySecurityProfileSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desired.Name = id.(*krm.NetworkSecuritySecurityProfileIdentity).String()
-
-	return &securityProfileAdapter{
-		gcpClient:        gcpClient,
-		operationsClient: operationsClient,
-		id:               id.(*krm.NetworkSecuritySecurityProfileIdentity),
-		desired:          desired,
+	return &SecurityProfileAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *securityProfileModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelSecurityProfile) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type securityProfileAdapter struct {
-	gcpClient        pb.SecurityProfileGroupServiceClient
-	operationsClient longrunningpb.OperationsClient
-	id               *krm.NetworkSecuritySecurityProfileIdentity
-	desired          *pb.SecurityProfile
-	actual           *pb.SecurityProfile
+func (m *modelSecurityProfile) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building SecurityProfile client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &securityProfileAdapter{}
+type SecurityProfileAdapter struct {
+	id        *krm.NetworkSecuritySecurityProfileIdentity
+	gcpClient *gcp.Client
+	desired   *krm.NetworkSecuritySecurityProfile
+	actual    *pb.SecurityProfile
+}
 
-func (a *securityProfileAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &SecurityProfileAdapter{}
+
+func (a *SecurityProfileAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting SecurityProfile", "name", a.id)
 
-	req := &pb.GetSecurityProfileRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetSecurityProfile(ctx, req)
+	req := &pb.GetSecurityProfileRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetSecurityProfile(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting SecurityProfile %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting SecurityProfile %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *securityProfileAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *SecurityProfileAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating SecurityProfile", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := NetworkSecuritySecurityProfileSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateSecurityProfileRequest{
 		Parent:            a.id.ParentString(),
 		SecurityProfileId: a.id.Securityprofile,
-		SecurityProfile:   a.desired,
+		SecurityProfile:   resource,
 	}
 	op, err := a.gcpClient.CreateSecurityProfile(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating SecurityProfile %s: %w", a.id, err)
 	}
-
-	err = a.waitForOperation(ctx, op)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("SecurityProfile %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create SecurityProfile %s: %w", a.id, err)
 	}
-
-	latest, err := a.gcpClient.GetSecurityProfile(ctx, &pb.GetSecurityProfileRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting SecurityProfile after creation: %w", err)
-	}
-
 	log.V(2).Info("successfully created SecurityProfile", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, latest)
+	status := &krm.NetworkSecuritySecurityProfileStatus{}
+	status.ObservedState = NetworkSecuritySecurityProfileObservedState_v1alpha1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *securityProfileAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *SecurityProfileAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating SecurityProfile", "name", a.id)
 
-	diffs, updateMask, err := compareSecurityProfile(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := NetworkSecuritySecurityProfileSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareSecurityProfile(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
+		desired.Name = a.id.String()
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return nil
+		req := &pb.UpdateSecurityProfileRequest{
+			SecurityProfile: desired,
+			UpdateMask:      updateMask,
+		}
+		op, err := a.gcpClient.UpdateSecurityProfile(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating SecurityProfile %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update SecurityProfile %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated SecurityProfile", "name", a.id)
+
+		status := &krm.NetworkSecuritySecurityProfileStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = NetworkSecuritySecurityProfileObservedState_v1alpha1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	log.V(2).Info("fields need update", "name", a.id, "updateMask", updateMask)
-
-	req := &pb.UpdateSecurityProfileRequest{
-		UpdateMask:      updateMask,
-		SecurityProfile: a.desired,
-	}
-	req.SecurityProfile.Name = a.id.String()
-
-	op, err := a.gcpClient.UpdateSecurityProfile(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating SecurityProfile %s: %w", a.id, err)
-	}
-	err = a.waitForOperation(ctx, op)
-	if err != nil {
-		return fmt.Errorf("SecurityProfile %s waiting update: %w", a.id, err)
-	}
-
-	latest, err := a.gcpClient.GetSecurityProfile(ctx, &pb.GetSecurityProfileRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting SecurityProfile after update: %w", err)
-	}
-
-	log.V(2).Info("successfully updated SecurityProfile", "name", a.id)
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
 func compareSecurityProfile(ctx context.Context, actual, desired *pb.SecurityProfile) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	mapCtx := &direct.MapContext{}
-	spec := NetworkSecuritySecurityProfileSpec_v1alpha1_FromProto(mapCtx, actual)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
+	maskedActual, err := mappers.OnlySpecFields(actual, NetworkSecuritySecurityProfileSpec_v1alpha1_FromProto, NetworkSecuritySecurityProfileSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	maskedActual := NetworkSecuritySecurityProfileSpec_v1alpha1_ToProto(mapCtx, spec)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
-	}
-	maskedActual.Name = desired.Name
-
 	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
@@ -228,7 +222,7 @@ func compareSecurityProfile(ctx context.Context, actual, desired *pb.SecurityPro
 	return diffs, updateMask, nil
 }
 
-func (a *securityProfileAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *SecurityProfileAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -240,81 +234,40 @@ func (a *securityProfileAdapter) Export(ctx context.Context) (*unstructured.Unst
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = direct.LazyPtr(a.id.Location)
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.Securityprofile)
 	u.SetGroupVersionKind(krm.NetworkSecuritySecurityProfileGVK)
-
-	u.Object = uObj
 	return u, nil
 }
 
-func (a *securityProfileAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *SecurityProfileAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting SecurityProfile", "name", a.id)
 
-	req := &pb.DeleteSecurityProfileRequest{Name: a.id.String()}
+	req := &pb.DeleteSecurityProfileRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteSecurityProfile(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent SecurityProfile, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting SecurityProfile %s: %w", a.id, err)
 	}
-
-	err = a.waitForOperation(ctx, op)
-	if err != nil {
-		return false, fmt.Errorf("waiting delete SecurityProfile %s: %w", a.id, err)
-	}
-
 	log.V(2).Info("successfully deleted SecurityProfile", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete SecurityProfile %s: %w", a.id, err)
+		}
+	}
 	return true, nil
-}
-
-func (a *securityProfileAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.SecurityProfile) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.NetworkSecuritySecurityProfileStatus{}
-	status.ObservedState = NetworkSecuritySecurityProfileObservedState_v1alpha1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
-
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *securityProfileAdapter) waitForOperation(ctx context.Context, op *longrunningpb.Operation) error {
-	if op.Done {
-		if op.GetError() != nil {
-			return fmt.Errorf("operation failed: %s", op.GetError().GetMessage())
-		}
-		return nil
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-			current, err := a.operationsClient.GetOperation(ctx, &longrunningpb.GetOperationRequest{Name: op.Name})
-			if err != nil {
-				return fmt.Errorf("getting operation %q: %w", op.Name, err)
-			}
-			if current.Done {
-				if current.GetError() != nil {
-					return fmt.Errorf("operation failed: %s", current.GetError().GetMessage())
-				}
-				return nil
-			}
-		}
-	}
 }

@@ -12,28 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.eventarc.v1.Eventarc
-// proto.message: google.cloud.eventarc.v1.Pipeline
-// crd.type: EventarcPipeline
-// crd.version: v1alpha1
-
 package eventarc
 
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/eventarc/apiv1"
-	pb "cloud.google.com/go/eventarc/apiv1/eventarcpb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/durationpb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/eventarc/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -43,6 +26,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/eventarc/apiv1"
+	pb "cloud.google.com/go/eventarc/apiv1/eventarcpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -50,188 +43,192 @@ func init() {
 }
 
 func NewPipelineModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &pipelineModel{config: *config}, nil
+	return &modelPipeline{config: *config}, nil
 }
 
-var _ directbase.Model = &pipelineModel{}
+var _ directbase.Model = &modelPipeline{}
+var _ = strings.TrimPrefix
 
-type pipelineModel struct {
+type modelPipeline struct {
 	config config.ControllerConfig
 }
 
-func (m *pipelineModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelPipeline) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.EventarcPipeline{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// Always call common.NormalizeReferences to resolve references
+	id := &krm.EventarcPipelineIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	id, err := krm.NewEventarcPipelineIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := EventarcPipelineSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desiredPb.Name = id.String()
-
-	// Get eventarc GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
-	if err != nil {
-		return nil, err
-	}
-	eventarcClient, err := gcpClient.newEventarcClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &pipelineAdapter{
-		gcpClient: eventarcClient,
+	return &PipelineAdapter{
 		id:        id,
-		desired:   desiredPb,
-		reader:    reader,
-		obj:       obj,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *pipelineModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelPipeline) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.EventarcPipelineIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := newGCPClient(ctx, &m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	eventarcClient, err := gcpClient.newEventarcClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &pipelineAdapter{
-		gcpClient: eventarcClient,
+	return &PipelineAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 	}, nil
 }
 
-type pipelineAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.EventarcPipelineIdentity
-	desired   *pb.Pipeline
-	actual    *pb.Pipeline
-	reader    client.Reader
-	obj       *krm.EventarcPipeline
+func (m *modelPipeline) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Pipeline client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &pipelineAdapter{}
+type PipelineAdapter struct {
+	id        *krm.EventarcPipelineIdentity
+	gcpClient *gcp.Client
+	desired   *krm.EventarcPipeline
+	actual    *pb.Pipeline
+}
 
-func (a *pipelineAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &PipelineAdapter{}
+
+func (a *PipelineAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting eventarc pipeline", "name", a.id.String())
+	log.V(2).Info("getting Pipeline", "name", a.id)
 
-	req := &pb.GetPipelineRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetPipeline(ctx, req)
+	req := &pb.GetPipelineRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetPipeline(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting eventarc pipeline %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Pipeline %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *pipelineAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *PipelineAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating eventarc pipeline", "name", a.id.String())
+	log.V(2).Info("creating Pipeline", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	desired := proto.Clone(a.desired).(*pb.Pipeline)
-	desired.Name = a.id.String()
+	desired := a.desired.DeepCopy()
+	resource := EventarcPipelineSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreatePipelineRequest{
 		Parent:     a.id.ParentString(),
-		Pipeline:   desired,
 		PipelineId: a.id.Pipeline,
+		Pipeline:   resource,
 	}
-
 	op, err := a.gcpClient.CreatePipeline(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating eventarc pipeline %q: %w", a.id.String(), err)
+		return fmt.Errorf("creating Pipeline %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for eventarc pipeline creation %q: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create Pipeline %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created eventarc pipeline", "name", a.id.String())
+	log.V(2).Info("successfully created Pipeline", "name", a.id)
 
-	// Fetch fully-populated resource after creation
-	latest, err := a.gcpClient.GetPipeline(ctx, &pb.GetPipelineRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting eventarc pipeline after creation %q: %w", a.id.String(), err)
+	status := &krm.EventarcPipelineStatus{}
+	status.ObservedState = EventarcPipelineObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *pipelineAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *PipelineAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating eventarc pipeline", "name", a.id.String())
+	log.V(2).Info("updating Pipeline", "name", a.id)
 
-	diffs, updateMask, err := compareEventarcPipeline(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := EventarcPipelineSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := comparePipeline(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desiredCopy := proto.Clone(a.desired).(*pb.Pipeline)
-		desiredCopy.Name = a.id.String()
+		desired.Name = a.id.String()
 
 		req := &pb.UpdatePipelineRequest{
-			Pipeline:   desiredCopy,
+			Pipeline:   desired,
 			UpdateMask: updateMask,
 		}
-
 		op, err := a.gcpClient.UpdatePipeline(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating eventarc pipeline %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating Pipeline %s: %w", a.id, err)
 		}
-
-		_, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("waiting for eventarc pipeline update %s: %w", a.id.String(), err)
+			return fmt.Errorf("waiting update Pipeline %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated eventarc pipeline", "name", a.id.String())
+		log.V(2).Info("successfully updated Pipeline", "name", a.id)
 
-		latest, err = a.gcpClient.GetPipeline(ctx, &pb.GetPipelineRequest{Name: a.id.String()})
-		if err != nil {
-			return fmt.Errorf("getting eventarc pipeline after update %s: %w", a.id.String(), err)
+		status := &krm.EventarcPipelineStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = EventarcPipelineObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
 		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *pipelineAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func comparePipeline(ctx context.Context, actual, desired *pb.Pipeline) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, EventarcPipelineSpec_FromProto, EventarcPipelineSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *PipelineAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -243,9 +240,8 @@ func (a *pipelineAdapter) Export(ctx context.Context) (*unstructured.Unstructure
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = direct.LazyPtr(a.id.Location)
+	obj.Spec.Location = a.id.Location
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.Pipeline)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
@@ -253,83 +249,32 @@ func (a *pipelineAdapter) Export(ctx context.Context) (*unstructured.Unstructure
 		return nil, err
 	}
 
-	u.SetName(a.id.Pipeline)
-	u.SetNamespace(obj.Namespace)
-	u.SetGroupVersionKind(krm.EventarcPipelineGVK)
 	u.Object = uObj
-
+	u.SetName(a.id.Pipeline)
+	u.SetGroupVersionKind(krm.EventarcPipelineGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *pipelineAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *PipelineAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting eventarc pipeline", "name", a.id.String())
+	log.V(2).Info("deleting Pipeline", "name", a.id)
 
-	req := &pb.DeletePipelineRequest{Name: a.id.String()}
+	req := &pb.DeletePipelineRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeletePipeline(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("eventarc pipeline not found", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting eventarc pipeline %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Pipeline %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	log.V(2).Info("successfully deleted Pipeline", "name", a.id)
+	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for eventarc pipeline deletion %q: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Pipeline %s: %w", a.id, err)
+		}
 	}
-
-	log.V(2).Info("successfully deleted eventarc pipeline", "name", a.id.String())
 	return true, nil
-}
-
-func (a *pipelineAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Pipeline) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.EventarcPipelineStatus{}
-	status.ObservedState = EventarcPipelineObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(latest.Name)
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareEventarcPipeline(ctx context.Context, actual, desired *pb.Pipeline) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, EventarcPipelineSpec_FromProto, EventarcPipelineSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.Clone(desired).(*pb.Pipeline)
-
-	populateDefaults := func(obj *pb.Pipeline) {
-		if obj.RetryPolicy == nil {
-			obj.RetryPolicy = &pb.Pipeline_RetryPolicy{
-				MaxAttempts:   5,
-				MinRetryDelay: &durationpb.Duration{Seconds: 1},
-				MaxRetryDelay: &durationpb.Duration{Seconds: 60},
-			}
-		} else {
-			if obj.RetryPolicy.MaxAttempts == 0 {
-				obj.RetryPolicy.MaxAttempts = 5
-			}
-			if obj.RetryPolicy.MinRetryDelay == nil {
-				obj.RetryPolicy.MinRetryDelay = &durationpb.Duration{Seconds: 1}
-			}
-			if obj.RetryPolicy.MaxRetryDelay == nil {
-				obj.RetryPolicy.MaxRetryDelay = &durationpb.Duration{Seconds: 60}
-			}
-		}
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

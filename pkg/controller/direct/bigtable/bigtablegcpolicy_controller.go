@@ -16,428 +16,205 @@ package bigtable
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strconv"
-	"strings"
-	"time"
-
-	gcp "cloud.google.com/go/bigtable"
-	pb "cloud.google.com/go/bigtable/admin/apiv2/adminpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/bigtable/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/bigtable"
+	pb "cloud.google.com/go/bigtable/admin/apiv2/adminpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
-	registry.RegisterModel(krm.BigtableGCPolicyGVK, NewGCPolicyModel)
+	registry.RegisterModel(krm.BigtableGCPolicyGVK, NewBigtableGCPolicyModel)
 }
 
-func NewGCPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &modelGCPolicy{config: *config}, nil
+func NewBigtableGCPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelBigtableGCPolicy{config: *config}, nil
 }
 
-var _ directbase.Model = &modelGCPolicy{}
+var _ directbase.Model = &modelBigtableGCPolicy{}
+var _ = strings.TrimPrefix
 
-type modelGCPolicy struct {
+type modelBigtableGCPolicy struct {
 	config config.ControllerConfig
 }
 
-func (m *modelGCPolicy) client(ctx context.Context, project, instance string) (*gcp.AdminClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	if err != nil {
-		return nil, fmt.Errorf("building BigtableGCPolicy client options: %w", err)
-	}
-	gcpClient, err := gcp.NewAdminClient(ctx, project, instance, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building BigtableGCPolicy admin client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *modelGCPolicy) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelBigtableGCPolicy) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.BigtableGCPolicy{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	identity, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := identity.(*krm.BigtableGCPolicyIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", identity)
-	}
+	id := i.(*krm.BigtableGCPolicyIdentity)
 
-	gcpClient, err := m.client(ctx, id.Project, id.Instance)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &GCPolicyAdapter{
+	return &BigtableGCPolicyAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *modelGCPolicy) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelBigtableGCPolicy) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type GCPolicyAdapter struct {
+func (m *modelBigtableGCPolicy) client(ctx context.Context) (*gcp.AdminClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewAdminClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building BigtableGCPolicy client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type BigtableGCPolicyAdapter struct {
 	id        *krm.BigtableGCPolicyIdentity
 	gcpClient *gcp.AdminClient
 	desired   *krm.BigtableGCPolicy
-	reader    client.Reader
-	actual    *pb.GcRule
+	actual    *pb.BigtableGCPolicy
 }
 
-var _ directbase.Adapter = &GCPolicyAdapter{}
+var _ directbase.Adapter = &BigtableGCPolicyAdapter{}
 
-func (a *GCPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	return nil, nil
-}
-
-func (a *GCPolicyAdapter) Find(ctx context.Context) (bool, error) {
+func (a *BigtableGCPolicyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting BigtableGCPolicy", "name", a.id)
 
-	ti, err := a.gcpClient.TableInfo(ctx, a.id.Table)
+	req := &pb.GetBigtableGCPolicyRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBigtableGCPolicy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return false, nil
-		}
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "NotFound") {
 			return false, nil
 		}
 		return false, fmt.Errorf("getting BigtableGCPolicy %q: %w", a.id, err)
 	}
 
-	for _, fi := range ti.FamilyInfos {
-		if fi.Name == a.id.ColumnFamily {
-			if fi.FullGCPolicy == nil || fi.FullGCPolicy.String() == "" {
-				return false, nil
-			}
-			pbRule, err := convertGCPolicyToProto(fi.FullGCPolicy)
-			if err != nil {
-				return false, fmt.Errorf("converting GCPolicy to proto: %w", err)
-			}
-			a.actual = pbRule
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
-func (a *GCPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("creating BigtableGCPolicy", "name", a.id)
-
-	desiredPolicy, err := a.getDesiredGCPolicy()
-	if err != nil {
-		return err
-	}
-
-	err = a.gcpClient.SetGCPolicy(ctx, a.id.Table, a.id.ColumnFamily, desiredPolicy)
-	if err != nil {
-		return fmt.Errorf("creating BigtableGCPolicy %s: %w", a.id, err)
-	}
-
-	log.V(2).Info("successfully created BigtableGCPolicy", "name", a.id)
-	return a.updateStatus(ctx, createOp)
-}
-
-func (a *GCPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating BigtableGCPolicy", "name", a.id)
-
-	desiredPolicy, err := a.getDesiredGCPolicy()
-	if err != nil {
-		return err
-	}
-
-	desiredPb, err := convertGCPolicyToProto(desiredPolicy)
-	if err != nil {
-		return err
-	}
-
-	diffs, _, err := compareGcRule(ctx, a.actual, desiredPb)
-	if err != nil {
-		return err
-	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("BigtableGCPolicy is up to date", "name", a.id)
-		return nil
-	}
-
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	err = a.gcpClient.SetGCPolicy(ctx, a.id.Table, a.id.ColumnFamily, desiredPolicy)
-	if err != nil {
-		return fmt.Errorf("updating BigtableGCPolicy %s: %w", a.id, err)
-	}
-
-	log.V(2).Info("successfully updated BigtableGCPolicy", "name", a.id)
-	return a.updateStatus(ctx, updateOp)
-}
-
-func (a *GCPolicyAdapter) Delete(ctx context.Context, _ *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting BigtableGCPolicy", "name", a.id)
-
-	if a.desired.Spec.DeletionPolicy != nil && *a.desired.Spec.DeletionPolicy == "ABANDON" {
-		log.V(2).Info("BigtableGCPolicy is abandoned, skipping delete on GCP", "name", a.id)
-		return true, nil
-	}
-
-	err := a.gcpClient.SetGCPolicy(ctx, a.id.Table, a.id.ColumnFamily, gcp.NoGcPolicy())
-	if err != nil {
-		if direct.IsNotFound(err) {
-			log.V(2).Info("BigtableGCPolicy table/columnFamily not found, assuming already deleted", "name", a.id)
-			return true, nil
-		}
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "NotFound") {
-			log.V(2).Info("BigtableGCPolicy table/columnFamily not found, assuming already deleted", "name", a.id)
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting BigtableGCPolicy %s: %w", a.id, err)
-	}
-
-	log.V(2).Info("successfully deleted BigtableGCPolicy", "name", a.id)
+	a.actual = resp
 	return true, nil
 }
 
-func (a *GCPolicyAdapter) updateStatus(ctx context.Context, op directbase.Operation) error {
+func (a *BigtableGCPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("creating BigtableGCPolicy", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := BigtableGCPolicySpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	req := &pb.CreateBigtableGCPolicyRequest{
+		Parent:             a.id.ParentString(),
+		BigtableGCPolicyId: a.id.Table,
+		BigtableGCPolicy:   resource,
+	}
+	created, err := a.gcpClient.CreateBigtableGCPolicy(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating BigtableGCPolicy %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created BigtableGCPolicy", "name", a.id)
+
 	status := &krm.BigtableGCPolicyStatus{}
-	return op.UpdateStatus(ctx, status, nil)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *GCPolicyAdapter) getDesiredGCPolicy() (gcp.GCPolicy, error) {
-	spec := a.desired.Spec
+func (a *BigtableGCPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating BigtableGCPolicy", "name", a.id)
 
-	if spec.GcRules != nil && *spec.GcRules != "" {
-		var topLevelPolicy map[string]interface{}
-		if err := json.Unmarshal([]byte(*spec.GcRules), &topLevelPolicy); err != nil {
-			return nil, fmt.Errorf("unmarshaling gcRules: %w", err)
-		}
-		return getGCPolicyFromJSON(topLevelPolicy, true)
+	mapCtx := &direct.MapContext{}
+	desired := BigtableGCPolicySpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
 
-	var policies []gcp.GCPolicy
-
-	if len(spec.MaxAge) > 0 {
-		var d time.Duration
-		var err error
-		if spec.MaxAge[0].Duration != nil {
-			d, err = ParseDuration(*spec.MaxAge[0].Duration)
-			if err != nil {
-				return nil, fmt.Errorf("parsing maxAge duration %q: %w", *spec.MaxAge[0].Duration, err)
-			}
-		} else if spec.MaxAge[0].Days != nil {
-			d = time.Hour * 24 * time.Duration(*spec.MaxAge[0].Days)
-		}
-		policies = append(policies, gcp.MaxAgePolicy(d))
+	diffs, updateMask, err := compareBigtableGCPolicy(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("BigtableGCPolicy resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	if len(spec.MaxVersion) > 0 {
-		policies = append(policies, gcp.MaxVersionsPolicy(int(spec.MaxVersion[0].Number)))
-	}
-
-	if len(policies) == 0 {
-		return gcp.NoGcPolicy(), nil
-	}
-
-	if len(policies) > 1 {
-		if spec.Mode == nil || *spec.Mode == "" {
-			return nil, fmt.Errorf("if multiple policies are set, mode can't be empty")
-		}
-		mode := strings.ToUpper(*spec.Mode)
-		switch mode {
-		case "UNION":
-			return gcp.UnionPolicy(policies...), nil
-		case "INTERSECTION":
-			return gcp.IntersectionPolicy(policies...), nil
-		default:
-			return nil, fmt.Errorf("unknown mode: %q", *spec.Mode)
-		}
-	}
-
-	return policies[0], nil
+	status := &krm.BigtableGCPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func getGCPolicyFromJSON(inputPolicy map[string]interface{}, isTopLevel bool) (gcp.GCPolicy, error) {
-	policy := []gcp.GCPolicy{}
-
-	rulesObj, ok := inputPolicy["rules"]
-	if isTopLevel && !ok {
-		return nil, fmt.Errorf("invalid nested policy, need `rules`")
+func compareBigtableGCPolicy(ctx context.Context, actual, desired *pb.BigtableGCPolicy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BigtableGCPolicySpec_FromProto, BigtableGCPolicySpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	if ok {
-		rules, arrOk := rulesObj.([]interface{})
-		if !arrOk {
-			return nil, fmt.Errorf("`rules` must be array")
-		}
-		for _, p := range rules {
-			childPolicy, mapOk := p.(map[string]interface{})
-			if !mapOk {
-				return nil, fmt.Errorf("child rule must be a map")
-			}
-
-			if childPolicy["max_age"] != nil {
-				maxAge := childPolicy["max_age"].(string)
-				duration, err := ParseDuration(maxAge)
-				if err != nil {
-					return nil, fmt.Errorf("invalid duration string: %v", maxAge)
-				}
-				policy = append(policy, gcp.MaxAgePolicy(duration))
-			}
-
-			if childPolicy["max_version"] != nil {
-				var version int
-				switch v := childPolicy["max_version"].(type) {
-				case float64:
-					version = int(v)
-				case int:
-					version = v
-				case int64:
-					version = int(v)
-				case string:
-					parsed, err := strconv.Atoi(v)
-					if err != nil {
-						return nil, fmt.Errorf("invalid max_version string: %v", v)
-					}
-					version = parsed
-				case json.Number:
-					parsed, _ := v.Int64()
-					version = int(parsed)
-				default:
-					return nil, fmt.Errorf("invalid type for max_version: %T", childPolicy["max_version"])
-				}
-				policy = append(policy, gcp.MaxVersionsPolicy(version))
-			}
-
-			if childPolicy["mode"] != nil {
-				n, err := getGCPolicyFromJSON(childPolicy, false)
-				if err != nil {
-					return nil, err
-				}
-				policy = append(policy, n)
-			}
-		}
-	}
-
-	mode, hasMode := inputPolicy["mode"].(string)
-	if hasMode {
-		switch strings.ToLower(mode) {
-		case "union":
-			return gcp.UnionPolicy(policy...), nil
-		case "intersection":
-			return gcp.IntersectionPolicy(policy...), nil
-		default:
-			if len(policy) > 0 {
-				return policy[0], nil
-			}
-		}
-	} else if len(policy) > 0 {
-		return policy[0], nil
-	}
-
-	return gcp.NoGcPolicy(), nil
-}
-
-func convertGCPolicyToProto(gc gcp.GCPolicy) (*pb.GcRule, error) {
-	if gc == nil {
-		return nil, nil
-	}
-	switch gcp.GetPolicyType(gc) {
-	case gcp.PolicyMaxAge:
-		durationString := gc.(gcp.MaxAgeGCPolicy).GetDurationString()
-		d, err := ParseDuration(durationString)
-		if err != nil {
-			return nil, fmt.Errorf("parsing max_age duration string %q: %w", durationString, err)
-		}
-		return &pb.GcRule{
-			Rule: &pb.GcRule_MaxAge{
-				MaxAge: durationpb.New(d),
-			},
-		}, nil
-	case gcp.PolicyMaxVersion:
-		v := int32(gc.(gcp.MaxVersionsGCPolicy))
-		return &pb.GcRule{
-			Rule: &pb.GcRule_MaxNumVersions{
-				MaxNumVersions: v,
-			},
-		}, nil
-	case gcp.PolicyUnion:
-		var rules []*pb.GcRule
-		for _, child := range gc.(gcp.UnionGCPolicy).Children {
-			childRule, err := convertGCPolicyToProto(child)
-			if err != nil {
-				return nil, err
-			}
-			rules = append(rules, childRule)
-		}
-		return &pb.GcRule{
-			Rule: &pb.GcRule_Union_{
-				Union: &pb.GcRule_Union{
-					Rules: rules,
-				},
-			},
-		}, nil
-	case gcp.PolicyIntersection:
-		var rules []*pb.GcRule
-		for _, child := range gc.(gcp.IntersectionGCPolicy).Children {
-			childRule, err := convertGCPolicyToProto(child)
-			if err != nil {
-				return nil, err
-			}
-			rules = append(rules, childRule)
-		}
-		return &pb.GcRule{
-			Rule: &pb.GcRule_Intersection_{
-				Intersection: &pb.GcRule_Intersection{
-					Rules: rules,
-				},
-			},
-		}, nil
-	}
-	return nil, nil
-}
-
-func compareGcRule(ctx context.Context, actual, desired *pb.GcRule) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	if actual == nil {
-		clonedDesired := proto.CloneOf(desired)
-		diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), nil)
-		return diffs, updateMask, err
-	}
-	clonedDesired := proto.CloneOf(desired)
-	clonedActual := proto.CloneOf(actual)
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), clonedActual.ProtoReflect())
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
 	}
 	return diffs, updateMask, nil
+}
+
+func (a *BigtableGCPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.BigtableGCPolicy{}
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(BigtableGCPolicySpec_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
+	}
+
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+
+	u.Object = uObj
+	u.SetName(a.id.Table)
+	u.SetGroupVersionKind(krm.BigtableGCPolicyGVK)
+	return u, nil
+}
+
+func (a *BigtableGCPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for BigtableGCPolicy, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

@@ -17,10 +17,8 @@ package bigqueryreservation
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/bigquery/reservation/apiv1"
-	pb "cloud.google.com/go/bigquery/reservation/apiv1/reservationpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/bigqueryreservation/v1alpha1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
@@ -28,6 +26,10 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/bigquery/reservation/apiv1"
+	pb "cloud.google.com/go/bigquery/reservation/apiv1/reservationpb"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
@@ -45,9 +47,53 @@ func NewCapacityCommitmentModel(ctx context.Context, config *config.ControllerCo
 }
 
 var _ directbase.Model = &modelCapacityCommitment{}
+var _ = strings.TrimPrefix
 
 type modelCapacityCommitment struct {
 	config config.ControllerConfig
+}
+
+func (m *modelCapacityCommitment) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.BigQueryReservationCapacityCommitment{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.BigQueryReservationCapacityCommitmentIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &CapacityCommitmentAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelCapacityCommitment) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.BigQueryReservationCapacityCommitmentIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &CapacityCommitmentAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
 }
 
 func (m *modelCapacityCommitment) client(ctx context.Context) (*gcp.Client, error) {
@@ -56,6 +102,7 @@ func (m *modelCapacityCommitment) client(ctx context.Context) (*gcp.Client, erro
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building CapacityCommitment client: %w", err)
@@ -63,154 +110,109 @@ func (m *modelCapacityCommitment) client(ctx context.Context) (*gcp.Client, erro
 	return gcpClient, err
 }
 
-func (m *modelCapacityCommitment) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.BigQueryReservationCapacityCommitment{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	idInterface, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id := idInterface.(*krm.BigQueryReservationCapacityCommitmentIdentity)
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := BigQueryReservationCapacityCommitmentSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	// Get bigqueryreservation GCP client
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var enforceSingleAdminProject bool
-	if obj.Spec.EnforceSingleAdminProjectPerOrg != nil {
-		enforceSingleAdminProject = (*obj.Spec.EnforceSingleAdminProjectPerOrg == "true")
-	}
-
-	return &CapacityCommitmentAdapter{
-		id:                        id,
-		gcpClient:                 gcpClient,
-		desired:                   desiredPb,
-		enforceSingleAdminProject: enforceSingleAdminProject,
-		actual:                    nil,
-	}, nil
-}
-
-func (m *modelCapacityCommitment) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.BigQueryReservationCapacityCommitmentIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		// Not recognized
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &CapacityCommitmentAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-	}, nil
-}
-
 type CapacityCommitmentAdapter struct {
-	id                        *krm.BigQueryReservationCapacityCommitmentIdentity
-	gcpClient                 *gcp.Client
-	desired                   *pb.CapacityCommitment
-	enforceSingleAdminProject bool
-	actual                    *pb.CapacityCommitment
+	id        *krm.BigQueryReservationCapacityCommitmentIdentity
+	gcpClient *gcp.Client
+	desired   *krm.BigQueryReservationCapacityCommitment
+	actual    *pb.CapacityCommitment
 }
 
 var _ directbase.Adapter = &CapacityCommitmentAdapter{}
 
 func (a *CapacityCommitmentAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting BigQueryReservationCapacityCommitment", "name", a.id.String())
+	log.V(2).Info("getting CapacityCommitment", "name", a.id)
 
-	req := &pb.GetCapacityCommitmentRequest{Name: a.id.String()}
-	cc, err := a.gcpClient.GetCapacityCommitment(ctx, req)
+	req := &pb.GetCapacityCommitmentRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetCapacityCommitment(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting CapacityCommitment %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting CapacityCommitment %q: %w", a.id, err)
 	}
 
-	a.actual = cc
+	a.actual = resp
 	return true, nil
 }
 
 func (a *CapacityCommitmentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating CapacityCommitment", "name", a.id.String())
+	log.V(2).Info("creating CapacityCommitment", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := BigQueryReservationCapacityCommitmentSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateCapacityCommitmentRequest{
-		Parent:                          "projects/" + a.id.Project + "/locations/" + a.id.Location,
-		CapacityCommitmentId:            a.id.CapacityCommitment,
-		CapacityCommitment:              a.desired,
-		EnforceSingleAdminProjectPerOrg: a.enforceSingleAdminProject,
+		Parent:               a.id.ParentString(),
+		CapacityCommitmentId: a.id.CapacityCommitment,
+		CapacityCommitment:   resource,
 	}
-
 	created, err := a.gcpClient.CreateCapacityCommitment(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating CapacityCommitment %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating CapacityCommitment %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created CapacityCommitment", "name", created.Name)
+	log.V(2).Info("successfully created CapacityCommitment", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.BigQueryReservationCapacityCommitmentStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *CapacityCommitmentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating CapacityCommitment", "name", a.id.String())
+	log.V(2).Info("updating CapacityCommitment", "name", a.id)
 
-	desiredPb := a.desired
-	desiredPb.Name = a.id.String()
+	mapCtx := &direct.MapContext{}
+	desired := BigQueryReservationCapacityCommitmentSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
-	diffs, updateMask, err := compareCapacityCommitment(ctx, a.actual, desiredPb)
+	diffs, updateMask, err := compareCapacityCommitment(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
+		desired.Name = a.id.String()
+
 		req := &pb.UpdateCapacityCommitmentRequest{
-			CapacityCommitment: desiredPb,
+			CapacityCommitment: desired,
 			UpdateMask:         updateMask,
 		}
-
 		updated, err := a.gcpClient.UpdateCapacityCommitment(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating CapacityCommitment %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating CapacityCommitment %s: %w", a.id, err)
 		}
-		latest = updated
+		log.V(2).Info("successfully updated CapacityCommitment", "name", a.id)
+
+		status := &krm.BigQueryReservationCapacityCommitmentStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *CapacityCommitmentAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.CapacityCommitment) error {
-	mapCtx := &direct.MapContext{}
-	status := BigQueryReservationCapacityCommitmentStatus_v1alpha1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func compareCapacityCommitment(ctx context.Context, actual, desired *pb.CapacityCommitment) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BigQueryReservationCapacityCommitmentSpec_v1alpha1_FromProto, BigQueryReservationCapacityCommitmentSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	return op.UpdateStatus(ctx, status, nil)
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *CapacityCommitmentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -225,10 +227,9 @@ func (a *CapacityCommitmentAdapter) Export(ctx context.Context) (*unstructured.U
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = a.id.Location
-	obj.Spec.ResourceID = &a.id.CapacityCommitment
-	obj.Spec.ProjectRef.External = a.id.Project
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.CapacityCommitment)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -243,30 +244,18 @@ func (a *CapacityCommitmentAdapter) Export(ctx context.Context) (*unstructured.U
 
 func (a *CapacityCommitmentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting CapacityCommitment", "name", a.id.String())
+	log.V(2).Info("deleting CapacityCommitment", "name", a.id)
 
-	req := &pb.DeleteCapacityCommitmentRequest{Name: a.id.String()}
+	req := &pb.DeleteCapacityCommitmentRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteCapacityCommitment(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent CapacityCommitment, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting CapacityCommitment %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting CapacityCommitment %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted CapacityCommitment", "name", a.id.String())
+	log.V(2).Info("successfully deleted CapacityCommitment", "name", a.id)
 	return true, nil
-}
-
-func compareCapacityCommitment(ctx context.Context, actual, desired *pb.CapacityCommitment) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, BigQueryReservationCapacityCommitmentSpec_v1alpha1_FromProto, BigQueryReservationCapacityCommitmentSpec_v1alpha1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

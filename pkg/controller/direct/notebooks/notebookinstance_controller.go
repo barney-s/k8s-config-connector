@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ package notebooks
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/notebooks/v1beta1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -26,19 +25,18 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/notebooks/apiv1"
-
 	notebookspb "cloud.google.com/go/notebooks/apiv1/notebookspb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
 
@@ -51,9 +49,53 @@ func NewInstanceModel(ctx context.Context, config *config.ControllerConfig) (dir
 }
 
 var _ directbase.Model = &modelInstance{}
+var _ = strings.TrimPrefix
 
 type modelInstance struct {
 	config config.ControllerConfig
+}
+
+func (m *modelInstance) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.NotebookInstance{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.NotebookInstanceIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &InstanceAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelInstance) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.NotebookInstanceIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &InstanceAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
 }
 
 func (m *modelInstance) client(ctx context.Context) (*gcp.NotebookClient, error) {
@@ -62,6 +104,7 @@ func (m *modelInstance) client(ctx context.Context) (*gcp.NotebookClient, error)
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewNotebookClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building Instance client: %w", err)
@@ -69,81 +112,23 @@ func (m *modelInstance) client(ctx context.Context) (*gcp.NotebookClient, error)
 	return gcpClient, err
 }
 
-func (m *modelInstance) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.NotebookInstance{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	// Always call common.NormalizeReferences to resolve references
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	identityObj, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id := identityObj.(*krm.NotebookInstanceIdentity)
-
-	// Get notebooks GCP client
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := NotebookInstanceSpec_v1beta1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &InstanceAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   desired,
-	}, nil
-}
-
-func (m *modelInstance) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.NotebookInstanceIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		// Not recognized
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &InstanceAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-	}, nil
-}
-
 type InstanceAdapter struct {
 	id        *krm.NotebookInstanceIdentity
 	gcpClient *gcp.NotebookClient
-	desired   *notebookspb.Instance
+	desired   *krm.NotebookInstance
 	actual    *notebookspb.Instance
 }
 
 var _ directbase.Adapter = &InstanceAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *InstanceAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting Instance", "name", a.id)
 
-	req := &notebookspb.GetInstanceRequest{Name: a.id.String()}
-	instancepb, err := a.gcpClient.GetInstance(ctx, req)
+	req := &notebookspb.GetInstanceRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetInstance(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -151,19 +136,26 @@ func (a *InstanceAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting Instance %q: %w", a.id, err)
 	}
 
-	a.actual = instancepb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *InstanceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating Instance", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := NotebookInstanceSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &notebookspb.CreateInstanceRequest{
 		Parent:     a.id.ParentString(),
 		InstanceId: a.id.Instance,
-		Instance:   a.desired,
+		Instance:   resource,
 	}
 	op, err := a.gcpClient.CreateInstance(ctx, req)
 	if err != nil {
@@ -171,136 +163,79 @@ func (a *InstanceAdapter) Create(ctx context.Context, createOp *directbase.Creat
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("instance %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create Instance %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created Instance", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.NotebookInstanceStatus{}
+	status.ObservedState = NotebookInstanceObservedState_v1beta1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *InstanceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating Instance", "name", a.id)
 
-	a.desired.Name = a.id.String()
+	mapCtx := &direct.MapContext{}
+	desired := NotebookInstanceSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	diffs, updateMask, err := compareNotebooks(ctx, a.actual, a.desired)
+	diffs, updateMask, err := compareInstance(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
-	}
+		desired.Name = a.id.String()
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	paths := sets.New(updateMask.GetPaths()...)
-
-	var updated *notebookspb.Instance
-	if paths.Has("metadata") {
-		req := &notebookspb.UpdateInstanceMetadataItemsRequest{
-			Name:  a.id.String(),
-			Items: a.desired.Metadata,
+		req := &notebookspb.UpdateInstanceRequest{
+			Instance: desired,
 		}
-		_, err = a.gcpClient.UpdateInstanceMetadataItems(ctx, req)
+		op, err := a.gcpClient.UpdateInstance(ctx, req)
 		if err != nil {
 			return fmt.Errorf("updating Instance %s: %w", a.id, err)
 		}
-	}
-	if paths.Has("shielded_instance_config") {
-		// stops the instance first before update the shielded instance config
-		stopReq := &notebookspb.StopInstanceRequest{
-			Name: a.id.String(),
-		}
-		stopOp, err := a.gcpClient.StopInstance(ctx, stopReq)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("stopping Instance %s: %w", a.id, err)
+			return fmt.Errorf("waiting update Instance %s: %w", a.id, err)
 		}
-		_, err = stopOp.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("instance %s waiting to stop: %w", a.id, err)
-		}
-		// updates the shielded instance config
-		req := &notebookspb.UpdateShieldedInstanceConfigRequest{
-			Name:                   a.id.String(),
-			ShieldedInstanceConfig: a.desired.ShieldedInstanceConfig,
-		}
-		op, err := a.gcpClient.UpdateShieldedInstanceConfig(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating Instance %s: %w", a.id, err)
-		}
-		_, err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("instance %s waiting update: %w", a.id, err)
-		}
+		log.V(2).Info("successfully updated Instance", "name", a.id)
 
-		// starts the instance first before update the shielded instance config
-		startReq := &notebookspb.StartInstanceRequest{
-			Name: a.id.String(),
+		status := &krm.NotebookInstanceStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = NotebookInstanceObservedState_v1beta1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
 		}
-		startOp, err := a.gcpClient.StartInstance(ctx, startReq)
-		if err != nil {
-			return fmt.Errorf("starting Instance %s: %w", a.id, err)
-		}
-		updated, err = startOp.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("instance %s waiting to start: %w", a.id, err)
-		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	log.V(2).Info("successfully updated Instance", "name", a.id)
-
-	latest := a.actual
-	if updated != nil {
-		latest = updated
-	}
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func compareNotebooks(ctx context.Context, actual, desired *notebookspb.Instance) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+func compareInstance(ctx context.Context, actual, desired *notebookspb.Instance) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
 	maskedActual, err := mappers.OnlySpecFields(actual, NotebookInstanceSpec_v1beta1_FromProto, NotebookInstanceSpec_v1beta1_ToProto)
 	if err != nil {
 		return nil, nil, err
 	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *notebookspb.Instance) {
-		if obj.ShieldedInstanceConfig == nil {
-			obj.ShieldedInstanceConfig = &notebookspb.Instance_ShieldedInstanceConfig{
-				EnableSecureBoot:          false,
-				EnableVtpm:                true,
-				EnableIntegrityMonitoring: true,
-			}
-		}
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
 	}
 	return diffs, updateMask, nil
 }
 
-func (a *InstanceAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *notebookspb.Instance) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.NotebookInstanceStatus{}
-	status.ObservedState = NotebookInstanceObservedState_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-// Export maps the GCP object to a Config Connector resource `spec`.
 func (a *InstanceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -314,7 +249,6 @@ func (a *InstanceAdapter) Export(ctx context.Context) (*unstructured.Unstructure
 		return nil, mapCtx.Err()
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Zone = a.id.Location
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.Instance)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
@@ -325,31 +259,30 @@ func (a *InstanceAdapter) Export(ctx context.Context) (*unstructured.Unstructure
 	u.Object = uObj
 	u.SetName(a.id.Instance)
 	u.SetGroupVersionKind(krm.NotebookInstanceGVK)
-
 	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *InstanceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting Instance", "name", a.id)
 
-	req := &notebookspb.DeleteInstanceRequest{Name: a.id.String()}
+	req := &notebookspb.DeleteInstanceRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteInstance(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent Instance, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting Instance %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted Instance", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete Instance %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Instance %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

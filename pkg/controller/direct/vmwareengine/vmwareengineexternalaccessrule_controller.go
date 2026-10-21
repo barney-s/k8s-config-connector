@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,33 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.vmwareengine.v1.VmwareEngine
-// proto.message: google.cloud.vmwareengine.v1.ExternalAccessRule
-// crd.type: VMwareEngineExternalAccessRule
-// crd.version: v1alpha1
-
 package vmwareengine
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	gcp "cloud.google.com/go/vmwareengine/apiv1"
-	pb "cloud.google.com/go/vmwareengine/apiv1/vmwareenginepb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/vmwareengine/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/vmwareengine/apiv1"
+	pb "cloud.google.com/go/vmwareengine/apiv1/vmwareenginepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -46,86 +42,89 @@ func init() {
 }
 
 func NewExternalAccessRuleModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &externalAccessRuleModel{config: *config}, nil
+	return &modelExternalAccessRule{config: *config}, nil
 }
 
-var _ directbase.Model = &externalAccessRuleModel{}
+var _ directbase.Model = &modelExternalAccessRule{}
+var _ = strings.TrimPrefix
 
-type externalAccessRuleModel struct {
+type modelExternalAccessRule struct {
 	config config.ControllerConfig
 }
 
-func (m *externalAccessRuleModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelExternalAccessRule) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.VMwareEngineExternalAccessRule{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.ExternalAccessRuleIdentity{}
 
-	id, err := krm.NewExternalAccessRuleIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// Get VMwareEngine GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
-	if err != nil {
-		return nil, err
-	}
-	client, err := gcpClient.newClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &externalAccessRuleAdapter{
-		gcpClient: client,
+	return &ExternalAccessRuleAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *externalAccessRuleModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelExternalAccessRule) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type externalAccessRuleAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.ExternalAccessRuleIdentity
-	desired   *krm.VMwareEngineExternalAccessRule
-	actual    *pb.ExternalAccessRule
-	reader    client.Reader
+func (m *modelExternalAccessRule) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ExternalAccessRule client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &externalAccessRuleAdapter{}
+type ExternalAccessRuleAdapter struct {
+	id        *krm.ExternalAccessRuleIdentity
+	gcpClient *gcp.Client
+	desired   *krm.VMwareEngineExternalAccessRule
+	actual    *pb.ExternalAccessRule
+}
 
-func (a *externalAccessRuleAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &ExternalAccessRuleAdapter{}
+
+func (a *ExternalAccessRuleAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting vmwareengine external access rule", "name", a.id)
+	log.V(2).Info("getting ExternalAccessRule", "name", a.id)
 
-	req := &pb.GetExternalAccessRuleRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetExternalAccessRule(ctx, req)
+	req := &pb.GetExternalAccessRuleRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetExternalAccessRule(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting vmwareengine external access rule %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting ExternalAccessRule %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *externalAccessRuleAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ExternalAccessRuleAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating vmwareengine external access rule", "name", a.id)
-
-	if err := a.normalizeReferenceFields(ctx); err != nil {
-		return err
-	}
-
+	log.V(2).Info("creating ExternalAccessRule", "name", a.id)
 	mapCtx := &direct.MapContext{}
+
 	desired := a.desired.DeepCopy()
 	resource := VMwareEngineExternalAccessRuleSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
@@ -139,16 +138,16 @@ func (a *externalAccessRuleAdapter) Create(ctx context.Context, createOp *direct
 	}
 	op, err := a.gcpClient.CreateExternalAccessRule(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating vmwareengine external access rule %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating ExternalAccessRule %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("vmwareengine external access rule %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create ExternalAccessRule %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created vmwareengine external access rule in gcp", "name", a.id)
+	log.V(2).Info("successfully created ExternalAccessRule", "name", a.id)
 
 	status := &krm.VMwareEngineExternalAccessRuleStatus{}
-	status.ObservedState = VMwareEngineExternalAccessRuleObservedState_FromProto(mapCtx, created)
+	status.ObservedState = VMwareEngineExternalAccessRuleObservedState_v1alpha1_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
@@ -156,83 +155,66 @@ func (a *externalAccessRuleAdapter) Create(ctx context.Context, createOp *direct
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *externalAccessRuleAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ExternalAccessRuleAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating vmwareengine external access rule", "name", a.id)
-
-	if err := a.normalizeReferenceFields(ctx); err != nil {
-		return err
-	}
+	log.V(2).Info("updating ExternalAccessRule", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	desired := a.desired.DeepCopy()
-	resource := VMwareEngineExternalAccessRuleSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	desired := VMwareEngineExternalAccessRuleSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
+	diffs, updateMask, err := compareExternalAccessRule(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	paths := []string{}
-	if desired.Spec.Description != nil && !reflect.DeepEqual(resource.Description, a.actual.Description) {
-		report.AddField("description", a.actual.Description, resource.Description)
-		paths = append(paths, "description")
-	}
-	if desired.Spec.Priority != nil && !reflect.DeepEqual(resource.Priority, a.actual.Priority) {
-		report.AddField("priority", a.actual.Priority, resource.Priority)
-		paths = append(paths, "priority")
-	}
-	if desired.Spec.Action != nil && !reflect.DeepEqual(resource.Action, a.actual.Action) {
-		report.AddField("action", a.actual.Action, resource.Action)
-		paths = append(paths, "action")
-	}
-	if desired.Spec.IPProtocol != nil && !reflect.DeepEqual(resource.IpProtocol, a.actual.IpProtocol) {
-		report.AddField("ip_protocol", a.actual.IpProtocol, resource.IpProtocol)
-		paths = append(paths, "ip_protocol")
-	}
-	if len(desired.Spec.SourcePorts) != 0 && !reflect.DeepEqual(resource.SourcePorts, a.actual.SourcePorts) {
-		report.AddField("source_ports", a.actual.SourcePorts, resource.SourcePorts)
-		paths = append(paths, "source_ports")
-	}
-	if len(desired.Spec.DestinationPorts) != 0 && !reflect.DeepEqual(resource.DestinationPorts, a.actual.DestinationPorts) {
-		report.AddField("destination_ports", a.actual.DestinationPorts, resource.DestinationPorts)
-		paths = append(paths, "destination_ports")
-	}
-	// TODO: handle source_ip_ranges and destination_ip_ranges which contain oneof fields which requires special handling
-	// e.g. https://github.com/GoogleCloudPlatform/k8s-config-connector/blob/7e47fab0c19e7908b88ad1d5e1e6063d27e35fc4/pkg/controller/direct/gkebackup/backupplan_controller.go#L192
+		desired.Name = a.id.String()
 
-	var updated *pb.ExternalAccessRule
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		updated = a.actual
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		resource.Name = a.id.String() // we need to set the name so that GCP API can identify the resource
 		req := &pb.UpdateExternalAccessRuleRequest{
-			ExternalAccessRule: resource,
-			UpdateMask:         &fieldmaskpb.FieldMask{Paths: paths},
+			ExternalAccessRule: desired,
+			UpdateMask:         updateMask,
 		}
 		op, err := a.gcpClient.UpdateExternalAccessRule(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating vmwareengine external access rule %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating ExternalAccessRule %s: %w", a.id, err)
 		}
-		updated, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("vmwareengine external access rule %s waiting for update: %w", a.id, err)
+			return fmt.Errorf("waiting update ExternalAccessRule %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated vmwareengine external access rule", "name", a.id)
+		log.V(2).Info("successfully updated ExternalAccessRule", "name", a.id)
+
+		status := &krm.VMwareEngineExternalAccessRuleStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = VMwareEngineExternalAccessRuleObservedState_v1alpha1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	status := &krm.VMwareEngineExternalAccessRuleStatus{}
-	status.ObservedState = VMwareEngineExternalAccessRuleObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-func (a *externalAccessRuleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareExternalAccessRule(ctx context.Context, actual, desired *pb.ExternalAccessRule) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, VMwareEngineExternalAccessRuleSpec_v1alpha1_FromProto, VMwareEngineExternalAccessRuleSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *ExternalAccessRuleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -240,64 +222,42 @@ func (a *externalAccessRuleAdapter) Export(ctx context.Context) (*unstructured.U
 
 	obj := &krm.VMwareEngineExternalAccessRule{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(VMwareEngineExternalAccessRuleSpec_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(VMwareEngineExternalAccessRuleSpec_v1alpha1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.NetworkPolicyRef = &krm.NetworkPolicyRef{External: a.id.Parent().String()}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.actual.Name)
-	u.SetGroupVersionKind(krm.VMwareEngineExternalAccessRuleGVK)
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.VMwareEngineExternalAccessRuleGVK)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *externalAccessRuleAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ExternalAccessRuleAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting vmwareengine external access rule", "name", a.id)
+	log.V(2).Info("deleting ExternalAccessRule", "name", a.id)
 
-	req := &pb.DeleteExternalAccessRuleRequest{Name: a.id.String()}
+	req := &pb.DeleteExternalAccessRuleRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteExternalAccessRule(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent BackupVault, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting vmwareengine external access rule %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting ExternalAccessRule %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted vmwareengine external access rule", "name", a.id)
-
+	log.V(2).Info("successfully deleted ExternalAccessRule", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete BackupVault %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete ExternalAccessRule %s: %w", a.id, err)
+		}
 	}
 	return true, nil
-}
-
-func (a *externalAccessRuleAdapter) normalizeReferenceFields(ctx context.Context) error {
-	obj := a.desired
-
-	for i := range obj.Spec.SourceIPRanges {
-		if obj.Spec.SourceIPRanges[i].ExternalAddressRef != nil {
-			_, err := obj.Spec.SourceIPRanges[i].ExternalAddressRef.NormalizedExternal(ctx, a.reader, obj.GetNamespace())
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	for i := range obj.Spec.DestinationIPRanges {
-		if obj.Spec.DestinationIPRanges[i].ExternalAddressRef != nil {
-			_, err := obj.Spec.DestinationIPRanges[i].ExternalAddressRef.NormalizedExternal(ctx, a.reader, obj.GetNamespace())
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }

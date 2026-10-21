@@ -17,17 +17,6 @@ package cloudtalentsolution
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	talent "cloud.google.com/go/talent/apiv4"
-	pb "cloud.google.com/go/talent/apiv4/talentpb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/cloudtalentsolution/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -36,216 +25,192 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/talent/apiv4"
+	pb "cloud.google.com/go/talent/apiv4/talentpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.CloudTalentSolutionCompanyGVK, NewModel)
+	registry.RegisterModel(krm.CloudTalentSolutionCompanyGVK, NewCompanyModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewCompanyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelCompany{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelCompany{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelCompany struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*talent.CompanyClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := talent.NewCompanyRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building cloudtalentsolution client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelCompany) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.CloudTalentSolutionCompany{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	idVal, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := idVal.(*krm.CloudTalentSolutionCompanyIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", idVal)
-	}
+	id := i.(*krm.CloudTalentSolutionCompanyIdentity)
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	if id.Tenant == "default" {
-		var opts []option.ClientOption
-		opts, err = m.config.RESTClientOptions()
-		if err != nil {
-			return nil, err
-		}
-		tenantClient, err := talent.NewTenantRESTClient(ctx, opts...)
-		if err != nil {
-			return nil, fmt.Errorf("building tenant client: %w", err)
-		}
-		defer tenantClient.Close()
-
-		it := tenantClient.ListTenants(ctx, &pb.ListTenantsRequest{
-			Parent: fmt.Sprintf("projects/%s", id.Project),
-		})
-		tenant, err := it.Next()
-		if err != nil {
-			return nil, fmt.Errorf("listing tenants to find default tenant: %w", err)
-		}
-		parts := strings.Split(tenant.GetName(), "/")
-		if len(parts) < 4 {
-			return nil, fmt.Errorf("unexpected tenant name format: %q", tenant.GetName())
-		}
-		id.Tenant = parts[3]
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := CloudTalentSolutionCompanySpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Name = id.String()
-
-	return &adapter{
-		gcpClient: gcpClient,
+	return &CompanyAdapter{
 		id:        id,
-		desired:   desired,
-		reader:    reader,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelCompany) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type adapter struct {
-	gcpClient *talent.CompanyClient
-	id        *krm.CloudTalentSolutionCompanyIdentity
-	desired   *pb.Company
-	actual    *pb.Company
-	reader    client.Reader
+func (m *modelCompany) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Company client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &adapter{}
+type CompanyAdapter struct {
+	id        *krm.CloudTalentSolutionCompanyIdentity
+	gcpClient *gcp.Client
+	desired   *krm.CloudTalentSolutionCompany
+	actual    *pb.Company
+}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
-func (a *adapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &CompanyAdapter{}
+
+func (a *CompanyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting cloudtalentsolution company", "name", a.id)
+	log.V(2).Info("getting Company", "name", a.id)
 
-	req := &pb.GetCompanyRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetCompany(ctx, req)
+	req := &pb.GetCompanyRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetCompany(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting cloudtalentsolution company %q: %w", a.id, err)
+		return false, fmt.Errorf("getting Company %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *CompanyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating cloudtalentsolution company", "name", a.id)
-
-	req := &pb.CreateCompanyRequest{
-		Parent:  a.id.ParentString(),
-		Company: a.desired,
-	}
-	created, err := a.gcpClient.CreateCompany(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating cloudtalentsolution company %s: %w", a.id, err)
-	}
-	log.V(2).Info("successfully created cloudtalentsolution company", "name", a.id)
-
-	parts := strings.Split(created.GetName(), "/")
-	if len(parts) > 0 {
-		a.id.Company = parts[len(parts)-1]
-	}
-
-	return a.updateStatus(ctx, createOp, created)
-}
-
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating cloudtalentsolution company", "name", a.id)
-
-	maskedActual, err := mappers.OnlySpecFields(a.actual, CloudTalentSolutionCompanySpec_FromProto, CloudTalentSolutionCompanySpec_ToProto)
-	if err != nil {
-		return err
-	}
-
-	clonedDesired := proto.Clone(a.desired).(*pb.Company)
-	maskedActual.Name = clonedDesired.Name
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return err
-	}
-
-	latest := a.actual
-	if diffs.HasDiff() {
-		diffs.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diffs)
-
-		req := &pb.UpdateCompanyRequest{
-			Company:    a.desired,
-			UpdateMask: updateMask,
-		}
-		updated, err := a.gcpClient.UpdateCompany(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating cloudtalentsolution company %s: %w", a.id, err)
-		}
-		log.V(2).Info("successfully updated cloudtalentsolution company", "name", a.id)
-		latest = updated
-	}
-
-	parts := strings.Split(latest.GetName(), "/")
-	if len(parts) > 0 {
-		a.id.Company = parts[len(parts)-1]
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func (a *adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Company) error {
+	log.V(2).Info("creating Company", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	observedState := CloudTalentSolutionCompanyObservedState_FromProto(mapCtx, latest)
+
+	desired := a.desired.DeepCopy()
+	resource := CloudTalentSolutionCompanySpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	status := &krm.CloudTalentSolutionCompanyStatus{}
-	status.ObservedState = observedState
-	status.ExternalRef = direct.LazyPtr(a.id.String())
+	req := &pb.CreateCompanyRequest{
+		Parent:    a.id.ParentString(),
+		CompanyId: a.id.Company,
+		Company:   resource,
+	}
+	created, err := a.gcpClient.CreateCompany(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating Company %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created Company", "name", a.id)
 
-	return op.UpdateStatus(ctx, status, nil)
+	status := &krm.CloudTalentSolutionCompanyStatus{}
+	status.ObservedState = CloudTalentSolutionCompanyObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *CompanyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating Company", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := CloudTalentSolutionCompanySpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareCompany(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateCompanyRequest{
+			Company:    desired,
+			UpdateMask: updateMask,
+		}
+		updated, err := a.gcpClient.UpdateCompany(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Company %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Company", "name", a.id)
+
+		status := &krm.CloudTalentSolutionCompanyStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = CloudTalentSolutionCompanyObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareCompany(ctx context.Context, actual, desired *pb.Company) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, CloudTalentSolutionCompanySpec_FromProto, CloudTalentSolutionCompanySpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *CompanyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -263,25 +228,26 @@ func (a *adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.Company)
 	u.SetGroupVersionKind(krm.CloudTalentSolutionCompanyGVK)
-	u.Object = uObj
 	return u, nil
 }
 
-// Delete deletes the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *CompanyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting cloudtalentsolution company", "name", a.id)
+	log.V(2).Info("deleting Company", "name", a.id)
 
-	req := &pb.DeleteCompanyRequest{Name: a.id.String()}
+	req := &pb.DeleteCompanyRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteCompany(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting cloudtalentsolution company %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting Company %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted cloudtalentsolution company", "name", a.id)
+	log.V(2).Info("successfully deleted Company", "name", a.id)
 	return true, nil
 }

@@ -12,30 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.networkmanagement.v1.VpcFlowLogsService
-// proto.message: google.cloud.networkmanagement.v1.VpcFlowLogsConfig
-// crd.type: NetworkManagementVPCFlowLogsConfig
-// crd.version: v1alpha1
-
 package networkmanagement
 
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/networkmanagement/apiv1"
-	pb "cloud.google.com/go/networkmanagement/apiv1/networkmanagementpb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	computev1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/networkmanagement/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -43,9 +24,18 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/k8s"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/networkmanagement/apiv1"
+	pb "cloud.google.com/go/networkmanagement/apiv1/networkmanagementpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -53,163 +43,182 @@ func init() {
 }
 
 func NewVpcFlowLogsConfigModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &vpcFlowLogsConfigModel{config: config}, nil
+	return &modelVpcFlowLogsConfig{config: *config}, nil
 }
 
-var _ directbase.Model = &vpcFlowLogsConfigModel{}
+var _ directbase.Model = &modelVpcFlowLogsConfig{}
+var _ = strings.TrimPrefix
 
-type vpcFlowLogsConfigModel struct {
-	config *config.ControllerConfig
+type modelVpcFlowLogsConfig struct {
+	config config.ControllerConfig
 }
 
-func (m *vpcFlowLogsConfigModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelVpcFlowLogsConfig) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.NetworkManagementVPCFlowLogsConfig{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := krm.NewVpcFlowLogsConfigIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	gcpClient, err := newVpcFlowLogsClient(ctx, m.config)
-	if err != nil {
-		return nil, err
-	}
-
+	id := &krm.VpcFlowLogsConfigIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	adapter := &vpcFlowLogsConfigAdapter{
-		gcpClient:  gcpClient,
-		id:         id,
-		desiredKRM: obj,
-		reader:     reader,
-	}
-
-	if err := adapter.normalizeReferenceFields(ctx); err != nil {
+	gcpClient, err := m.client(ctx)
+	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	adapter.desired = NetworkManagementVPCFlowLogsConfigSpec_ToProto(mapCtx, &adapter.desiredKRM.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return adapter, nil
+	return &VpcFlowLogsConfigAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
 }
 
-func (m *vpcFlowLogsConfigModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelVpcFlowLogsConfig) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type vpcFlowLogsConfigAdapter struct {
-	gcpClient  *gcp.VpcFlowLogsClient
-	id         *krm.VpcFlowLogsConfigIdentity
-	desiredKRM *krm.NetworkManagementVPCFlowLogsConfig
-	desired    *pb.VpcFlowLogsConfig
-	actual     *pb.VpcFlowLogsConfig
-	reader     client.Reader
+func (m *modelVpcFlowLogsConfig) client(ctx context.Context) (*gcp.VpcFlowLogsClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building VpcFlowLogsConfig client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &vpcFlowLogsConfigAdapter{}
+type VpcFlowLogsConfigAdapter struct {
+	id        *krm.VpcFlowLogsConfigIdentity
+	gcpClient *gcp.VpcFlowLogsClient
+	desired   *krm.NetworkManagementVPCFlowLogsConfig
+	actual    *pb.VpcFlowLogsConfig
+}
 
-func (a *vpcFlowLogsConfigAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &VpcFlowLogsConfigAdapter{}
+
+func (a *VpcFlowLogsConfigAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting networkmanagement vpcflowlogsconfig", "name", a.id)
+	log.V(2).Info("getting VpcFlowLogsConfig", "name", a.id)
 
-	req := &pb.GetVpcFlowLogsConfigRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetVpcFlowLogsConfig(ctx, req)
+	req := &pb.GetVpcFlowLogsConfigRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetVpcFlowLogsConfig(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting networkmanagement vpcflowlogsconfig %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting VpcFlowLogsConfig %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *vpcFlowLogsConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *VpcFlowLogsConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating networkmanagement vpcflowlogsconfig", "name", a.id)
+	log.V(2).Info("creating VpcFlowLogsConfig", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := NetworkManagementVPCFlowLogsConfigSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateVpcFlowLogsConfigRequest{
 		Parent:              a.id.Parent().String(),
 		VpcFlowLogsConfigId: a.id.ID(),
-		VpcFlowLogsConfig:   a.desired,
+		VpcFlowLogsConfig:   resource,
 	}
 	op, err := a.gcpClient.CreateVpcFlowLogsConfig(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating networkmanagement vpcflowlogsconfig %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating VpcFlowLogsConfig %s: %w", a.id, err)
 	}
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("networkmanagement vpcflowlogsconfig %s waiting creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create VpcFlowLogsConfig %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created networkmanagement vpcflowlogsconfig in gcp", "name", a.id)
+	log.V(2).Info("successfully created VpcFlowLogsConfig", "name", a.id)
 
-	// Perform GET immediately after LRO to get fully populated status fields
-	latest, err := a.gcpClient.GetVpcFlowLogsConfig(ctx, &pb.GetVpcFlowLogsConfigRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting created networkmanagement vpcflowlogsconfig %s: %w", a.id.String(), err)
+	status := &krm.NetworkManagementVPCFlowLogsConfigStatus{}
+	status.ObservedState = NetworkManagementVPCFlowLogsConfigObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *vpcFlowLogsConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *VpcFlowLogsConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating networkmanagement vpcflowlogsconfig", "name", a.id)
+	log.V(2).Info("updating VpcFlowLogsConfig", "name", a.id)
 
-	a.desired.Name = a.id.String()
+	mapCtx := &direct.MapContext{}
+	desired := NetworkManagementVPCFlowLogsConfigSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
-	diffs, updateMask, err := compareVpcFlowLogsConfig(ctx, a.actual, a.desired)
+	diffs, updateMask, err := compareVpcFlowLogsConfig(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	var latest *pb.VpcFlowLogsConfig
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-		latest = a.actual
-	} else {
+	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
-		log.V(2).Info("updating fields", "name", a.id, "paths", updateMask.Paths)
+
+		desired.Name = a.id.String()
 
 		req := &pb.UpdateVpcFlowLogsConfigRequest{
+			VpcFlowLogsConfig: desired,
 			UpdateMask:        updateMask,
-			VpcFlowLogsConfig: a.desired,
 		}
 		op, err := a.gcpClient.UpdateVpcFlowLogsConfig(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating networkmanagement vpcflowlogsconfig %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating VpcFlowLogsConfig %s: %w", a.id, err)
 		}
-		_, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("networkmanagement vpcflowlogsconfig %s waiting for update: %w", a.id.String(), err)
+			return fmt.Errorf("waiting update VpcFlowLogsConfig %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated networkmanagement vpcflowlogsconfig", "name", a.id)
+		log.V(2).Info("successfully updated VpcFlowLogsConfig", "name", a.id)
 
-		// Perform GET immediately after LRO to get fully populated status fields
-		latest, err = a.gcpClient.GetVpcFlowLogsConfig(ctx, &pb.GetVpcFlowLogsConfigRequest{Name: a.id.String()})
-		if err != nil {
-			return fmt.Errorf("getting updated networkmanagement vpcflowlogsconfig %s: %w", a.id.String(), err)
+		status := &krm.NetworkManagementVPCFlowLogsConfigStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = NetworkManagementVPCFlowLogsConfigObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
 		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *vpcFlowLogsConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareVpcFlowLogsConfig(ctx context.Context, actual, desired *pb.VpcFlowLogsConfig) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, NetworkManagementVPCFlowLogsConfigSpec_FromProto, NetworkManagementVPCFlowLogsConfigSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *VpcFlowLogsConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -221,9 +230,8 @@ func (a *vpcFlowLogsConfigAdapter) Export(ctx context.Context) (*unstructured.Un
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
-	obj.Spec.Location = direct.PtrTo(a.id.Parent().Location)
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -236,146 +244,26 @@ func (a *vpcFlowLogsConfigAdapter) Export(ctx context.Context) (*unstructured.Un
 	return u, nil
 }
 
-func (a *vpcFlowLogsConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *VpcFlowLogsConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting networkmanagement vpcflowlogsconfig", "name", a.id)
+	log.V(2).Info("deleting VpcFlowLogsConfig", "name", a.id)
 
-	req := &pb.DeleteVpcFlowLogsConfigRequest{Name: a.id.String()}
+	req := &pb.DeleteVpcFlowLogsConfigRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteVpcFlowLogsConfig(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent networkmanagement vpcflowlogsconfig, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting networkmanagement vpcflowlogsconfig %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting VpcFlowLogsConfig %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully initiated deletion of networkmanagement vpcflowlogsconfig", "name", a.id)
-
+	log.V(2).Info("successfully deleted VpcFlowLogsConfig", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for deletion of networkmanagement vpcflowlogsconfig %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete VpcFlowLogsConfig %s: %w", a.id, err)
+		}
 	}
-	log.V(2).Info("successfully deleted networkmanagement vpcflowlogsconfig", "name", a.id)
 	return true, nil
-}
-
-func (a *vpcFlowLogsConfigAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.VpcFlowLogsConfig) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.NetworkManagementVPCFlowLogsConfigStatus{}
-	status.ObservedState = NetworkManagementVPCFlowLogsConfigObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *vpcFlowLogsConfigAdapter) normalizeReferenceFields(ctx context.Context) error {
-	if a.desiredKRM.Spec.VPNTunnelRef != nil {
-		if err := resolveComputeVPNTunnelRef(ctx, a.reader, a.desiredKRM.GetNamespace(), a.desiredKRM.Spec.VPNTunnelRef); err != nil {
-			return err
-		}
-	}
-	if a.desiredKRM.Spec.InterconnectAttachmentRef != nil {
-		if err := resolveComputeInterconnectAttachmentRef(ctx, a.reader, a.desiredKRM.GetNamespace(), a.desiredKRM.Spec.InterconnectAttachmentRef); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func compareVpcFlowLogsConfig(ctx context.Context, actual, desired *pb.VpcFlowLogsConfig) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, NetworkManagementVPCFlowLogsConfigSpec_FromProto, NetworkManagementVPCFlowLogsConfigSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func resolveComputeVPNTunnelRef(ctx context.Context, reader client.Reader, defaultNamespace string, ref *computev1beta1.ComputeVPNTunnelRef) error {
-	if ref == nil {
-		return nil
-	}
-	if ref.External != "" {
-		return nil
-	}
-	if ref.Name == "" {
-		return fmt.Errorf("must specify either name or external on reference")
-	}
-	key := types.NamespacedName{
-		Namespace: ref.Namespace,
-		Name:      ref.Name,
-	}
-	if key.Namespace == "" {
-		key.Namespace = defaultNamespace
-	}
-
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "compute.cnrm.cloud.google.com",
-		Version: "v1beta1",
-		Kind:    "ComputeVPNTunnel",
-	})
-	if err := reader.Get(ctx, key, u); err != nil {
-		if apierrors.IsNotFound(err) {
-			return k8s.NewReferenceNotFoundError(u.GroupVersionKind(), key)
-		}
-		return fmt.Errorf("error reading referenced ComputeVPNTunnel %v: %w", key, err)
-	}
-
-	selfLink, _, _ := unstructured.NestedString(u.Object, "status", "selfLink")
-	if selfLink == "" {
-		return k8s.NewReferenceNotFoundError(u.GroupVersionKind(), key)
-	}
-
-	externalRef := refs.TrimComputeURIPrefix(selfLink)
-	ref.External = externalRef
-	return nil
-}
-
-func resolveComputeInterconnectAttachmentRef(ctx context.Context, reader client.Reader, defaultNamespace string, ref *computev1beta1.ComputeInterconnectAttachmentRef) error {
-	if ref == nil {
-		return nil
-	}
-	if ref.External != "" {
-		return nil
-	}
-	if ref.Name == "" {
-		return fmt.Errorf("must specify either name or external on reference")
-	}
-	key := types.NamespacedName{
-		Namespace: ref.Namespace,
-		Name:      ref.Name,
-	}
-	if key.Namespace == "" {
-		key.Namespace = defaultNamespace
-	}
-
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "compute.cnrm.cloud.google.com",
-		Version: "v1beta1",
-		Kind:    "ComputeInterconnectAttachment",
-	})
-	if err := reader.Get(ctx, key, u); err != nil {
-		if apierrors.IsNotFound(err) {
-			return k8s.NewReferenceNotFoundError(u.GroupVersionKind(), key)
-		}
-		return fmt.Errorf("error reading referenced ComputeInterconnectAttachment %v: %w", key, err)
-	}
-
-	selfLink, _, _ := unstructured.NestedString(u.Object, "status", "selfLink")
-	if selfLink == "" {
-		return k8s.NewReferenceNotFoundError(u.GroupVersionKind(), key)
-	}
-
-	externalRef := refs.TrimComputeURIPrefix(selfLink)
-	ref.External = externalRef
-	return nil
 }

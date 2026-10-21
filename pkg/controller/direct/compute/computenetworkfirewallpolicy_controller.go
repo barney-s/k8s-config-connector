@@ -17,18 +17,7 @@ package compute
 import (
 	"context"
 	"fmt"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	computepb "cloud.google.com/go/compute/apiv1/computepb"
-	pb "cloud.google.com/go/compute/apiv1/computepb"
-	"google.golang.org/protobuf/proto"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
@@ -36,6 +25,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	pb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -43,278 +42,196 @@ func init() {
 }
 
 func NewComputeNetworkFirewallPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeNetworkFirewallPolicyModel{config: config}, nil
+	return &modelComputeNetworkFirewallPolicy{config: *config}, nil
 }
 
-type computeNetworkFirewallPolicyModel struct {
-	config *config.ControllerConfig
+var _ directbase.Model = &modelComputeNetworkFirewallPolicy{}
+var _ = strings.TrimPrefix
+
+type modelComputeNetworkFirewallPolicy struct {
+	config config.ControllerConfig
 }
 
-var _ directbase.Model = &computeNetworkFirewallPolicyModel{}
-
-func (m *computeNetworkFirewallPolicyModel) client(ctx context.Context) (*compute.NetworkFirewallPoliciesClient, error) {
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	return gcpClient.newNetworkFirewallPoliciesClient(ctx)
-}
-
-func (m *computeNetworkFirewallPolicyModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeNetworkFirewallPolicy) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeNetworkFirewallPolicy{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.ComputeNetworkFirewallPolicyIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	idVal, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id, ok := idVal.(*krm.ComputeNetworkFirewallPolicyIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", idVal)
-	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	return &ComputeNetworkFirewallPolicyAdapter{
-		gcpClient: gcpClient,
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *computeNetworkFirewallPolicyModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeNetworkFirewallPolicy) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.ComputeNetworkFirewallPolicyIdentity{}
 	if err := id.FromExternal(url); err != nil {
 		return nil, nil
 	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	return &ComputeNetworkFirewallPolicyAdapter{
-		gcpClient: gcpClient,
 		id:        id,
+		gcpClient: gcpClient,
 	}, nil
 }
 
+func (m *modelComputeNetworkFirewallPolicy) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeNetworkFirewallPolicy client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type ComputeNetworkFirewallPolicyAdapter struct {
-	gcpClient *compute.NetworkFirewallPoliciesClient
 	id        *krm.ComputeNetworkFirewallPolicyIdentity
+	gcpClient *gcp.Client
 	desired   *krm.ComputeNetworkFirewallPolicy
-	actual    *pb.FirewallPolicy
-	reader    client.Reader
+	actual    *pb.ComputeNetworkFirewallPolicy
 }
 
 var _ directbase.Adapter = &ComputeNetworkFirewallPolicyAdapter{}
 
 func (a *ComputeNetworkFirewallPolicyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting ComputeNetworkFirewallPolicy", "name", a.id.String())
+	log.V(2).Info("getting ComputeNetworkFirewallPolicy", "name", a.id)
 
-	actual, err := a.get(ctx)
+	req := &pb.GetComputeNetworkFirewallPolicyRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetComputeNetworkFirewallPolicy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting ComputeNetworkFirewallPolicy %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting ComputeNetworkFirewallPolicy %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
-}
-
-func (a *ComputeNetworkFirewallPolicyAdapter) get(ctx context.Context) (*pb.FirewallPolicy, error) {
-	req := &computepb.GetNetworkFirewallPolicyRequest{
-		Project:        a.id.Project,
-		FirewallPolicy: a.id.FirewallPolicy,
-	}
-	return a.gcpClient.Get(ctx, req)
 }
 
 func (a *ComputeNetworkFirewallPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating ComputeNetworkFirewallPolicy", "name", a.id.String())
-
+	log.V(2).Info("creating ComputeNetworkFirewallPolicy", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	firewallPolicy := ComputeNetworkFirewallPolicySpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+
+	desired := a.desired.DeepCopy()
+	resource := ComputeNetworkFirewallPolicySpec_v1beta1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	firewallPolicy.Name = direct.PtrTo(a.id.FirewallPolicy)
-
-	req := &computepb.InsertNetworkFirewallPolicyRequest{
-		Project:                a.id.Project,
-		FirewallPolicyResource: firewallPolicy,
+	req := &pb.CreateComputeNetworkFirewallPolicyRequest{
+		Parent:                         a.id.ParentString(),
+		ComputeNetworkFirewallPolicyId: a.id.FirewallPolicy,
+		ComputeNetworkFirewallPolicy:   resource,
 	}
-
-	op, err := a.gcpClient.Insert(ctx, req)
+	op, err := a.gcpClient.CreateComputeNetworkFirewallPolicy(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating ComputeNetworkFirewallPolicy %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating ComputeNetworkFirewallPolicy %s: %w", a.id, err)
 	}
-
-	if !op.Done() {
-		if err := op.Wait(ctx); err != nil {
-			return fmt.Errorf("waiting ComputeNetworkFirewallPolicy %s create failed: %w", a.id.String(), err)
-		}
-	}
-	log.V(2).Info("successfully created ComputeNetworkFirewallPolicy", "name", a.id.String())
-
-	created, err := a.get(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("getting created ComputeNetworkFirewallPolicy %s: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create ComputeNetworkFirewallPolicy %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created ComputeNetworkFirewallPolicy", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ComputeNetworkFirewallPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeNetworkFirewallPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating ComputeNetworkFirewallPolicy", "name", a.id.String())
+	log.V(2).Info("updating ComputeNetworkFirewallPolicy", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
 	desired := ComputeNetworkFirewallPolicySpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	desired.Name = direct.PtrTo(a.id.FirewallPolicy)
 
-	diffs, err := compareNetworkFirewallPolicy(ctx, a.actual, desired)
+	diffs, updateMask, err := compareComputeNetworkFirewallPolicy(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no diff detected for ComputeNetworkFirewallPolicy", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeNetworkFirewallPolicy resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
+	status := &krm.ComputeNetworkFirewallPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
 
-	resourceToPatch := proto.CloneOf(desired)
-	resourceToPatch.Name = nil
-	resourceToPatch.Fingerprint = a.actual.Fingerprint
-
-	req := &computepb.PatchNetworkFirewallPolicyRequest{
-		Project:                a.id.Project,
-		FirewallPolicy:         a.id.FirewallPolicy,
-		FirewallPolicyResource: resourceToPatch,
-	}
-
-	op, err := a.gcpClient.Patch(ctx, req)
+func compareComputeNetworkFirewallPolicy(ctx context.Context, actual, desired *pb.ComputeNetworkFirewallPolicy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeNetworkFirewallPolicySpec_v1beta1_FromProto, ComputeNetworkFirewallPolicySpec_v1beta1_ToProto)
 	if err != nil {
-		return fmt.Errorf("updating ComputeNetworkFirewallPolicy %s: %w", a.id.String(), err)
+		return nil, nil, err
 	}
-
-	if !op.Done() {
-		if err := op.Wait(ctx); err != nil {
-			return fmt.Errorf("waiting for ComputeNetworkFirewallPolicy %s update: %w", a.id.String(), err)
-		}
-	}
-	log.V(2).Info("successfully updated ComputeNetworkFirewallPolicy", "name", a.id.String())
-
-	updated, err := a.get(ctx)
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
-		return fmt.Errorf("getting ComputeNetworkFirewallPolicy %s: %w", a.id.String(), err)
+		return nil, nil, err
 	}
-
-	return a.updateStatus(ctx, updateOp, updated)
+	return diffs, updateMask, nil
 }
 
 func (a *ComputeNetworkFirewallPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
-		return nil, fmt.Errorf("ComputeNetworkFirewallPolicy %s not found", a.id.String())
+		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
+	obj := &krm.ComputeNetworkFirewallPolicy{}
 	mapCtx := &direct.MapContext{}
-	spec := ComputeNetworkFirewallPolicySpec_v1beta1_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(ComputeNetworkFirewallPolicySpec_v1beta1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
 
-	spec.ProjectRef = refs.ProjectRef{
-		External: a.id.Project,
-	}
-	spec.ResourceID = direct.PtrTo(a.id.FirewallPolicy)
-
-	obj := &krm.ComputeNetworkFirewallPolicy{}
-	obj.Spec = *spec
-	obj.Name = a.id.FirewallPolicy
-	obj.SetGroupVersionKind(krm.ComputeNetworkFirewallPolicyGVK)
-
-	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("converting to unstructured: %w", err)
+		return nil, err
 	}
-	return &unstructured.Unstructured{Object: u}, nil
+
+	u.Object = uObj
+	u.SetName(a.id.FirewallPolicy)
+	u.SetGroupVersionKind(krm.ComputeNetworkFirewallPolicyGVK)
+	return u, nil
 }
 
 func (a *ComputeNetworkFirewallPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeNetworkFirewallPolicy", "name", a.id.String())
-
-	req := &computepb.DeleteNetworkFirewallPolicyRequest{
-		Project:        a.id.Project,
-		FirewallPolicy: a.id.FirewallPolicy,
-	}
-
-	op, err := a.gcpClient.Delete(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting ComputeNetworkFirewallPolicy %s: %w", a.id.String(), err)
-	}
-
-	if !op.Done() {
-		if err := op.Wait(ctx); err != nil {
-			if direct.IsNotFound(err) {
-				return true, nil
-			}
-			return false, fmt.Errorf("waiting for deletion of ComputeNetworkFirewallPolicy %s: %w", a.id.String(), err)
-		}
-	}
-	log.V(2).Info("successfully deleted ComputeNetworkFirewallPolicy", "name", a.id.String())
-
+	log.V(2).Info("deletion not supported for ComputeNetworkFirewallPolicy, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func (a *ComputeNetworkFirewallPolicyAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.FirewallPolicy) error {
-	mapCtx := &direct.MapContext{}
-	status := ComputeNetworkFirewallPolicyStatus_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareNetworkFirewallPolicy(ctx context.Context, actual, desired *pb.FirewallPolicy) (*structuredreporting.Diff, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, ComputeNetworkFirewallPolicySpec_v1beta1_FromProto, ComputeNetworkFirewallPolicySpec_v1beta1_ToProto)
-	if err != nil {
-		return nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	diffs, _, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, err
-	}
-	return diffs, nil
 }

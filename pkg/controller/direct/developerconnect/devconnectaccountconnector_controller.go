@@ -17,9 +17,8 @@ package developerconnect
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/developerconnect/v1alpha1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
@@ -27,18 +26,18 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/developerconnect/apiv1"
 	pb "cloud.google.com/go/developerconnect/apiv1/developerconnectpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -46,118 +45,104 @@ func init() {
 }
 
 func NewAccountConnectorModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &modelDevConnectAccountConnector{config: *config}, nil
+	return &modelAccountConnector{config: *config}, nil
 }
 
-var _ directbase.Model = &modelDevConnectAccountConnector{}
+var _ directbase.Model = &modelAccountConnector{}
+var _ = strings.TrimPrefix
 
-type modelDevConnectAccountConnector struct {
+type modelAccountConnector struct {
 	config config.ControllerConfig
 }
 
-func (m *modelDevConnectAccountConnector) client(ctx context.Context, location string) (*gcp.Client, error) {
+func (m *modelAccountConnector) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.DevConnectAccountConnector{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.DevConnectAccountConnectorIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &AccountConnectorAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelAccountConnector) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.DevConnectAccountConnectorIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &AccountConnectorAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelAccountConnector) client(ctx context.Context) (*gcp.Client, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	// Add regional endpoint if region is specified
-	if location != "" && location != "global" {
-		endpoint := fmt.Sprintf("developerconnect.%s.rep.googleapis.com:443", location)
-		opts = append(opts, option.WithEndpoint(endpoint))
-	}
-
 	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building Developer Connect client: %w", err)
+		return nil, fmt.Errorf("building AccountConnector client: %w", err)
 	}
 	return gcpClient, err
 }
 
-func (m *modelDevConnectAccountConnector) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.DevConnectAccountConnector{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	location := obj.Spec.Location
-	if location == nil || *location == "" {
-		return nil, fmt.Errorf("location is required on DevConnectAccountConnector")
-	}
-
-	gcpClient, err := m.client(ctx, *location)
-	if err != nil {
-		return nil, err
-	}
-
-	return &DevConnectAccountConnectorAdapter{
-		id:        id.(*krm.DevConnectAccountConnectorIdentity),
-		gcpClient: gcpClient,
-		desired:   obj,
-		reader:    reader,
-	}, nil
-}
-
-func (m *modelDevConnectAccountConnector) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.DevConnectAccountConnectorIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		// Not recognized
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx, id.Location)
-	if err != nil {
-		return nil, err
-	}
-
-	return &DevConnectAccountConnectorAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-	}, nil
-}
-
-type DevConnectAccountConnectorAdapter struct {
+type AccountConnectorAdapter struct {
 	id        *krm.DevConnectAccountConnectorIdentity
 	gcpClient *gcp.Client
-	reader    client.Reader
 	desired   *krm.DevConnectAccountConnector
 	actual    *pb.AccountConnector
 }
 
-var _ directbase.Adapter = &DevConnectAccountConnectorAdapter{}
+var _ directbase.Adapter = &AccountConnectorAdapter{}
 
-func (a *DevConnectAccountConnectorAdapter) Find(ctx context.Context) (bool, error) {
+func (a *AccountConnectorAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting DevConnectAccountConnector", "name", a.id.String())
+	log.V(2).Info("getting AccountConnector", "name", a.id)
 
-	req := &pb.GetAccountConnectorRequest{Name: a.id.String()}
-	accountConnector, err := a.gcpClient.GetAccountConnector(ctx, req)
+	req := &pb.GetAccountConnectorRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetAccountConnector(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting DevConnectAccountConnector %q from GCP: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting AccountConnector %q: %w", a.id, err)
 	}
 
-	a.actual = accountConnector
+	a.actual = resp
 	return true, nil
 }
 
-func (a *DevConnectAccountConnectorAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *AccountConnectorAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating DevConnectAccountConnector", "name", a.id.String())
+	log.V(2).Info("creating AccountConnector", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
@@ -165,134 +150,94 @@ func (a *DevConnectAccountConnectorAdapter) Create(ctx context.Context, createOp
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-
-	// Merge labels in from the metadata labels
 	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
-	// Keep specified labels
-	for k, v := range desired.Spec.Labels {
-		if resource.Labels == nil {
-			resource.Labels = make(map[string]string)
-		}
-		resource.Labels[k] = v
-	}
 
 	req := &pb.CreateAccountConnectorRequest{
 		Parent:             a.id.ParentString(),
-		AccountConnector:   resource,
 		AccountConnectorId: a.id.ID(),
+		AccountConnector:   resource,
 	}
 	op, err := a.gcpClient.CreateAccountConnector(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating DevConnectAccountConnector %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating AccountConnector %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("DevConnectAccountConnector %s waiting creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create AccountConnector %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created DevConnectAccountConnector", "name", a.id.String())
+	log.V(2).Info("successfully created AccountConnector", "name", a.id)
 
-	// Fetch fully populated resource because create response might be incomplete
-	reqGet := &pb.GetAccountConnectorRequest{Name: a.id.String()}
-	created, err = a.gcpClient.GetAccountConnector(ctx, reqGet)
-	if err != nil {
-		return fmt.Errorf("getting fully-populated DevConnectAccountConnector %s after creation: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, createOp, created)
-}
-
-func (a *DevConnectAccountConnectorAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating DevConnectAccountConnector", "name", a.id.String())
-	mapCtx := &direct.MapContext{}
-
-	desired := a.desired.DeepCopy()
-	resource := DevConnectAccountConnectorSpec_ToProto(mapCtx, &desired.Spec)
+	status := &krm.DevConnectAccountConnectorStatus{}
+	status.ObservedState = DevConnectAccountConnectorObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
+}
 
-	// Merge labels in from the metadata labels
-	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
-	for k, v := range desired.Spec.Labels {
-		if resource.Labels == nil {
-			resource.Labels = make(map[string]string)
-		}
-		resource.Labels[k] = v
+func (a *AccountConnectorAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating AccountConnector", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := DevConnectAccountConnectorSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	resource.Name = a.id.String()
-
-	diffs, updateMask, err := compareAccountConnectorResource(ctx, a.actual, resource)
+	diffs, updateMask, err := compareAccountConnector(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	updated := a.actual
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-	} else {
-		log.V(2).Info("fields need update", "name", a.id.String(), "paths", updateMask.Paths)
+	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
+		desired.Name = a.id.String()
+
 		req := &pb.UpdateAccountConnectorRequest{
+			AccountConnector: desired,
 			UpdateMask:       updateMask,
-			AccountConnector: resource,
 		}
 		op, err := a.gcpClient.UpdateAccountConnector(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating DevConnectAccountConnector %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating AccountConnector %s: %w", a.id, err)
 		}
-		updated, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("DevConnectAccountConnector %s waiting update: %w", a.id.String(), err)
+			return fmt.Errorf("waiting update AccountConnector %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated DevConnectAccountConnector", "name", a.id.String())
+		log.V(2).Info("successfully updated AccountConnector", "name", a.id)
 
-		// Fetch fully populated resource because update response might be incomplete
-		reqGet := &pb.GetAccountConnectorRequest{Name: a.id.String()}
-		updated, err = a.gcpClient.GetAccountConnector(ctx, reqGet)
-		if err != nil {
-			return fmt.Errorf("getting fully-populated DevConnectAccountConnector %s after update: %w", a.id.String(), err)
+		status := &krm.DevConnectAccountConnectorStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = DevConnectAccountConnectorObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
 		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, updated)
+	return nil
 }
 
-func compareAccountConnectorResource(ctx context.Context, actual, desired *pb.AccountConnector) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	mapCtx := &direct.MapContext{}
-	spec := DevConnectAccountConnectorSpec_FromProto(mapCtx, actual)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
+func compareAccountConnector(ctx context.Context, actual, desired *pb.AccountConnector) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DevConnectAccountConnectorSpec_FromProto, DevConnectAccountConnectorSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	maskedActual := DevConnectAccountConnectorSpec_ToProto(mapCtx, spec)
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.Clone(desired).(*pb.AccountConnector)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
 	}
 	return diffs, updateMask, nil
 }
 
-func (a *DevConnectAccountConnectorAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.AccountConnector) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.DevConnectAccountConnectorStatus{}
-	status.ObservedState = DevConnectAccountConnectorObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *DevConnectAccountConnectorAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *AccountConnectorAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -300,17 +245,13 @@ func (a *DevConnectAccountConnectorAdapter) Export(ctx context.Context) (*unstru
 
 	obj := &krm.DevConnectAccountConnector{}
 	mapCtx := &direct.MapContext{}
-	spec := DevConnectAccountConnectorSpec_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(DevConnectAccountConnectorSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	if spec == nil {
-		spec = &krm.DevConnectAccountConnectorSpec{}
-	}
-	obj.Spec = *spec
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = &a.id.Location
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Account_connector)
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.ID())
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -318,32 +259,32 @@ func (a *DevConnectAccountConnectorAdapter) Export(ctx context.Context) (*unstru
 	}
 
 	u.Object = uObj
-	u.SetName(a.id.Account_connector)
+	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.DevConnectAccountConnectorGVK)
-
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
-func (a *DevConnectAccountConnectorAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *AccountConnectorAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting DevConnectAccountConnector", "name", a.id.String())
+	log.V(2).Info("deleting AccountConnector", "name", a.id)
 
-	req := &pb.DeleteAccountConnectorRequest{Name: a.id.String()}
+	req := &pb.DeleteAccountConnectorRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteAccountConnector(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent DevConnectAccountConnector, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting DevConnectAccountConnector %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting AccountConnector %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted AccountConnector", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete DevConnectAccountConnector %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete AccountConnector %s: %w", a.id, err)
+		}
 	}
-	log.V(2).Info("successfully deleted DevConnectAccountConnector", "name", a.id.String())
 	return true, nil
 }

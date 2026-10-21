@@ -17,9 +17,6 @@ package visionai
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/visionai/apiv1"
-	pb "cloud.google.com/go/visionai/apiv1/visionaipb"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/visionai/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -27,101 +24,98 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/visionai/apiv1"
+	pb "cloud.google.com/go/visionai/apiv1/visionaipb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.VisionAIApplicationGVK, NewModel)
+	registry.RegisterModel(krm.VisionAIApplicationGVK, NewApplicationModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewApplicationModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelApplication{config: *config}, nil
 }
 
-type model struct {
+var _ directbase.Model = &modelApplication{}
+var _ = strings.TrimPrefix
+
+type modelApplication struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.AppPlatformClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewAppPlatformRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building AppPlatform client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelApplication) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.VisionAIApplication{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.VisionAIApplicationIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	identity, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := VisionAIApplicationSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desiredPb.Labels = label.NewGCPLabelsFromK8sLabels(obj.GetLabels())
-
 	return &ApplicationAdapter{
-		id:        identity.(*krm.VisionAIApplicationIdentity),
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desiredPb,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelApplication) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.VisionAIApplicationIdentity{}
 	if err := id.FromExternal(url); err != nil {
 		return nil, nil
 	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	return &ApplicationAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
+func (m *modelApplication) client(ctx context.Context) (*gcp.AppPlatformClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewAppPlatformRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Application client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type ApplicationAdapter struct {
 	id        *krm.VisionAIApplicationIdentity
 	gcpClient *gcp.AppPlatformClient
-	desired   *pb.Application
+	desired   *krm.VisionAIApplication
 	actual    *pb.Application
 }
 
@@ -129,100 +123,118 @@ var _ directbase.Adapter = &ApplicationAdapter{}
 
 func (a *ApplicationAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting VisionAIApplication", "name", a.id.String())
+	log.V(2).Info("getting Application", "name", a.id)
 
-	req := &pb.GetApplicationRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetApplication(ctx, req)
+	req := &pb.GetApplicationRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetApplication(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting VisionAIApplication %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Application %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
 func (a *ApplicationAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("creating VisionAIApplication", "id", fqn)
+	log.V(2).Info("creating Application", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := VisionAIApplicationSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateApplicationRequest{
 		Parent:        a.id.ParentString(),
-		Application:   a.desired,
 		ApplicationId: a.id.Application,
+		Application:   resource,
 	}
 	op, err := a.gcpClient.CreateApplication(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating VisionAIApplication %s: %w", fqn, err)
+		return fmt.Errorf("creating Application %s: %w", a.id, err)
 	}
-	if _, err := op.Wait(ctx); err != nil {
-		return fmt.Errorf("waiting VisionAIApplication %s creation: %w", fqn, err)
-	}
-	log.V(2).Info("successfully created VisionAIApplication", "name", fqn)
-
-	created, err := a.gcpClient.GetApplication(ctx, &pb.GetApplicationRequest{Name: fqn})
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("getting created VisionAIApplication %s: %w", fqn, err)
+		return fmt.Errorf("waiting create Application %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created Application", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.VisionAIApplicationStatus{}
+	status.ObservedState = VisionAIApplicationObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ApplicationAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("updating VisionAIApplication", "name", fqn)
+	log.V(2).Info("updating Application", "name", a.id)
 
-	diffs, updateMask, err := compareVisionAIApplication(ctx, updateOp.GetUnstructured(), a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := VisionAIApplicationSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareApplication(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desiredCopy := proto.Clone(a.desired).(*pb.Application)
-		desiredCopy.Name = fqn
+		desired.Name = a.id.String()
 
 		req := &pb.UpdateApplicationRequest{
-			Application: desiredCopy,
+			Application: desired,
 			UpdateMask:  updateMask,
 		}
-
 		op, err := a.gcpClient.UpdateApplication(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating VisionAIApplication %s: %w", fqn, err)
+			return fmt.Errorf("updating Application %s: %w", a.id, err)
 		}
-		if _, err := op.Wait(ctx); err != nil {
-			return fmt.Errorf("waiting VisionAIApplication %s update: %w", fqn, err)
-		}
-
-		latest, err = a.gcpClient.GetApplication(ctx, &pb.GetApplicationRequest{Name: fqn})
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("getting updated VisionAIApplication %s: %w", fqn, err)
+			return fmt.Errorf("waiting update Application %s: %w", a.id, err)
 		}
+		log.V(2).Info("successfully updated Application", "name", a.id)
+
+		status := &krm.VisionAIApplicationStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = VisionAIApplicationObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *ApplicationAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Application) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.VisionAIApplicationStatus{}
-	status.ObservedState = VisionAIApplicationObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func compareApplication(ctx context.Context, actual, desired *pb.Application) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, VisionAIApplicationSpec_FromProto, VisionAIApplicationSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	externalRef := latest.GetName()
-	status.ExternalRef = &externalRef
-
-	return op.UpdateStatus(ctx, status, nil)
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *ApplicationAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -237,10 +249,9 @@ func (a *ApplicationAdapter) Export(ctx context.Context) (*unstructured.Unstruct
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Application)
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = direct.LazyPtr(a.id.Location)
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Application)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -250,75 +261,30 @@ func (a *ApplicationAdapter) Export(ctx context.Context) (*unstructured.Unstruct
 	u.Object = uObj
 	u.SetName(a.id.Application)
 	u.SetGroupVersionKind(krm.VisionAIApplicationGVK)
-
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
 func (a *ApplicationAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("deleting VisionAIApplication", "name", fqn)
+	log.V(2).Info("deleting Application", "name", a.id)
 
-	req := &pb.DeleteApplicationRequest{Name: fqn}
+	req := &pb.DeleteApplicationRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteApplication(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent VisionAIApplication, assuming it was already deleted", "name", fqn)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting VisionAIApplication %s: %w", fqn, err)
+		return false, fmt.Errorf("deleting Application %s: %w", a.id, err)
 	}
-	if err := op.Wait(ctx); err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
+	log.V(2).Info("successfully deleted Application", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Application %s: %w", a.id, err)
 		}
-		return false, fmt.Errorf("waiting VisionAIApplication %s deletion: %w", fqn, err)
 	}
-	log.V(2).Info("successfully deleted VisionAIApplication", "name", fqn)
-
 	return true, nil
-}
-
-func compareVisionAIApplication(ctx context.Context, u *unstructured.Unstructured, actual, desired *pb.Application) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, VisionAIApplicationSpec_FromProto, VisionAIApplicationSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	maskedActual.Labels = actual.Labels
-
-	clonedDesired := proto.Clone(desired).(*pb.Application)
-
-	if u != nil && actual.GetUpdateTime() != nil {
-		obj := &krm.VisionAIApplication{}
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err == nil {
-			ready := false
-			for _, condition := range obj.Status.Conditions {
-				if condition.Type == "Ready" && condition.Status == "True" {
-					ready = true
-				}
-			}
-			obsGen, _, _ := unstructured.NestedInt64(u.Object, "status", "observedGeneration")
-			mapCtx := &direct.MapContext{}
-			gcpUpdateTime := direct.StringTimestamp_FromProto(mapCtx, actual.GetUpdateTime())
-			if ready && gcpUpdateTime != nil && obj.Status.ObservedState != nil && obj.Status.ObservedState.UpdateTime != nil &&
-				*gcpUpdateTime == *obj.Status.ObservedState.UpdateTime &&
-				u.GetGeneration() == obsGen {
-				if clonedDesired.ApplicationConfigs != nil && clonedDesired.ApplicationConfigs.EventDeliveryConfig != nil {
-					if maskedActual.ApplicationConfigs == nil {
-						maskedActual.ApplicationConfigs = &pb.ApplicationConfigs{}
-					}
-					if maskedActual.ApplicationConfigs.EventDeliveryConfig == nil {
-						maskedActual.ApplicationConfigs.EventDeliveryConfig = clonedDesired.ApplicationConfigs.EventDeliveryConfig
-					}
-				}
-			}
-		}
-	}
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

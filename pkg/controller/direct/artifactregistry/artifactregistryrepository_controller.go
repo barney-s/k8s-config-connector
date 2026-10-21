@@ -17,214 +17,217 @@ package artifactregistry
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	gcp "cloud.google.com/go/artifactregistry/apiv1"
-	pb "cloud.google.com/go/artifactregistry/apiv1/artifactregistrypb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/artifactregistry/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	common "github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/artifactregistry/apiv1"
+	pb "cloud.google.com/go/artifactregistry/apiv1/artifactregistrypb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.ArtifactRegistryRepositoryGVK, NewArtifactRegistryRepositoryModel)
+	registry.RegisterModel(krm.ArtifactRegistryRepositoryGVK, NewRepositoryModel)
 }
 
-func NewArtifactRegistryRepositoryModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &modelArtifactRegistryRepository{config: *config}, nil
+func NewRepositoryModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelRepository{config: *config}, nil
 }
 
-var _ directbase.Model = &modelArtifactRegistryRepository{}
+var _ directbase.Model = &modelRepository{}
+var _ = strings.TrimPrefix
 
-type modelArtifactRegistryRepository struct {
+type modelRepository struct {
 	config config.ControllerConfig
 }
 
-func (m *modelArtifactRegistryRepository) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building ArtifactRegistryRepository client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *modelArtifactRegistryRepository) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelRepository) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ArtifactRegistryRepository{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
+	}
+	id := i.(*krm.ArtifactRegistryRepositoryIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &ArtifactRegistryRepositoryAdapter{
-		id:        id.(*krm.ArtifactRegistryRepositoryIdentity),
+	return &RepositoryAdapter{
+		id:        id,
 		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *modelArtifactRegistryRepository) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelRepository) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.ArtifactRegistryRepositoryIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &ArtifactRegistryRepositoryAdapter{
+	return &RepositoryAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type ArtifactRegistryRepositoryAdapter struct {
+func (m *modelRepository) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Repository client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type RepositoryAdapter struct {
 	id        *krm.ArtifactRegistryRepositoryIdentity
 	gcpClient *gcp.Client
 	desired   *krm.ArtifactRegistryRepository
 	actual    *pb.Repository
 }
 
-var _ directbase.Adapter = &ArtifactRegistryRepositoryAdapter{}
+var _ directbase.Adapter = &RepositoryAdapter{}
 
-func (a *ArtifactRegistryRepositoryAdapter) Find(ctx context.Context) (bool, error) {
+func (a *RepositoryAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting ArtifactRegistryRepository", "name", a.id)
+	log.V(2).Info("getting Repository", "name", a.id)
 
-	req := &pb.GetRepositoryRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetRepository(ctx, req)
+	req := &pb.GetRepositoryRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetRepository(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting ArtifactRegistryRepository %q: %w", a.id, err)
+		return false, fmt.Errorf("getting Repository %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *ArtifactRegistryRepositoryAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *RepositoryAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating ArtifactRegistryRepository", "name", a.id)
-
-	parent := fmt.Sprintf("projects/%s/locations/%s", a.id.Project, a.id.Location)
-	repositoryID := a.id.Repository
-
+	log.V(2).Info("creating Repository", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	desiredPb := ArtifactRegistryRepositorySpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+
+	desired := a.desired.DeepCopy()
+	resource := ArtifactRegistryRepositorySpec_v1beta1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	desiredPb.Labels = label.GCPLabels(a.desired)
-	populateCleanupPolicyDefaults(desiredPb)
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateRepositoryRequest{
-		Parent:       parent,
-		Repository:   desiredPb,
-		RepositoryId: repositoryID,
+		Parent:       a.id.ParentString(),
+		RepositoryId: a.id.Repository,
+		Repository:   resource,
 	}
 	op, err := a.gcpClient.CreateRepository(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating ArtifactRegistryRepository %s: %w", a.id, err)
+		return fmt.Errorf("creating Repository %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("ArtifactRegistryRepository %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create Repository %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created ArtifactRegistryRepository", "name", a.id)
+	log.V(2).Info("successfully created Repository", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ArtifactRegistryRepositoryStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *ArtifactRegistryRepositoryAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *RepositoryAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating ArtifactRegistryRepository", "name", a.id.String())
+	log.V(2).Info("updating Repository", "name", a.id)
 
-	diffs, updateMask, desiredPb, err := compareRepository(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := ArtifactRegistryRepositorySpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareRepository(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
+		desired.Name = a.id.String()
+
 		req := &pb.UpdateRepositoryRequest{
-			Repository: desiredPb,
+			Repository: desired,
 			UpdateMask: updateMask,
 		}
-		req.Repository.Name = a.id.String()
-
-		updated, err := a.gcpClient.UpdateRepository(ctx, req)
+		op, err := a.gcpClient.UpdateRepository(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating ArtifactRegistryRepository %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating Repository %s: %w", a.id, err)
 		}
-		latest = updated
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Repository %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Repository", "name", a.id)
+
+		status := &krm.ArtifactRegistryRepositoryStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *ArtifactRegistryRepositoryAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Repository) error {
-	mapCtx := &direct.MapContext{}
-	status := ArtifactRegistryRepositoryStatus_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func compareRepository(ctx context.Context, actual, desired *pb.Repository) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ArtifactRegistryRepositorySpec_v1beta1_FromProto, ArtifactRegistryRepositorySpec_v1beta1_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	// Unusually, status.name is defined only as the Repository portion (last component) of the identity
-	// path (e.g. "arrepository-xxx" instead of "projects/xxx/locations/xxx/repositories/arrepository-xxx").
-	// We override status.Name here to preserve backward compatibility.
-	if status.Name != nil && *status.Name != "" {
-		s := *status.Name
-		if idx := strings.LastIndex(s, "/"); idx != -1 {
-			s = s[idx+1:]
-		}
-		status.Name = &s
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
 	}
-
-	return op.UpdateStatus(ctx, status, nil)
+	return diffs, updateMask, nil
 }
 
-func (a *ArtifactRegistryRepositoryAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *RepositoryAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -236,7 +239,6 @@ func (a *ArtifactRegistryRepositoryAdapter) Export(ctx context.Context) (*unstru
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
 	obj.Spec.Location = a.id.Location
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.Repository)
 
@@ -248,81 +250,30 @@ func (a *ArtifactRegistryRepositoryAdapter) Export(ctx context.Context) (*unstru
 	u.Object = uObj
 	u.SetName(a.id.Repository)
 	u.SetGroupVersionKind(krm.ArtifactRegistryRepositoryGVK)
-
-	export.SetProjectID(u, a.id.Project)
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
-func (a *ArtifactRegistryRepositoryAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *RepositoryAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ArtifactRegistryRepository", "name", a.id)
+	log.V(2).Info("deleting Repository", "name", a.id)
 
-	req := &pb.DeleteRepositoryRequest{Name: a.id.String()}
+	req := &pb.DeleteRepositoryRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteRepository(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent ArtifactRegistryRepository, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting ArtifactRegistryRepository %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting Repository %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully deleted Repository", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("ArtifactRegistryRepository %s waiting deletion: %w", a.id, err)
-	}
-	log.V(2).Info("successfully deleted ArtifactRegistryRepository", "name", a.id)
-	return true, nil
-}
-
-func populateCleanupPolicyDefaults(obj *pb.Repository) {
-	for _, policy := range obj.CleanupPolicies {
-		if cond := policy.GetCondition(); cond != nil {
-			if cond.TagState == nil || *cond.TagState == pb.CleanupPolicyCondition_TAG_STATE_UNSPECIFIED {
-				cond.TagState = direct.PtrTo(pb.CleanupPolicyCondition_ANY)
-			}
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Repository %s: %w", a.id, err)
 		}
 	}
-}
-
-func compareRepository(ctx context.Context, actual *pb.Repository, desiredKRM *krm.ArtifactRegistryRepository) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, *pb.Repository, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, ArtifactRegistryRepositorySpec_v1beta1_FromProto, ArtifactRegistryRepositorySpec_v1beta1_ToProto)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	maskedActual.Name = actual.Name
-	maskedActual.Labels = actual.Labels
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := ArtifactRegistryRepositorySpec_v1beta1_ToProto(mapCtx, &desiredKRM.Spec)
-	if mapCtx.Err() != nil {
-		return nil, nil, nil, mapCtx.Err()
-	}
-	desiredPb.Name = actual.Name
-	desiredPb.Labels = label.GCPLabels(desiredKRM)
-
-	populateCleanupPolicyDefaults(desiredPb)
-	populateCleanupPolicyDefaults(maskedActual)
-
-	if desiredKRM.Spec.CleanupPolicyDryRun == nil {
-		desiredPb.CleanupPolicyDryRun = actual.CleanupPolicyDryRun
-	}
-	if desiredKRM.Spec.CleanupPolicies == nil {
-		desiredPb.CleanupPolicies = maskedActual.CleanupPolicies
-	}
-
-	forDiff := proto.Clone(desiredPb).(*pb.Repository)
-	if forDiff.Mode == pb.Repository_MODE_UNSPECIFIED {
-		forDiff.Mode = pb.Repository_STANDARD_REPOSITORY
-	}
-	if maskedActual.Mode == pb.Repository_MODE_UNSPECIFIED {
-		maskedActual.Mode = pb.Repository_STANDARD_REPOSITORY
-	}
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, forDiff.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return diffs, updateMask, desiredPb, nil
+	return true, nil
 }

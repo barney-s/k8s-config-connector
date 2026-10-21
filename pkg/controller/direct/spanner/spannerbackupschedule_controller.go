@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,14 +17,15 @@ package spanner
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/spanner/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/spanner/admin/database/apiv1"
 	spannerbackupschedulespb "cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
@@ -33,7 +34,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
 
@@ -46,45 +46,25 @@ func NewBackupScheduleModel(ctx context.Context, config *config.ControllerConfig
 }
 
 var _ directbase.Model = &modelBackupSchedule{}
-
-var outputOnlyFields = []string{"name", "update_time", "spec.cron_spec.creation_window", "spec.cron_spec.time_zone", "full_backup_spec", "incremental_backup_spec"}
-var defaultOnEmptyFields = []string{"encryption_config.encryption_type"}
+var _ = strings.TrimPrefix
 
 type modelBackupSchedule struct {
 	config config.ControllerConfig
 }
 
-func (m *modelBackupSchedule) client(ctx context.Context) (*gcp.DatabaseAdminClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewDatabaseAdminRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building BackupSchedule client: %w", err)
-	}
-	return gcpClient, err
-}
-
 func (m *modelBackupSchedule) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.SpannerBackupSchedule{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	id := &krm.BackupScheduleIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	id, err := krm.NewBackupScheduleIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get spannerbackupschedules GCP client
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
@@ -101,6 +81,20 @@ func (m *modelBackupSchedule) AdapterForURL(ctx context.Context, url string) (di
 	return nil, nil
 }
 
+func (m *modelBackupSchedule) client(ctx context.Context) (*gcp.DatabaseAdminClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewDatabaseAdminRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building BackupSchedule client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type BackupScheduleAdapter struct {
 	id        *krm.BackupScheduleIdentity
 	gcpClient *gcp.DatabaseAdminClient
@@ -110,16 +104,14 @@ type BackupScheduleAdapter struct {
 
 var _ directbase.Adapter = &BackupScheduleAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *BackupScheduleAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting BackupSchedule", "name", a.id)
 
-	req := &spannerbackupschedulespb.GetBackupScheduleRequest{Name: a.id.String()}
-	backupschedulepb, err := a.gcpClient.GetBackupSchedule(ctx, req)
+	req := &spannerbackupschedulespb.GetBackupScheduleRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBackupSchedule(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -127,11 +119,10 @@ func (a *BackupScheduleAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting BackupSchedule %q: %w", a.id, err)
 	}
 
-	a.actual = backupschedulepb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *BackupScheduleAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating BackupSchedule", "name", a.id)
@@ -145,8 +136,8 @@ func (a *BackupScheduleAdapter) Create(ctx context.Context, createOp *directbase
 
 	req := &spannerbackupschedulespb.CreateBackupScheduleRequest{
 		Parent:           a.id.Parent().String(),
-		BackupSchedule:   resource,
 		BackupScheduleId: a.id.ID(),
+		BackupSchedule:   resource,
 	}
 	created, err := a.gcpClient.CreateBackupSchedule(ctx, req)
 	if err != nil {
@@ -163,70 +154,61 @@ func (a *BackupScheduleAdapter) Create(ctx context.Context, createOp *directbase
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *BackupScheduleAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating BackupSchedule", "name", a.id)
-	mapCtx := &direct.MapContext{}
 
-	desiredPb := SpannerBackupScheduleSpec_ToProto(mapCtx, &a.desired.DeepCopy().Spec)
+	mapCtx := &direct.MapContext{}
+	desired := SpannerBackupScheduleSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	paths, err := common.CompareProtoMessage(desiredPb, a.actual, common.BasicDiff)
+	diffs, updateMask, err := compareBackupSchedule(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	// Remove output only fields from paths
-	paths = paths.Delete(outputOnlyFields...)
+		desired.Name = a.id.String()
 
-	// Check default-on-empty fields
-	if desiredPb.EncryptionConfig == nil {
-		paths = paths.Delete(defaultOnEmptyFields...)
-	}
+		req := &spannerbackupschedulespb.UpdateBackupScheduleRequest{
+			BackupSchedule: desired,
+			UpdateMask:     updateMask,
+		}
+		updated, err := a.gcpClient.UpdateBackupSchedule(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating BackupSchedule %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated BackupSchedule", "name", a.id)
 
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
 		status := &krm.SpannerBackupScheduleStatus{}
-		status.ObservedState = SpannerBackupScheduleObservedState_FromProto(mapCtx, a.actual)
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = SpannerBackupScheduleObservedState_FromProto(mapCtx, updated)
 		if mapCtx.Err() != nil {
 			return mapCtx.Err()
 		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
 		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-	for path := range paths {
-		report.AddField(path, nil, nil)
-	}
-	structuredreporting.ReportDiff(ctx, report)
-
-	updateMask := &fieldmaskpb.FieldMask{
-		Paths: sets.List(paths),
-	}
-
-	desiredPb.Name = a.id.String()
-	req := &spannerbackupschedulespb.UpdateBackupScheduleRequest{
-		UpdateMask:     updateMask,
-		BackupSchedule: desiredPb,
-	}
-	updated, err := a.gcpClient.UpdateBackupSchedule(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating BackupSchedule %s: %w", a.id, err)
-	}
-	log.V(2).Info("successfully updated BackupSchedule", "name", a.id)
-
-	status := &krm.SpannerBackupScheduleStatus{}
-	status.ObservedState = SpannerBackupScheduleObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func compareBackupSchedule(ctx context.Context, actual, desired *spannerbackupschedulespb.BackupSchedule) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, SpannerBackupScheduleSpec_FromProto, SpannerBackupScheduleSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
 func (a *BackupScheduleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -239,31 +221,29 @@ func (a *BackupScheduleAdapter) Export(ctx context.Context) (*unstructured.Unstr
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.DatabaseRef = &krm.SpannerDatabaseRef{External: a.id.Parent().ProjectID}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.actual.Name)
-	u.SetGroupVersionKind(krm.SpannerBackupScheduleGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.SpannerBackupScheduleGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *BackupScheduleAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting BackupSchedule", "name", a.id)
 
-	req := &spannerbackupschedulespb.DeleteBackupScheduleRequest{Name: a.id.String()}
+	req := &spannerbackupschedulespb.DeleteBackupScheduleRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteBackupSchedule(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent BackupSchedule, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting BackupSchedule %s: %w", a.id, err)
 	}

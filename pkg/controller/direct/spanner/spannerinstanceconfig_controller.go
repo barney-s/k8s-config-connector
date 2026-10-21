@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,34 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.spanner.admin.instance.v1.InstanceAdmin
-// proto.message: google.spanner.admin.instance.v1.InstanceConfig
-// crd.type: SpannerInstanceConfig
-// crd.version: v1alpha1
-
 package spanner
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	refv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
-
-	instance "cloud.google.com/go/spanner/admin/instance/apiv1"
-	instancepb "cloud.google.com/go/spanner/admin/instance/apiv1/instancepb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/spanner/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/spanner/admin/instance/apiv1"
+	instancepb "cloud.google.com/go/spanner/admin/instance/apiv1/instancepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -47,190 +45,182 @@ func init() {
 }
 
 func NewInstanceConfigModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &instanceConfigModel{config: config}, nil
+	return &modelInstanceConfig{config: *config}, nil
 }
 
-var _ directbase.Model = &instanceConfigModel{}
+var _ directbase.Model = &modelInstanceConfig{}
+var _ = strings.TrimPrefix
 
-type instanceConfigModel struct {
-	config *config.ControllerConfig
+type modelInstanceConfig struct {
+	config config.ControllerConfig
 }
 
-func (m *instanceConfigModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelInstanceConfig) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.SpannerInstanceConfig{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.InstanceConfigIdentity{}
 
-	id, err := krm.NewInstanceConfigIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// Get spanner GCP client
-	gcpClient, err := newGCPClient(ctx, m.config)
-	if err != nil {
-		return nil, err
-	}
-	instanceConfigClient, err := gcpClient.newInstanceAdminClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &instanceConfigAdapter{
-		gcpClient: instanceConfigClient,
+	return &InstanceConfigAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *instanceConfigModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelInstanceConfig) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type instanceConfigAdapter struct {
-	gcpClient *instance.InstanceAdminClient
+func (m *modelInstanceConfig) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building InstanceConfig client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type InstanceConfigAdapter struct {
 	id        *krm.InstanceConfigIdentity
+	gcpClient *gcp.Client
 	desired   *krm.SpannerInstanceConfig
 	actual    *instancepb.InstanceConfig
 }
 
-var _ directbase.Adapter = &instanceConfigAdapter{}
+var _ directbase.Adapter = &InstanceConfigAdapter{}
 
-func (a *instanceConfigAdapter) Find(ctx context.Context) (bool, error) {
+func (a *InstanceConfigAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting spanner instance config", "name", a.id)
+	log.V(2).Info("getting InstanceConfig", "name", a.id)
 
-	req := &instancepb.GetInstanceConfigRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetInstanceConfig(ctx, req)
+	req := &instancepb.GetInstanceConfigRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetInstanceConfig(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting spanner instance config %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting InstanceConfig %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *instanceConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *InstanceConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating spanner instance config", "name", a.id)
-
+	log.V(2).Info("creating InstanceConfig", "name", a.id)
 	mapCtx := &direct.MapContext{}
+
 	desired := a.desired.DeepCopy()
 	resource := SpannerInstanceConfigSpec_ToProto(mapCtx, &desired.Spec)
-	resource.Name = a.id.String()
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &instancepb.CreateInstanceConfigRequest{
 		Parent:           a.id.Parent().String(),
 		InstanceConfigId: a.id.ID(),
 		InstanceConfig:   resource,
-		// An option to validate, but not actually execute, a request,
-		// and provide the same response.
-		// todo: shall we support this field in spec?
-		ValidateOnly: false,
 	}
 	op, err := a.gcpClient.CreateInstanceConfig(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating spanner instance config %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating InstanceConfig %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("spanner instance config %s waiting creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create InstanceConfig %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created spanner instance config in gcp", "name", a.id)
+	log.V(2).Info("successfully created InstanceConfig", "name", a.id)
 
 	status := &krm.SpannerInstanceConfigStatus{}
 	status.ObservedState = SpannerInstanceConfigObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// SpannerInstanceConfig supports update.
-func (a *instanceConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *InstanceConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating spanner instance config", "name", a.id)
+	log.V(2).Info("updating InstanceConfig", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	desired := a.desired.DeepCopy()
-	resource := SpannerInstanceConfigSpec_ToProto(mapCtx, &desired.Spec)
-	resource.Name = a.id.String()
-
-	// Check the spec for changes
-	// Only display_name and labels can be updated.
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-	updateMask := &fieldmaskpb.FieldMask{}
-	if !reflect.DeepEqual(resource.DisplayName, a.actual.DisplayName) {
-		report.AddField("display_name", a.actual.DisplayName, resource.DisplayName)
-		updateMask.Paths = append(updateMask.Paths, "display_name")
-	}
-	if !reflect.DeepEqual(resource.Labels, a.actual.Labels) {
-		report.AddField("labels", a.actual.Labels, resource.Labels)
-		updateMask.Paths = append(updateMask.Paths, "labels")
-	}
-	if len(updateMask.Paths) == 0 {
-		log.V(2).Info("no field to update", "name", a.id)
-		return nil
-	}
-
-	structuredreporting.ReportDiff(ctx, report)
-
-	// Update
-	req := &instancepb.UpdateInstanceConfigRequest{
-		InstanceConfig: resource,
-		UpdateMask:     updateMask,
-		// An option to validate, but not actually execute, a request,
-		// and provide the same response.
-		// todo: shall we support this field in spec?
-		ValidateOnly: false,
-	}
-	_, err := a.gcpClient.UpdateInstanceConfig(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating spanner instance config %s: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully updated spanner instance config in gcp", "name", a.id)
-
-	// Update status
-	status := &krm.SpannerInstanceConfigStatus{}
-	status.ObservedState = SpannerInstanceConfigObservedState_FromProto(mapCtx, a.actual)
+	desired := SpannerInstanceConfigSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	return updateOp.UpdateStatus(ctx, status, nil)
-}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-func (a *instanceConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting spanner instance config", "name", a.id)
-
-	req := &instancepb.DeleteInstanceConfigRequest{
-		Name: a.id.String(),
-		// An option to validate, but not actually execute, a request,
-		// and provide the same response.
-		// todo: shall we support this field in spec?
-		ValidateOnly: false,
-	}
-	err := a.gcpClient.DeleteInstanceConfig(ctx, req)
+	diffs, updateMask, err := compareInstanceConfig(ctx, a.actual, desired)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent spanner instance config, assuming it was already deleted", "name", a.id)
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting spanner instance config %s: %w", a.id.String(), err)
+		return err
 	}
-	log.V(2).Info("successfully deleted spanner instance config", "name", a.id)
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	return true, nil
+		desired.Name = a.id.String()
+
+		req := &instancepb.UpdateInstanceConfigRequest{
+			InstanceConfig: desired,
+			UpdateMask:     updateMask,
+		}
+		op, err := a.gcpClient.UpdateInstanceConfig(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating InstanceConfig %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update InstanceConfig %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated InstanceConfig", "name", a.id)
+
+		status := &krm.SpannerInstanceConfigStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = SpannerInstanceConfigObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *instanceConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareInstanceConfig(ctx context.Context, actual, desired *instancepb.InstanceConfig) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, SpannerInstanceConfigSpec_FromProto, SpannerInstanceConfigSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *InstanceConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -242,15 +232,40 @@ func (a *instanceConfigAdapter) Export(ctx context.Context) (*unstructured.Unstr
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ProjectRef = &refv1beta1.ProjectRef{External: a.id.Parent().ProjectID}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.SpannerInstanceConfigGVK)
-
-	u.Object = uObj
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
+}
+
+func (a *InstanceConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deleting InstanceConfig", "name", a.id)
+
+	req := &instancepb.DeleteInstanceConfigRequest{
+		Name: a.id.String(),
+	}
+	op, err := a.gcpClient.DeleteInstanceConfig(ctx, req)
+	if err != nil {
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deleting InstanceConfig %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully deleted InstanceConfig", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete InstanceConfig %s: %w", a.id, err)
+		}
+	}
+	return true, nil
 }

@@ -12,28 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.discoveryengine.v1.ControlService
-// proto.message: google.cloud.discoveryengine.v1.Control
-// crd.type: DiscoveryEngineControl
-// crd.version: v1alpha1
-
 package discoveryengine
 
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	gcp "cloud.google.com/go/discoveryengine/apiv1"
-	pb "cloud.google.com/go/discoveryengine/apiv1/discoveryenginepb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/discoveryengine/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -43,6 +26,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/discoveryengine/apiv1"
+	pb "cloud.google.com/go/discoveryengine/apiv1/discoveryenginepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -50,201 +43,183 @@ func init() {
 }
 
 func NewControlModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &controlModel{config: *config}, nil
+	return &modelControl{config: *config}, nil
 }
 
-var _ directbase.Model = &controlModel{}
+var _ directbase.Model = &modelControl{}
+var _ = strings.TrimPrefix
 
-type controlModel struct {
+type modelControl struct {
 	config config.ControllerConfig
 }
 
-func (m *controlModel) client(ctx context.Context, projectID string) (*gcp.ControlClient, error) {
-	var opts []option.ClientOption
-
-	config := m.config
-
-	if !config.UserProjectOverride || config.BillingProject == "" {
-		config.UserProjectOverride = true
-		config.BillingProject = projectID
+func (m *modelControl) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.DiscoveryEngineControl{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.DiscoveryEngineControlIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	opts, err := config.RESTClientOptions()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ControlAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelControl) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.DiscoveryEngineControlIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ControlAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelControl) client(ctx context.Context) (*gcp.ControlClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
 	gcpClient, err := gcp.NewControlRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building discoveryengine control client: %w", err)
+		return nil, fmt.Errorf("building Control client: %w", err)
 	}
-
 	return gcpClient, err
 }
 
-func (m *controlModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.DiscoveryEngineControl{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	identity, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id := identity.(*krm.DiscoveryEngineControlIdentity)
-
-	mapCtx := &direct.MapContext{}
-	desired := DiscoveryEngineControlSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	gcpClient, err := m.client(ctx, id.Project)
-	if err != nil {
-		return nil, err
-	}
-
-	return &controlAdapter{
-		gcpClient: gcpClient,
-		id:        id,
-		desired:   desired,
-	}, nil
-}
-
-func (m *controlModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	log := klog.FromContext(ctx)
-	if strings.HasPrefix(url, "//discoveryengine.googleapis.com/") {
-		trimmed := strings.TrimPrefix(url, "//discoveryengine.googleapis.com/")
-		id := &krm.DiscoveryEngineControlIdentity{}
-		if err := id.FromExternal(trimmed); err != nil {
-			log.V(2).Error(err, "url did not match DiscoveryEngineControl format", "url", url)
-			return nil, nil
-		}
-		gcpClient, err := m.client(ctx, id.Project)
-		if err != nil {
-			return nil, err
-		}
-		return &controlAdapter{
-			gcpClient: gcpClient,
-			id:        id,
-		}, nil
-	}
-	return nil, nil
-}
-
-type controlAdapter struct {
-	gcpClient *gcp.ControlClient
+type ControlAdapter struct {
 	id        *krm.DiscoveryEngineControlIdentity
-	desired   *pb.Control
+	gcpClient *gcp.ControlClient
+	desired   *krm.DiscoveryEngineControl
 	actual    *pb.Control
 }
 
-var _ directbase.Adapter = &controlAdapter{}
+var _ directbase.Adapter = &ControlAdapter{}
 
-func (a *controlAdapter) Find(ctx context.Context) (bool, error) {
+func (a *ControlAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting discoveryengine control", "name", a.id.String())
+	log.V(2).Info("getting Control", "name", a.id)
 
-	req := &pb.GetControlRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetControl(ctx, req)
+	req := &pb.GetControlRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetControl(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting discoveryengine control %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Control %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *controlAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ControlAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating discoveryengine control", "name", a.id.String())
+	log.V(2).Info("creating Control", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	desired := proto.Clone(a.desired).(*pb.Control)
-	desired.Name = a.id.String()
+	desired := a.desired.DeepCopy()
+	resource := DiscoveryEngineControlSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateControlRequest{
 		Parent:    a.id.ParentString(),
-		Control:   desired,
 		ControlId: a.id.Control,
+		Control:   resource,
 	}
 	created, err := a.gcpClient.CreateControl(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating discoveryengine control %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating Control %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created discoveryengine control in gcp", "name", a.id.String())
+	log.V(2).Info("successfully created Control", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.DiscoveryEngineControlStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *controlAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ControlAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating discoveryengine control", "name", a.id.String())
+	log.V(2).Info("updating Control", "name", a.id)
 
-	desired := proto.Clone(a.desired).(*pb.Control)
-	desired.Name = a.id.String()
+	mapCtx := &direct.MapContext{}
+	desired := DiscoveryEngineControlSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
-	diffs, updateMask, err := a.compare(ctx, a.actual, desired)
+	diffs, updateMask, err := compareControl(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateControlRequest{
+			Control:    desired,
+			UpdateMask: updateMask,
+		}
+		updated, err := a.gcpClient.UpdateControl(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Control %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Control", "name", a.id)
+
+		status := &krm.DiscoveryEngineControlStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateControlRequest{
-		Control:    desired,
-		UpdateMask: updateMask,
-	}
-	updated, err := a.gcpClient.UpdateControl(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating discoveryengine control %s: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully updated discoveryengine control", "name", a.id.String())
-
-	return a.updateStatus(ctx, updateOp, updated)
+	return nil
 }
 
-func (a *controlAdapter) compare(ctx context.Context, actual, desired *pb.Control) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+func compareControl(ctx context.Context, actual, desired *pb.Control) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
 	maskedActual, err := mappers.OnlySpecFields(actual, DiscoveryEngineControlSpec_v1alpha1_FromProto, DiscoveryEngineControlSpec_v1alpha1_ToProto)
 	if err != nil {
 		return nil, nil, err
 	}
-	maskedActual.Name = desired.Name // Restore identifier field
-
-	clonedDesired := proto.Clone(desired).(*pb.Control)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
 	}
 	return diffs, updateMask, nil
 }
 
-func (a *controlAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Control) error {
-	status := &krm.DiscoveryEngineControlStatus{}
-	status.ExternalRef = direct.PtrTo(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *controlAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ControlAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
 	obj := &krm.DiscoveryEngineControl{}
 	mapCtx := &direct.MapContext{}
@@ -253,32 +228,33 @@ func (a *controlAdapter) Export(ctx context.Context) (*unstructured.Unstructured
 		return nil, mapCtx.Err()
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = direct.PtrTo(a.id.Location)
-	obj.Spec.DataStoreRef = &krm.DiscoveryEngineDataStoreRef{External: a.id.ParentString()}
+	obj.Spec.Location = a.id.Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u := &unstructured.Unstructured{Object: uObj}
+	u.Object = uObj
 	u.SetName(a.id.Control)
 	u.SetGroupVersionKind(krm.DiscoveryEngineControlGVK)
-
 	return u, nil
 }
 
-func (a *controlAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ControlAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting discoveryengine control", "name", a.id.String())
+	log.V(2).Info("deleting Control", "name", a.id)
 
-	req := &pb.DeleteControlRequest{Name: a.id.String()}
+	req := &pb.DeleteControlRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteControl(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting discoveryengine control %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Control %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted discoveryengine control", "name", a.id.String())
+	log.V(2).Info("successfully deleted Control", "name", a.id)
 	return true, nil
 }

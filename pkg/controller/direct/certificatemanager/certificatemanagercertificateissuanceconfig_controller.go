@@ -17,10 +17,7 @@ package certificatemanager
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/certificatemanager/apiv1"
-	pb "cloud.google.com/go/certificatemanager/apiv1/certificatemanagerpb"
-	krmcertificatemanagerv1alpha1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/certificatemanager/v1alpha1"
+	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/certificatemanager/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -29,97 +26,96 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/certificatemanager/apiv1"
+	pb "cloud.google.com/go/certificatemanager/apiv1/certificatemanagerpb"
 	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krmcertificatemanagerv1alpha1.CertificateManagerCertificateIssuanceConfigGVK, NewCertificateIssuanceConfigModel)
+	registry.RegisterModel(krm.CertificatemanagercertificateissuanceconfigGVK, NewCertificateIssuanceConfigModel)
 }
 
 func NewCertificateIssuanceConfigModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &certificateIssuanceConfigModel{config: *config}, nil
+	return &modelCertificateIssuanceConfig{config: *config}, nil
 }
 
-type certificateIssuanceConfigModel struct {
+var _ directbase.Model = &modelCertificateIssuanceConfig{}
+var _ = strings.TrimPrefix
+
+type modelCertificateIssuanceConfig struct {
 	config config.ControllerConfig
 }
 
-func (m *certificateIssuanceConfigModel) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building CertificateIssuanceConfig client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *certificateIssuanceConfigModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelCertificateIssuanceConfig) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
-	obj := &krmcertificatemanagerv1alpha1.CertificateManagerCertificateIssuanceConfig{}
+	_ = reader
+	obj := &krm.Certificatemanagercertificateissuanceconfig{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krmcertificatemanagerv1alpha1.CertificateManagerCertificateIssuanceConfigIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	identity, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := CertificateManagerCertificateIssuanceConfigSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desiredPb.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
 	return &CertificateIssuanceConfigAdapter{
-		id:        identity.(*krmcertificatemanagerv1alpha1.CertificateManagerCertificateIssuanceConfigIdentity),
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desiredPb,
+		desired:   obj,
 	}, nil
 }
 
-func (m *certificateIssuanceConfigModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelCertificateIssuanceConfig) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krmcertificatemanagerv1alpha1.CertificateManagerCertificateIssuanceConfigIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	return &CertificateIssuanceConfigAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
+func (m *modelCertificateIssuanceConfig) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building CertificateIssuanceConfig client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type CertificateIssuanceConfigAdapter struct {
 	id        *krmcertificatemanagerv1alpha1.CertificateManagerCertificateIssuanceConfigIdentity
 	gcpClient *gcp.Client
-	desired   *pb.CertificateIssuanceConfig
+	desired   *krm.Certificatemanagercertificateissuanceconfig
 	actual    *pb.CertificateIssuanceConfig
 }
 
@@ -127,64 +123,102 @@ var _ directbase.Adapter = &CertificateIssuanceConfigAdapter{}
 
 func (a *CertificateIssuanceConfigAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting CertificateManagerCertificateIssuanceConfig", "name", a.id.String())
+	log.V(2).Info("getting CertificateIssuanceConfig", "name", a.id)
 
-	req := &pb.GetCertificateIssuanceConfigRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetCertificateIssuanceConfig(ctx, req)
+	req := &pb.GetCertificateIssuanceConfigRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetCertificateIssuanceConfig(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting CertificateManagerCertificateIssuanceConfig %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting CertificateIssuanceConfig %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
 func (a *CertificateIssuanceConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating CertificateManagerCertificateIssuanceConfig", "id", a.id.String())
+	log.V(2).Info("creating CertificateIssuanceConfig", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	parent := fmt.Sprintf("projects/%s/locations/%s", a.id.Project, a.id.Location)
+	desired := a.desired.DeepCopy()
+	resource := CertificatemanagercertificateissuanceconfigSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateCertificateIssuanceConfigRequest{
-		Parent:                      parent,
-		CertificateIssuanceConfig:   a.desired,
+		Parent:                      a.id.ParentString(),
 		CertificateIssuanceConfigId: a.id.CertificateIssuanceConfig,
+		CertificateIssuanceConfig:   resource,
 	}
 	op, err := a.gcpClient.CreateCertificateIssuanceConfig(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating CertificateIssuanceConfig %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating CertificateIssuanceConfig %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting CertificateIssuanceConfig %s creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create CertificateIssuanceConfig %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created CertificateManagerCertificateIssuanceConfig", "name", a.id.String())
+	log.V(2).Info("successfully created CertificateIssuanceConfig", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.CertificatemanagercertificateissuanceconfigStatus{}
+	status.ObservedState = CertificatemanagercertificateissuanceconfigObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *CertificateIssuanceConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("resource has no mutable fields, skipping update", "name", a.id.String())
+	log.V(2).Info("updating CertificateIssuanceConfig", "name", a.id)
 
-	return a.updateStatus(ctx, updateOp, a.actual)
-}
-
-func (a *CertificateIssuanceConfigAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.CertificateIssuanceConfig) error {
 	mapCtx := &direct.MapContext{}
-	observedState := CertificateManagerCertificateIssuanceConfigObservedState_v1alpha1_FromProto(mapCtx, latest)
+	desired := CertificatemanagercertificateissuanceconfigSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	status := &krmcertificatemanagerv1alpha1.CertificateManagerCertificateIssuanceConfigStatus{}
-	status.ObservedState = observedState
+	diffs, updateMask, err := compareCertificateIssuanceConfig(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("Certificatemanagercertificateissuanceconfig resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.CertificatemanagercertificateissuanceconfigStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = CertificatemanagercertificateissuanceconfigObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
 
-	return op.UpdateStatus(ctx, status, nil)
+func compareCertificateIssuanceConfig(ctx context.Context, actual, desired *pb.CertificateIssuanceConfig) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, CertificatemanagercertificateissuanceconfigSpec_FromProto, CertificatemanagercertificateissuanceconfigSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *CertificateIssuanceConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -193,14 +227,13 @@ func (a *CertificateIssuanceConfigAdapter) Export(ctx context.Context) (*unstruc
 	}
 	u := &unstructured.Unstructured{}
 
-	obj := &krmcertificatemanagerv1alpha1.CertificateManagerCertificateIssuanceConfig{}
+	obj := &krm.Certificatemanagercertificateissuanceconfig{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(CertificateManagerCertificateIssuanceConfigSpec_v1alpha1_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(CertificatemanagercertificateissuanceconfigSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ProjectRef = &refs.ProjectRef{Name: a.id.Project}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = a.id.Location
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.CertificateIssuanceConfig)
 
@@ -208,33 +241,34 @@ func (a *CertificateIssuanceConfigAdapter) Export(ctx context.Context) (*unstruc
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
 	u.SetName(a.id.CertificateIssuanceConfig)
-	u.SetGroupVersionKind(krmcertificatemanagerv1alpha1.CertificateManagerCertificateIssuanceConfigGVK)
-
+	u.SetGroupVersionKind(krm.CertificatemanagercertificateissuanceconfigGVK)
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
 func (a *CertificateIssuanceConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting CertificateIssuanceConfig", "name", a.id.String())
+	log.V(2).Info("deleting CertificateIssuanceConfig", "name", a.id)
 
-	req := &pb.DeleteCertificateIssuanceConfigRequest{Name: a.id.String()}
+	req := &pb.DeleteCertificateIssuanceConfigRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteCertificateIssuanceConfig(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent CertificateIssuanceConfig, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting CertificateIssuanceConfig %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting CertificateIssuanceConfig %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted CertificateIssuanceConfig", "name", a.id.String())
-
+	log.V(2).Info("successfully deleted CertificateIssuanceConfig", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete CertificateIssuanceConfig %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete CertificateIssuanceConfig %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

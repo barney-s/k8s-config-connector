@@ -17,24 +17,24 @@ package bigtable
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/bigtable/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
-	admin "cloud.google.com/go/bigtable/admin/apiv2"
+	gcp "cloud.google.com/go/bigtable/admin/apiv2"
 	pb "cloud.google.com/go/bigtable/admin/apiv2/adminpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -46,87 +46,77 @@ func NewSchemaBundleModel(ctx context.Context, config *config.ControllerConfig) 
 }
 
 var _ directbase.Model = &modelSchemaBundle{}
+var _ = strings.TrimPrefix
 
 type modelSchemaBundle struct {
 	config config.ControllerConfig
 }
 
-func (m *modelSchemaBundle) client(ctx context.Context) (*admin.BigtableTableAdminClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	if err != nil {
-		return nil, fmt.Errorf("building BigtableSchemaBundle client options: %w", err)
-	}
-	gcpClient, err := admin.NewBigtableTableAdminClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building BigtableSchemaBundle client: %w", err)
-	}
-	return gcpClient, nil
-}
-
 func (m *modelSchemaBundle) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.BigtableSchemaBundle{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// NormalizeReferences
+	id := &krm.BigtableSchemaBundleIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	id, err := krm.NewBigtableSchemaBundleIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
 	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	return &SchemaBundleAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
 func (m *modelSchemaBundle) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
+}
+
+func (m *modelSchemaBundle) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building SchemaBundle client: %w", err)
+	}
+	return gcpClient, err
 }
 
 type SchemaBundleAdapter struct {
 	id        *krm.BigtableSchemaBundleIdentity
-	gcpClient *admin.BigtableTableAdminClient
+	gcpClient *gcp.Client
 	desired   *krm.BigtableSchemaBundle
-	reader    client.Reader
 	actual    *pb.SchemaBundle
 }
 
 var _ directbase.Adapter = &SchemaBundleAdapter{}
 
-func (a *SchemaBundleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	return nil, nil
-}
-
 func (a *SchemaBundleAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting BigtableSchemaBundle", "name", a.id)
+	log.V(2).Info("getting SchemaBundle", "name", a.id)
 
 	req := &pb.GetSchemaBundleRequest{
 		Name: a.id.String(),
 	}
-
 	resp, err := a.gcpClient.GetSchemaBundle(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting BigtableSchemaBundle %q: %w", a.id, err)
+		return false, fmt.Errorf("getting SchemaBundle %q: %w", a.id, err)
 	}
 
 	a.actual = resp
@@ -136,38 +126,32 @@ func (a *SchemaBundleAdapter) Find(ctx context.Context) (bool, error) {
 func (a *SchemaBundleAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating SchemaBundle", "name", a.id)
-
 	mapCtx := &direct.MapContext{}
-	schemaBundle := BigtableSchemaBundleSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+
+	desired := a.desired.DeepCopy()
+	resource := BigtableSchemaBundleSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	schemaBundle.Name = a.id.String()
 
 	req := &pb.CreateSchemaBundleRequest{
 		Parent:         a.id.ParentString(),
 		SchemaBundleId: a.id.ID(),
-		SchemaBundle:   schemaBundle,
+		SchemaBundle:   resource,
 	}
-
 	op, err := a.gcpClient.CreateSchemaBundle(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating SchemaBundle %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for SchemaBundle creation %s: %w", a.id, err)
+		return fmt.Errorf("waiting create SchemaBundle %s: %w", a.id, err)
 	}
-
 	log.V(2).Info("successfully created SchemaBundle", "name", a.id)
 
-	latest, err := a.gcpClient.GetSchemaBundle(ctx, &pb.GetSchemaBundleRequest{Name: a.id.String()})
-	if err != nil {
-		latest = created
-	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status := &krm.BigtableSchemaBundleStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *SchemaBundleAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
@@ -179,62 +163,73 @@ func (a *SchemaBundleAdapter) Update(ctx context.Context, updateOp *directbase.U
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	desired.Name = a.id.String()
 
-	diffs, updateMask, err := a.compare(ctx, a.actual, desired)
+	diffs, updateMask, err := compareSchemaBundle(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateSchemaBundleRequest{
+			SchemaBundle: desired,
+			UpdateMask:   updateMask,
+		}
+		op, err := a.gcpClient.UpdateSchemaBundle(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating SchemaBundle %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update SchemaBundle %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated SchemaBundle", "name", a.id)
+
+		status := &krm.BigtableSchemaBundleStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	log.V(2).Info("fields need update", "name", a.id, "paths", updateMask.Paths)
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateSchemaBundleRequest{
-		SchemaBundle: desired,
-		UpdateMask:   updateMask,
-	}
-
-	op, err := a.gcpClient.UpdateSchemaBundle(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating SchemaBundle %s: %w", a.id, err)
-	}
-
-	updated, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for SchemaBundle update %s: %w", a.id, err)
-	}
-
-	log.V(2).Info("successfully updated SchemaBundle", "name", a.id)
-
-	latest, err := a.gcpClient.GetSchemaBundle(ctx, &pb.GetSchemaBundleRequest{Name: a.id.String()})
-	if err != nil {
-		latest = updated
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *SchemaBundleAdapter) compare(ctx context.Context, actual *pb.SchemaBundle, desired *pb.SchemaBundle) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	mapCtx := &direct.MapContext{}
-	maskedActual := BigtableSchemaBundleSpec_v1alpha1_ToProto(mapCtx, BigtableSchemaBundleSpec_v1alpha1_FromProto(mapCtx, actual))
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
+func compareSchemaBundle(ctx context.Context, actual, desired *pb.SchemaBundle) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BigtableSchemaBundleSpec_v1alpha1_FromProto, BigtableSchemaBundleSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.Clone(desired).(*pb.SchemaBundle)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
 	}
 	return diffs, updateMask, nil
+}
+
+func (a *SchemaBundleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.BigtableSchemaBundle{}
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(BigtableSchemaBundleSpec_v1alpha1_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
+	}
+
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+
+	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.BigtableSchemaBundleGVK)
+	return u, nil
 }
 
 func (a *SchemaBundleAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
@@ -244,21 +239,19 @@ func (a *SchemaBundleAdapter) Delete(ctx context.Context, deleteOp *directbase.D
 	req := &pb.DeleteSchemaBundleRequest{
 		Name: a.id.String(),
 	}
-
-	err := a.gcpClient.DeleteSchemaBundle(ctx, req)
+	op, err := a.gcpClient.DeleteSchemaBundle(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting SchemaBundle %s: %w", a.id, err)
 	}
-
 	log.V(2).Info("successfully deleted SchemaBundle", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete SchemaBundle %s: %w", a.id, err)
+		}
+	}
 	return true, nil
-}
-
-func (a *SchemaBundleAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.SchemaBundle) error {
-	status := &krm.BigtableSchemaBundleStatus{}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
 }

@@ -12,33 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.compute.v1.InstanceGroups
-// proto.message: google.cloud.compute.v1.InstanceGroup
-// crd.type: ComputeInstanceGroup
-// crd.version: v1beta1
-
 package compute
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	pb "cloud.google.com/go/compute/apiv1/computepb"
-	"google.golang.org/api/iterator"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
-	apirefs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
@@ -46,6 +25,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	pb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -53,77 +42,68 @@ func init() {
 }
 
 func NewComputeInstanceGroupModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeInstanceGroupModel{config: config}, nil
+	return &modelComputeInstanceGroup{config: *config}, nil
 }
 
-var _ directbase.Model = &computeInstanceGroupModel{}
+var _ directbase.Model = &modelComputeInstanceGroup{}
+var _ = strings.TrimPrefix
 
-type computeInstanceGroupModel struct {
-	config *config.ControllerConfig
+type modelComputeInstanceGroup struct {
+	config config.ControllerConfig
 }
 
-func (m *computeInstanceGroupModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeInstanceGroup) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeInstanceGroup{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-
-	instanceGroupsClient, err := gcpClient.newInstanceGroupsClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+	id := i.(*krm.ComputeInstanceGroupIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desiredObj := obj.DeepCopy()
-	resource := ComputeInstanceGroupSpec_v1beta1_ToProto(mapCtx, &desiredObj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
-
-	var desiredInstances []string
-	for _, inst := range desiredObj.Spec.Instances {
-		if inst.External != "" {
-			desiredInstances = append(desiredInstances, inst.External)
-		}
-	}
-
 	return &ComputeInstanceGroupAdapter{
-		gcpClient:        instanceGroupsClient,
-		id:               id.(*krm.ComputeInstanceGroupIdentity),
-		desired:          resource,
-		desiredInstances: desiredInstances,
-		reader:           reader,
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *computeInstanceGroupModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeInstanceGroup) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
+func (m *modelComputeInstanceGroup) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeInstanceGroup client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type ComputeInstanceGroupAdapter struct {
-	gcpClient        *compute.InstanceGroupsClient
-	id               *krm.ComputeInstanceGroupIdentity
-	desired          *pb.InstanceGroup
-	desiredInstances []string
-	actual           *pb.InstanceGroup
-	actualInstances  []string
-	reader           client.Reader
+	id        *krm.ComputeInstanceGroupIdentity
+	gcpClient *gcp.Client
+	desired   *krm.ComputeInstanceGroup
+	actual    *pb.ComputeInstanceGroup
 }
 
 var _ directbase.Adapter = &ComputeInstanceGroupAdapter{}
@@ -132,302 +112,88 @@ func (a *ComputeInstanceGroupAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeInstanceGroup", "name", a.id)
 
-	req := &pb.GetInstanceGroupRequest{
-		Project:       a.id.Project,
-		Zone:          a.id.Zone,
-		InstanceGroup: a.id.InstanceGroup,
+	req := &pb.GetComputeInstanceGroupRequest{
+		Name: a.id.String(),
 	}
-	actual, err := a.gcpClient.Get(ctx, req)
+	resp, err := a.gcpClient.GetComputeInstanceGroup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting ComputeInstanceGroup %s: %w", a.id, err)
+		return false, fmt.Errorf("getting ComputeInstanceGroup %q: %w", a.id, err)
 	}
 
-	a.actual = actual
-
-	// Also retrieve current instances
-	listReq := &pb.ListInstancesInstanceGroupsRequest{
-		Project:       a.id.Project,
-		Zone:          a.id.Zone,
-		InstanceGroup: a.id.InstanceGroup,
-	}
-	it := a.gcpClient.ListInstances(ctx, listReq)
-	a.actualInstances = nil
-	for {
-		item, err := it.Next()
-		if err != nil {
-			if errors.Is(err, iterator.Done) {
-				break
-			}
-			return false, fmt.Errorf("listing instances of ComputeInstanceGroup %s: %w", a.id, err)
-		}
-		if item.GetInstance() != "" {
-			a.actualInstances = append(a.actualInstances, item.GetInstance())
-		}
-	}
-
+	a.actual = resp
 	return true, nil
 }
 
 func (a *ComputeInstanceGroupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ComputeInstanceGroup", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	a.desired.Name = direct.LazyPtr(a.id.InstanceGroup)
+	desired := a.desired.DeepCopy()
+	resource := ComputeInstanceGroupSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
-	req := &pb.InsertInstanceGroupRequest{
-		Project:               a.id.Project,
-		Zone:                  a.id.Zone,
-		InstanceGroupResource: a.desired,
+	req := &pb.CreateComputeInstanceGroupRequest{
+		Parent:                 a.id.ParentString(),
+		ComputeInstanceGroupId: a.id.Zone,
+		ComputeInstanceGroup:   resource,
 	}
-	op, errInsert := a.gcpClient.Insert(ctx, req)
-	if errInsert != nil {
-		return fmt.Errorf("creating ComputeInstanceGroup %s: %w", a.id, errInsert)
-	}
-	err := op.Wait(ctx)
+	op, err := a.gcpClient.CreateComputeInstanceGroup(ctx, req)
 	if err != nil {
-		return fmt.Errorf("waiting ComputeInstanceGroup %s create failed: %w", a.id, err)
+		return fmt.Errorf("creating ComputeInstanceGroup %s: %w", a.id, err)
 	}
-
-	// Now add instances if there are any
-	if len(a.desiredInstances) > 0 {
-		var instanceRefs []*pb.InstanceReference
-		for _, inst := range a.desiredInstances {
-			instanceRefs = append(instanceRefs, &pb.InstanceReference{
-				Instance: direct.LazyPtr(inst),
-			})
-		}
-		addReq := &pb.AddInstancesInstanceGroupRequest{
-			Project:       a.id.Project,
-			Zone:          a.id.Zone,
-			InstanceGroup: a.id.InstanceGroup,
-			InstanceGroupsAddInstancesRequestResource: &pb.InstanceGroupsAddInstancesRequest{
-				Instances: instanceRefs,
-			},
-		}
-		addOp, errAdd := a.gcpClient.AddInstances(ctx, addReq)
-		if errAdd != nil {
-			return fmt.Errorf("adding instances to ComputeInstanceGroup %s: %w", a.id, errAdd)
-		}
-		if err := addOp.Wait(ctx); err != nil {
-			return fmt.Errorf("waiting to add instances to ComputeInstanceGroup %s: %w", a.id, err)
-		}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeInstanceGroup %s: %w", a.id, err)
 	}
-
 	log.V(2).Info("successfully created ComputeInstanceGroup", "name", a.id)
 
-	// Retrieve actual state to update status
-	exists, err := a.Find(ctx)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("created ComputeInstanceGroup was not found after creation")
-	}
-
-	return a.updateStatus(ctx, createOp, a.actual)
+	status := &krm.ComputeInstanceGroupStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeInstanceGroupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeInstanceGroup", "name", a.id)
 
-	diffs, updateMask, err := compareComputeInstanceGroup(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	if diffs.HasDiff() {
-		diffs.Object = updateOp.GetUnstructured()
-		// Check for immutable field updates
-		for _, path := range updateMask.Paths {
-			if path != "named_ports" {
-				return fmt.Errorf("ComputeInstanceGroup field %q is immutable and cannot be updated", path)
-			}
-		}
-
-		// Update named ports
-		setReq := &pb.SetNamedPortsInstanceGroupRequest{
-			Project:       a.id.Project,
-			Zone:          a.id.Zone,
-			InstanceGroup: a.id.InstanceGroup,
-			InstanceGroupsSetNamedPortsRequestResource: &pb.InstanceGroupsSetNamedPortsRequest{
-				NamedPorts: a.desired.NamedPorts,
-			},
-		}
-		setOp, errSet := a.gcpClient.SetNamedPorts(ctx, setReq)
-		if errSet != nil {
-			return fmt.Errorf("updating named ports for ComputeInstanceGroup %s: %w", a.id, errSet)
-		}
-		if err := setOp.Wait(ctx); err != nil {
-			return fmt.Errorf("waiting to update named ports for ComputeInstanceGroup %s: %w", a.id, err)
-		}
-		structuredreporting.ReportDiff(ctx, diffs)
-	}
-
-	// Now handle instances add/remove
-	toAdd, toRemove := diffInstances(a.actualInstances, a.desiredInstances)
-
-	if len(toRemove) > 0 {
-		var instanceRefs []*pb.InstanceReference
-		for _, inst := range toRemove {
-			instanceRefs = append(instanceRefs, &pb.InstanceReference{
-				Instance: direct.LazyPtr(inst),
-			})
-		}
-		removeReq := &pb.RemoveInstancesInstanceGroupRequest{
-			Project:       a.id.Project,
-			Zone:          a.id.Zone,
-			InstanceGroup: a.id.InstanceGroup,
-			InstanceGroupsRemoveInstancesRequestResource: &pb.InstanceGroupsRemoveInstancesRequest{
-				Instances: instanceRefs,
-			},
-		}
-		removeOp, errRemove := a.gcpClient.RemoveInstances(ctx, removeReq)
-		if errRemove != nil {
-			return fmt.Errorf("removing instances from ComputeInstanceGroup %s: %w", a.id, errRemove)
-		}
-		if err := removeOp.Wait(ctx); err != nil {
-			return fmt.Errorf("waiting to remove instances from ComputeInstanceGroup %s: %w", a.id, err)
-		}
-	}
-
-	if len(toAdd) > 0 {
-		var instanceRefs []*pb.InstanceReference
-		for _, inst := range toAdd {
-			instanceRefs = append(instanceRefs, &pb.InstanceReference{
-				Instance: direct.LazyPtr(inst),
-			})
-		}
-		addReq := &pb.AddInstancesInstanceGroupRequest{
-			Project:       a.id.Project,
-			Zone:          a.id.Zone,
-			InstanceGroup: a.id.InstanceGroup,
-			InstanceGroupsAddInstancesRequestResource: &pb.InstanceGroupsAddInstancesRequest{
-				Instances: instanceRefs,
-			},
-		}
-		addOp, errAdd := a.gcpClient.AddInstances(ctx, addReq)
-		if errAdd != nil {
-			return fmt.Errorf("adding instances to ComputeInstanceGroup %s: %w", a.id, errAdd)
-		}
-		if err := addOp.Wait(ctx); err != nil {
-			return fmt.Errorf("waiting to add instances to ComputeInstanceGroup %s: %w", a.id, err)
-		}
-	}
-
-	log.V(2).Info("successfully updated ComputeInstanceGroup", "name", a.id)
-
-	// Fetch latest state to update status
-	exists, err := a.Find(ctx)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("updated ComputeInstanceGroup was not found after update")
-	}
-
-	return a.updateStatus(ctx, updateOp, a.actual)
-}
-
-func (a *ComputeInstanceGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeInstanceGroup", "name", a.id)
-
-	req := &pb.DeleteInstanceGroupRequest{
-		Project:       a.id.Project,
-		Zone:          a.id.Zone,
-		InstanceGroup: a.id.InstanceGroup,
-	}
-	op, err := a.gcpClient.Delete(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("deleting ComputeInstanceGroup %s: %w", a.id, err)
-	}
-
-	err = op.Wait(ctx)
-	if err != nil {
-		return false, fmt.Errorf("waiting ComputeInstanceGroup %s delete failed: %w", a.id, err)
-	}
-
-	log.V(2).Info("successfully deleted ComputeInstanceGroup", "name", a.id)
-	return true, nil
-}
-
-func (a *ComputeInstanceGroupAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.InstanceGroup) error {
 	mapCtx := &direct.MapContext{}
-	status := ComputeInstanceGroupStatus_v1beta1_FromProto(mapCtx, latest)
+	desired := ComputeInstanceGroupSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	return op.UpdateStatus(ctx, status, nil)
-}
 
-func lastComponent(path string) string {
-	idx := strings.LastIndex(path, "/")
-	if idx >= 0 {
-		return path[idx+1:]
+	diffs, updateMask, err := compareComputeInstanceGroup(ctx, a.actual, desired)
+	if err != nil {
+		return err
 	}
-	return path
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeInstanceGroup resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.ComputeInstanceGroupStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func compareComputeInstanceGroup(ctx context.Context, actual, desired *pb.InstanceGroup) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+func compareComputeInstanceGroup(ctx context.Context, actual, desired *pb.ComputeInstanceGroup) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
 	maskedActual, err := mappers.OnlySpecFields(actual, ComputeInstanceGroupSpec_v1beta1_FromProto, ComputeInstanceGroupSpec_v1beta1_ToProto)
 	if err != nil {
 		return nil, nil, err
 	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *pb.InstanceGroup) {
-		if obj.Network != nil {
-			*obj.Network = lastComponent(*obj.Network)
-		}
-		if obj.Zone != nil {
-			*obj.Zone = lastComponent(*obj.Zone)
-		}
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
 	}
 	return diffs, updateMask, nil
-}
-
-func diffInstances(actual, desired []string) (toAdd, toRemove []string) {
-	actualMap := make(map[string]string)
-	for _, inst := range actual {
-		normalized := apirefs.TrimComputeURIPrefix(inst)
-		actualMap[normalized] = inst
-	}
-
-	desiredMap := make(map[string]string)
-	for _, inst := range desired {
-		normalized := apirefs.TrimComputeURIPrefix(inst)
-		desiredMap[normalized] = inst
-	}
-
-	for normalized, inst := range desiredMap {
-		if _, exists := actualMap[normalized]; !exists {
-			toAdd = append(toAdd, inst)
-		}
-	}
-
-	for normalized, inst := range actualMap {
-		if _, exists := desiredMap[normalized]; !exists {
-			toRemove = append(toRemove, inst)
-		}
-	}
-
-	return toAdd, toRemove
 }
 
 func (a *ComputeInstanceGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -443,19 +209,19 @@ func (a *ComputeInstanceGroupAdapter) Export(ctx context.Context) (*unstructured
 		return nil, mapCtx.Err()
 	}
 
-	for _, inst := range a.actualInstances {
-		obj.Spec.Instances = append(obj.Spec.Instances, krm.InstanceRef{
-			External: inst,
-		})
-	}
-
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.GetName())
+	u.SetName(a.id.Zone)
 	u.SetGroupVersionKind(krm.ComputeInstanceGroupGVK)
 	return u, nil
+}
+
+func (a *ComputeInstanceGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for ComputeInstanceGroup, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

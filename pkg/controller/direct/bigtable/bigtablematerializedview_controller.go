@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,99 +17,98 @@ package bigtable
 import (
 	"context"
 	"fmt"
-	"slices"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/bigtable/v1alpha1"
-	krmv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/bigtable/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/bigtable"
 	bigtablepb "cloud.google.com/go/bigtable/admin/apiv2/adminpb"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.BigtableMaterializedViewGVK, NewMaterializedViewModel)
+	registry.RegisterModel(krm.BigtableMaterializedViewGVK, NewBigtableMaterializedViewModel)
 }
 
-func NewMaterializedViewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &modelMaterializedView{config: *config}, nil
+func NewBigtableMaterializedViewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelBigtableMaterializedView{config: *config}, nil
 }
 
-var _ directbase.Model = &modelMaterializedView{}
+var _ directbase.Model = &modelBigtableMaterializedView{}
+var _ = strings.TrimPrefix
 
-type modelMaterializedView struct {
+type modelBigtableMaterializedView struct {
 	config config.ControllerConfig
 }
 
-func (m *modelMaterializedView) client(ctx context.Context, parentProject string) (*gcp.InstanceAdminClient, error) {
+func (m *modelBigtableMaterializedView) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.BigtableMaterializedView{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	id := &krm.MaterializedViewIdentity{}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &BigtableMaterializedViewAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelBigtableMaterializedView) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelBigtableMaterializedView) client(ctx context.Context) (*gcp.InstanceAdminClient, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.GRPCClientOptions()
-	gcpClient, err := gcp.NewInstanceAdminClient(ctx, parentProject, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewInstanceAdminClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building BigtableMaterializedView client: %w", err)
 	}
 	return gcpClient, err
 }
 
-func (m *modelMaterializedView) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.BigtableMaterializedView{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := krm.NewMaterializedViewIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get bigtable instance admin GCP client. Accepts the non-fully qualified project ID.
-	// E.G. "myproject" instead of "projects/myproject"
-	parentProjectID := id.Parent().Parent.ProjectID
-	instanceAdminClient, err := m.client(ctx, parentProjectID)
-	if err != nil {
-		return nil, fmt.Errorf("error creating instance admin client: %w", err)
-	}
-	return &MaterializedViewAdapter{
-		id:        id,
-		gcpClient: instanceAdminClient,
-		desired:   obj,
-	}, nil
-}
-
-func (m *modelMaterializedView) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// TODO: Support URLs
-	return nil, nil
-}
-
-type MaterializedViewAdapter struct {
+type BigtableMaterializedViewAdapter struct {
 	id        *krm.MaterializedViewIdentity
 	gcpClient *gcp.InstanceAdminClient
 	desired   *krm.BigtableMaterializedView
-	actual    *bigtablepb.MaterializedView
+	actual    *bigtablepb.BigtableMaterializedView
 }
 
-var _ directbase.Adapter = &MaterializedViewAdapter{}
+var _ directbase.Adapter = &BigtableMaterializedViewAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
-func (a *MaterializedViewAdapter) Find(ctx context.Context) (bool, error) {
+func (a *BigtableMaterializedViewAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting BigtableMaterializedView", "name", a.id)
 
-	materializedViewInfo, err := a.gcpClient.MaterializedViewInfo(ctx, a.id.ParentInstanceIdString(), a.id.ID())
+	req := &bigtablepb.GetBigtableMaterializedViewRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBigtableMaterializedView(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -117,80 +116,56 @@ func (a *MaterializedViewAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting BigtableMaterializedView %q: %w", a.id, err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	if mapCtx.Err() != nil {
-		return false, mapCtx.Err()
-	}
-
-	materializedViewInfo.MaterializedViewID = a.id.ID()
-	a.actual = BigtableMaterializedViewInfo_ToBigtableMaterializedView(materializedViewInfo)
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *MaterializedViewAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *BigtableMaterializedViewAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating MaterializedView", "name", a.id)
+	log.V(2).Info("creating BigtableMaterializedView", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
-	mapCtx := &direct.MapContext{}
+	resource := BigtableMaterializedViewSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	mv := BigtableMaterializedViewSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
-	mv.Name = a.id.ID()
-	materializedViewInfo := BigtableMaterializedView_ToBigtableMaterializedViewInfo(mv)
 
-	err := a.gcpClient.CreateMaterializedView(ctx, a.id.ParentInstanceIdString(), materializedViewInfo)
-	if err != nil {
-		return fmt.Errorf("creating MaterializedView %s: %w", a.id, err)
+	req := &bigtablepb.CreateBigtableMaterializedViewRequest{
+		Parent:                     a.id.ParentString(),
+		BigtableMaterializedViewId: a.id.ID(),
+		BigtableMaterializedView:   resource,
 	}
-	log.V(2).Info("successfully created MaterializedView", "name", a.id)
+	created, err := a.gcpClient.CreateBigtableMaterializedView(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating BigtableMaterializedView %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created BigtableMaterializedView", "name", a.id)
 
 	status := &krm.BigtableMaterializedViewStatus{}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *MaterializedViewAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *BigtableMaterializedViewAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating MaterializedView", "name", a.id)
+	log.V(2).Info("updating BigtableMaterializedView", "name", a.id)
 
-	spec := a.desired.Spec
-	updateMask := &fieldmaskpb.FieldMask{}
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	if (spec.DeletionProtection != nil) && (*spec.DeletionProtection != a.actual.DeletionProtection) {
-		report.AddField("deletion_protection", a.actual.DeletionProtection, spec.DeletionProtection)
-		updateMask.Paths = append(updateMask.Paths, "deletion_protection")
+	mapCtx := &direct.MapContext{}
+	desired := BigtableMaterializedViewSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
 
-	if len(updateMask.Paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-	} else {
-		log.V(2).Info("fields need update", "name", a.id, "paths", updateMask.Paths)
-		structuredreporting.ReportDiff(ctx, report)
-
-		spec := a.desired.Spec
-		spec.Query = &a.actual.Query // immutable
-		if !slices.Contains(updateMask.Paths, "deletion_protection") {
-			spec.DeletionProtection = &a.actual.DeletionProtection
-		}
-
-		mapCtx := &direct.MapContext{}
-		if mapCtx.Err() != nil {
-			return mapCtx.Err()
-		}
-		mv := BigtableMaterializedViewSpec_v1alpha1_ToProto(mapCtx, &spec)
-		mv.Name = a.id.ID()
-		desiredmaterializedviewinfo := BigtableMaterializedView_ToBigtableMaterializedViewInfo(mv)
-
-		err := a.gcpClient.UpdateMaterializedView(ctx, a.id.ParentInstanceIdString(), *desiredmaterializedviewinfo)
-		if err != nil {
-			return fmt.Errorf("updating MaterializedView %s: %w", a.id, err)
-		}
-		log.V(2).Info("successfully updated MaterializedView", "name", a.id)
+	diffs, updateMask, err := compareBigtableMaterializedView(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("BigtableMaterializedView resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
 	status := &krm.BigtableMaterializedViewStatus{}
@@ -198,8 +173,19 @@ func (a *MaterializedViewAdapter) Update(ctx context.Context, updateOp *directba
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *MaterializedViewAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareBigtableMaterializedView(ctx context.Context, actual, desired *bigtablepb.BigtableMaterializedView) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BigtableMaterializedViewSpec_v1alpha1_FromProto, BigtableMaterializedViewSpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *BigtableMaterializedViewAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -207,39 +193,24 @@ func (a *MaterializedViewAdapter) Export(ctx context.Context) (*unstructured.Uns
 
 	obj := &krm.BigtableMaterializedView{}
 	mapCtx := &direct.MapContext{}
-	spec := BigtableMaterializedViewSpec_v1alpha1_FromProto(mapCtx, a.actual)
-	obj.Spec = direct.ValueOf(spec)
+	obj.Spec = direct.ValueOf(BigtableMaterializedViewSpec_v1alpha1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.InstanceRef = &krmv1beta1.InstanceRef{External: a.id.ParentInstanceIdString()}
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.BigtableMaterializedViewGVK)
-
-	u.Object = uObj
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *MaterializedViewAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *BigtableMaterializedViewAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting MaterializedView", "name", a.id)
-
-	err := a.gcpClient.DeleteMaterializedView(ctx, a.id.ParentInstanceIdString(), a.id.ID())
-	if err != nil {
-		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent MaterializedView, assuming it was already deleted", "name", a.id)
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting MaterializedView %s: %w", a.id, err)
-	}
-	log.V(2).Info("successfully deleted MaterializedView", "name", a.id)
+	log.V(2).Info("deletion not supported for BigtableMaterializedView, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
 }

@@ -17,9 +17,6 @@ package aiplatform
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/aiplatform/apiv1"
-	pb "cloud.google.com/go/aiplatform/apiv1/aiplatformpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/aiplatform/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -28,238 +25,219 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/aiplatform/apiv1"
+	pb "cloud.google.com/go/aiplatform/apiv1/aiplatformpb"
 	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.AIPlatformReasoningEngineGVK, NewAIPlatformReasoningEngineModel)
+	registry.RegisterModel(krm.AIPlatformReasoningEngineGVK, NewReasoningEngineModel)
 }
 
-func NewAIPlatformReasoningEngineModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &aiplatformReasoningEngineModel{config: config}, nil
+func NewReasoningEngineModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelReasoningEngine{config: *config}, nil
 }
 
-var _ directbase.Model = &aiplatformReasoningEngineModel{}
+var _ directbase.Model = &modelReasoningEngine{}
+var _ = strings.TrimPrefix
 
-type aiplatformReasoningEngineModel struct {
-	config *config.ControllerConfig
+type modelReasoningEngine struct {
+	config config.ControllerConfig
 }
 
-func (m *aiplatformReasoningEngineModel) client(ctx context.Context, location string) (*gcp.ReasoningEngineClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	endpoint := fmt.Sprintf("%s-aiplatform.googleapis.com:443", location)
-	opts = append(opts, option.WithEndpoint(endpoint))
-	gcpClient, err := gcp.NewReasoningEngineClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building ReasoningEngineClient client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *aiplatformReasoningEngineModel) AdapterForObject(ctx context.Context, reader *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelReasoningEngine) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
 	obj := &krm.AIPlatformReasoningEngine{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(reader.Object.Object, &obj); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader.Reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	// Always call common.NormalizeReferences to resolve any resource references
-	if err := common.NormalizeReferences(ctx, reader.Reader, obj, nil); err != nil {
+	id := i.(*krm.AIPlatformReasoningEngineIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	typedID, ok := id.(*krm.AIPlatformReasoningEngineIdentity)
-	if !ok {
-		return nil, fmt.Errorf("expected AIPlatformReasoningEngineIdentity, got %T", id)
-	}
-
-	gcpClient, err := m.client(ctx, typedID.Location)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredpb := AIPlatformReasoningEngineSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, fmt.Errorf("mapping spec to proto: %w", mapCtx.Err())
-	}
-
-	return &AIPlatformReasoningEngineAdapter{
-		id:        typedID,
+	return &ReasoningEngineAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		desiredpb: desiredpb,
 		desired:   obj,
 	}, nil
 }
 
-func (m *aiplatformReasoningEngineModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelReasoningEngine) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.AIPlatformReasoningEngineIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := m.client(ctx, id.Location)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &AIPlatformReasoningEngineAdapter{
+	return &ReasoningEngineAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type AIPlatformReasoningEngineAdapter struct {
+func (m *modelReasoningEngine) client(ctx context.Context) (*gcp.ReasoningEngineClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewReasoningEngineClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ReasoningEngine client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ReasoningEngineAdapter struct {
 	id        *krm.AIPlatformReasoningEngineIdentity
 	gcpClient *gcp.ReasoningEngineClient
-	desiredpb *pb.ReasoningEngine
 	desired   *krm.AIPlatformReasoningEngine
 	actual    *pb.ReasoningEngine
 }
 
-var _ directbase.Adapter = &AIPlatformReasoningEngineAdapter{}
+var _ directbase.Adapter = &ReasoningEngineAdapter{}
 
-func (a *AIPlatformReasoningEngineAdapter) Find(ctx context.Context) (bool, error) {
-	// Rule 2: Find() Pre-Check Guard for service-generated ID
-	if a.id.ReasoningEngine == "" {
-		return false, nil
-	}
-
+func (a *ReasoningEngineAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting AIPlatformReasoningEngine", "name", a.id.String())
+	log.V(2).Info("getting ReasoningEngine", "name", a.id)
 
 	req := &pb.GetReasoningEngineRequest{
 		Name: a.id.String(),
 	}
-
-	reasoningEnginepb, err := a.gcpClient.GetReasoningEngine(ctx, req)
+	resp, err := a.gcpClient.GetReasoningEngine(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting AIPlatformReasoningEngine %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting ReasoningEngine %q: %w", a.id, err)
 	}
 
-	a.actual = reasoningEnginepb
-
+	a.actual = resp
 	return true, nil
 }
 
-func (a *AIPlatformReasoningEngineAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ReasoningEngineAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating AIPlatformReasoningEngine", "parent", a.id.ParentString())
+	log.V(2).Info("creating ReasoningEngine", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	// Rule 3: Do not set desiredpb.Name, let GCP generate the identifier.
-	a.desiredpb.Name = ""
+	desired := a.desired.DeepCopy()
+	resource := AIPlatformReasoningEngineSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateReasoningEngineRequest{
-		Parent:          a.id.ParentString(),
-		ReasoningEngine: a.desiredpb,
+		Parent:            a.id.ParentString(),
+		ReasoningEngineId: a.id.ReasoningEngine,
+		ReasoningEngine:   resource,
 	}
-
 	op, err := a.gcpClient.CreateReasoningEngine(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating AIPlatformReasoningEngine in %q: %w", a.id.ParentString(), err)
+		return fmt.Errorf("creating ReasoningEngine %s: %w", a.id, err)
 	}
-
-	log.V(2).Info("successfully started creation of AIPlatformReasoningEngine", "parent", a.id.ParentString())
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for AIPlatformReasoningEngine creation in %q: %w", a.id.ParentString(), err)
+		return fmt.Errorf("waiting create ReasoningEngine %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created ReasoningEngine", "name", a.id)
 
-	if created != nil && created.Name != "" {
-		tempID := &krm.AIPlatformReasoningEngineIdentity{}
-		if err := tempID.FromExternal(created.Name); err != nil {
-			return fmt.Errorf("parsing created AIPlatformReasoningEngine name %q: %w", created.Name, err)
-		}
-		a.id.ReasoningEngine = tempID.ReasoningEngine
+	status := &krm.AIPlatformReasoningEngineStatus{}
+	status.ObservedState = AIPlatformReasoningEngineObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	log.V(2).Info("successfully completed creation of AIPlatformReasoningEngine", "name", a.id.String())
-
-	// Fetch fully-populated resource immediately after LRO success
-	getReq := &pb.GetReasoningEngineRequest{
-		Name: a.id.String(),
-	}
-	latest, err := a.gcpClient.GetReasoningEngine(ctx, getReq)
-	if err != nil {
-		return fmt.Errorf("fetching newly created AIPlatformReasoningEngine %q: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *AIPlatformReasoningEngineAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ReasoningEngineAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating AIPlatformReasoningEngine", "name", a.id.String())
+	log.V(2).Info("updating ReasoningEngine", "name", a.id)
 
-	diffs, updateMask, err := common.CompareBrownfieldSpec(
-		ctx,
-		&a.desired.Spec,
-		a.actual,
-		AIPlatformReasoningEngineSpec_FromProto,
-		AIPlatformReasoningEngineSpec_ToProto,
-		nil,
-	)
+	mapCtx := &direct.MapContext{}
+	desired := AIPlatformReasoningEngineSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareReasoningEngine(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateReasoningEngineRequest{
+			ReasoningEngine: desired,
+			UpdateMask:      updateMask,
+		}
+		op, err := a.gcpClient.UpdateReasoningEngine(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating ReasoningEngine %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update ReasoningEngine %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated ReasoningEngine", "name", a.id)
+
+		status := &krm.AIPlatformReasoningEngineStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = AIPlatformReasoningEngineObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	a.desiredpb.Name = a.id.String()
-	req := &pb.UpdateReasoningEngineRequest{
-		ReasoningEngine: a.desiredpb,
-		UpdateMask:      updateMask,
-	}
-
-	op, err := a.gcpClient.UpdateReasoningEngine(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating AIPlatformReasoningEngine %q: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully started update of AIPlatformReasoningEngine", "name", a.id.String())
-
-	_, err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for AIPlatformReasoningEngine %q update: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully completed update of AIPlatformReasoningEngine", "name", a.id.String())
-
-	getReq := &pb.GetReasoningEngineRequest{
-		Name: a.id.String(),
-	}
-	latest, err := a.gcpClient.GetReasoningEngine(ctx, getReq)
-	if err != nil {
-		return fmt.Errorf("fetching updated AIPlatformReasoningEngine %q: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *AIPlatformReasoningEngineAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareReasoningEngine(ctx context.Context, actual, desired *pb.ReasoningEngine) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, AIPlatformReasoningEngineSpec_FromProto, AIPlatformReasoningEngineSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *ReasoningEngineAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -271,56 +249,42 @@ func (a *AIPlatformReasoningEngineAdapter) Export(ctx context.Context) (*unstruc
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ProjectRef = &refs.ProjectRef{Name: a.id.Project}
-	obj.Spec.Location = &a.id.Location
-	obj.Spec.ResourceID = &a.id.ReasoningEngine
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.ReasoningEngine)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("converting to unstructured: %w", err)
+		return nil, err
 	}
 
 	u.Object = uObj
 	u.SetName(a.id.ReasoningEngine)
 	u.SetGroupVersionKind(krm.AIPlatformReasoningEngineGVK)
-
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
-func (a *AIPlatformReasoningEngineAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.ReasoningEngine) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.AIPlatformReasoningEngineStatus{}
-	status.ObservedState = AIPlatformReasoningEngineObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return fmt.Errorf("mapping status: %w", mapCtx.Err())
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *AIPlatformReasoningEngineAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ReasoningEngineAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting AIPlatformReasoningEngine", "name", a.id.String())
+	log.V(2).Info("deleting ReasoningEngine", "name", a.id)
 
 	req := &pb.DeleteReasoningEngineRequest{
 		Name: a.id.String(),
 	}
-
 	op, err := a.gcpClient.DeleteReasoningEngine(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting AIPlatformReasoningEngine %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting ReasoningEngine %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted ReasoningEngine", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for deletion of AIPlatformReasoningEngine %q: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete ReasoningEngine %s: %w", a.id, err)
+		}
 	}
-
 	return true, nil
 }

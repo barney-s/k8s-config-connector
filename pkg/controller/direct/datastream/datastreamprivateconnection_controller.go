@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,33 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.datastream.v1.Datastream
-// proto.message: google.cloud.datastream.v1.PrivateConnection
-// crd.type: DatastreamPrivateConnection
-// crd.version: v1alpha1
-
 package datastream
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/datastream/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/datastream/apiv1"
 	pb "cloud.google.com/go/datastream/apiv1/datastreampb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -50,6 +49,7 @@ func NewPrivateConnectionModel(ctx context.Context, config *config.ControllerCon
 }
 
 var _ directbase.Model = &modelPrivateConnection{}
+var _ = strings.TrimPrefix
 
 type modelPrivateConnection struct {
 	config config.ControllerConfig
@@ -58,30 +58,21 @@ type modelPrivateConnection struct {
 func (m *modelPrivateConnection) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DatastreamPrivateConnection{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.PrivateConnectionIdentity{}
 
-	id, err := krm.NewPrivateConnectionIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get datastream GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
-	if err != nil {
-		return nil, err
-	}
-	datastreamClient, err := gcpClient.newDatastreamClient(ctx)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &PrivateConnectionAdapter{
 		id:        id,
-		gcpClient: datastreamClient,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
@@ -90,26 +81,37 @@ func (m *modelPrivateConnection) AdapterForURL(ctx context.Context, url string) 
 	return nil, nil
 }
 
+func (m *modelPrivateConnection) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building PrivateConnection client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type PrivateConnectionAdapter struct {
 	id        *krm.PrivateConnectionIdentity
 	gcpClient *gcp.Client
 	desired   *krm.DatastreamPrivateConnection
 	actual    *pb.PrivateConnection
-	reader    client.Reader
 }
 
 var _ directbase.Adapter = &PrivateConnectionAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *PrivateConnectionAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting PrivateConnection", "name", a.id)
 
-	req := &pb.GetPrivateConnectionRequest{Name: a.id.String()}
-	privateconnectionpb, err := a.gcpClient.GetPrivateConnection(ctx, req)
+	req := &pb.GetPrivateConnectionRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetPrivateConnection(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -117,25 +119,21 @@ func (a *PrivateConnectionAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting PrivateConnection %q: %w", a.id, err)
 	}
 
-	a.actual = privateconnectionpb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *PrivateConnectionAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating PrivateConnection", "name", a.id)
-
-	if err := a.normalizeReferenceFields(ctx); err != nil {
-		return err
-	}
-
 	mapCtx := &direct.MapContext{}
+
 	desired := a.desired.DeepCopy()
 	resource := DatastreamPrivateConnectionSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreatePrivateConnectionRequest{
 		Parent:              a.id.Parent().String(),
@@ -148,7 +146,7 @@ func (a *PrivateConnectionAdapter) Create(ctx context.Context, createOp *directb
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("PrivateConnection %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create PrivateConnection %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created PrivateConnection", "name", a.id)
 
@@ -161,45 +159,30 @@ func (a *PrivateConnectionAdapter) Create(ctx context.Context, createOp *directb
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *PrivateConnectionAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating PrivateConnection", "name", a.id)
 
-	if err := a.normalizeReferenceFields(ctx); err != nil {
-		return err
-	}
-
 	mapCtx := &direct.MapContext{}
-	desired := a.desired.DeepCopy()
-	resource := DatastreamPrivateConnectionSpec_ToProto(mapCtx, &desired.Spec)
+	desired := DatastreamPrivateConnectionSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	paths := []string{}
-	if desired.Spec.DisplayName != nil && !reflect.DeepEqual(resource.DisplayName, a.actual.DisplayName) {
-		report.AddField("display_name", a.actual.DisplayName, resource.DisplayName)
-		paths = append(paths, "display_name")
+	diffs, updateMask, err := comparePrivateConnection(ctx, a.actual, desired)
+	if err != nil {
+		return err
 	}
-	if desired.Spec.Labels != nil && !reflect.DeepEqual(resource.Labels, a.actual.Labels) {
-		report.AddField("labels", a.actual.Labels, resource.Labels)
-		paths = append(paths, "labels")
-	}
-	if desired.Spec.VPCPeeringConfig != nil && !reflect.DeepEqual(resource.VpcPeeringConfig, a.actual.VpcPeeringConfig) {
-		report.AddField("vpc_peering_config", a.actual.VpcPeeringConfig, resource.VpcPeeringConfig)
-		paths = append(paths, "vpc_peering_config")
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("DatastreamPrivateConnection resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	if len(paths) != 0 {
-		structuredreporting.ReportDiff(ctx, report)
-		return fmt.Errorf("updating PrivateConnection is not supported, fields: %v", paths)
-	}
-
-	// still need to update status (in the event of acquiring an existing resource)
 	status := &krm.DatastreamPrivateConnectionStatus{}
+	mapCtx = &direct.MapContext{}
 	status.ObservedState = DatastreamPrivateConnectionObservedState_FromProto(mapCtx, a.actual)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
@@ -208,7 +191,19 @@ func (a *PrivateConnectionAdapter) Update(ctx context.Context, updateOp *directb
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func comparePrivateConnection(ctx context.Context, actual, desired *pb.PrivateConnection) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DatastreamPrivateConnectionSpec_FromProto, DatastreamPrivateConnectionSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
 func (a *PrivateConnectionAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -221,52 +216,41 @@ func (a *PrivateConnectionAdapter) Export(ctx context.Context) (*unstructured.Un
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
-	obj.Spec.Location = a.id.Parent().Location
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.actual.Name)
-	u.SetGroupVersionKind(krm.DatastreamPrivateConnectionGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.DatastreamPrivateConnectionGVK)
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *PrivateConnectionAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting PrivateConnection", "name", a.id)
 
-	req := &pb.DeletePrivateConnectionRequest{Name: a.id.String()}
+	req := &pb.DeletePrivateConnectionRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeletePrivateConnection(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent PrivateConnection, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting PrivateConnection %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted PrivateConnection", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete PrivateConnection %s: %w", a.id, err)
-	}
-	return true, nil
-}
-
-func (a *PrivateConnectionAdapter) normalizeReferenceFields(ctx context.Context) error {
-	obj := a.desired
-
-	if obj.Spec.VPCPeeringConfig != nil && obj.Spec.VPCPeeringConfig.NetworkRef != nil {
-		if err := obj.Spec.VPCPeeringConfig.NetworkRef.Normalize(ctx, a.reader, obj.GetNamespace()); err != nil {
-			return err
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete PrivateConnection %s: %w", a.id, err)
 		}
 	}
-
-	return nil
+	return true, nil
 }

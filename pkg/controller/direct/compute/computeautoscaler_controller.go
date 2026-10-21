@@ -12,32 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.compute.v1.Autoscalers
-// proto.message: google.cloud.compute.v1.Autoscaler
-// crd.type: ComputeAutoscaler
-// crd.version: v1alpha1
-
 package compute
 
 import (
 	"context"
 	"fmt"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	pb "cloud.google.com/go/compute/apiv1/computepb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1alpha1"
-	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
@@ -45,6 +25,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	pb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -52,88 +42,78 @@ func init() {
 }
 
 func NewComputeAutoscalerModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeAutoscalerModel{config: config}, nil
+	return &modelComputeAutoscaler{config: *config}, nil
 }
 
-var _ directbase.Model = &computeAutoscalerModel{}
+var _ directbase.Model = &modelComputeAutoscaler{}
+var _ = strings.TrimPrefix
 
-type computeAutoscalerModel struct {
-	config *config.ControllerConfig
+type modelComputeAutoscaler struct {
+	config config.ControllerConfig
 }
 
-func (m *computeAutoscalerModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeAutoscaler) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeAutoscaler{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	autoscalersClient, err := gcpClient.newAutoscalersClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := resolveComputeAutoscalerRefs(ctx, reader, obj); err != nil {
-		return nil, fmt.Errorf("resolving references: %w", err)
-	}
-
+	id := i.(*krm.ComputeAutoscalerIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desired := obj.DeepCopy()
-	resource := ComputeAutoscalerSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
-
 	return &ComputeAutoscalerAdapter{
-		gcpClient: autoscalersClient,
-		id:        id.(*krm.ComputeAutoscalerIdentity),
-		desired:   resource,
-		reader:    reader,
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *computeAutoscalerModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeAutoscaler) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.ComputeAutoscalerIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := newGCPClient(m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
+		return nil, err
 	}
-	autoscalersClient, err := gcpClient.newAutoscalersClient(ctx)
+	return &ComputeAutoscalerAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelComputeAutoscaler) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	return &ComputeAutoscalerAdapter{
-		gcpClient: autoscalersClient,
-		id:        id,
-	}, nil
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeAutoscaler client: %w", err)
+	}
+	return gcpClient, err
 }
 
 type ComputeAutoscalerAdapter struct {
-	gcpClient *compute.AutoscalersClient
 	id        *krm.ComputeAutoscalerIdentity
-	desired   *pb.Autoscaler
-	actual    *pb.Autoscaler
-	reader    client.Reader
+	gcpClient *gcp.Client
+	desired   *krm.ComputeAutoscaler
+	actual    *pb.ComputeAutoscaler
 }
 
 var _ directbase.Adapter = &ComputeAutoscalerAdapter{}
@@ -142,12 +122,10 @@ func (a *ComputeAutoscalerAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeAutoscaler", "name", a.id)
 
-	req := &pb.GetAutoscalerRequest{
-		Project:    a.id.Project,
-		Zone:       a.id.Zone,
-		Autoscaler: a.id.Autoscaler,
+	req := &pb.GetComputeAutoscalerRequest{
+		Name: a.id.String(),
 	}
-	actual, err := a.gcpClient.Get(ctx, req)
+	resp, err := a.gcpClient.GetComputeAutoscaler(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -155,108 +133,77 @@ func (a *ComputeAutoscalerAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting ComputeAutoscaler %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
 func (a *ComputeAutoscalerAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ComputeAutoscaler", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	a.desired.Name = proto.String(a.id.Autoscaler)
-
-	req := &pb.InsertAutoscalerRequest{
-		Project:            a.id.Project,
-		Zone:               a.id.Zone,
-		AutoscalerResource: a.desired,
+	desired := a.desired.DeepCopy()
+	resource := ComputeAutoscalerSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	op, err := a.gcpClient.Insert(ctx, req)
+
+	req := &pb.CreateComputeAutoscalerRequest{
+		Parent:              a.id.ParentString(),
+		ComputeAutoscalerId: a.id.Zone,
+		ComputeAutoscaler:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeAutoscaler(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating ComputeAutoscaler %s: %w", a.id, err)
 	}
-
-	err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting ComputeAutoscaler %s create failed: %w", a.id, err)
+		return fmt.Errorf("waiting create ComputeAutoscaler %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created ComputeAutoscaler", "name", a.id)
 
-	// Get latest state
-	latest, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeAutoscaler %s after creation: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status := &krm.ComputeAutoscalerStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeAutoscalerAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeAutoscaler", "name", a.id)
 
-	diffs, _, err := compareComputeAutoscaler(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := ComputeAutoscalerSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareComputeAutoscaler(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	var updated *pb.Autoscaler
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		updated = a.actual
-	} else {
+	_ = updateMask
+	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
-
-		req := &pb.PatchAutoscalerRequest{
-			Project:            a.id.Project,
-			Zone:               a.id.Zone,
-			Autoscaler:         proto.String(a.id.Autoscaler),
-			AutoscalerResource: a.desired,
-		}
-		op, err := a.gcpClient.Patch(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating compute ComputeAutoscaler %s: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated compute ComputeAutoscaler", "name", a.id.String())
-
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("compute ComputeAutoscaler %s waiting for update: %w", a.id.String(), err)
-		}
-
-		updated, err = a.get(ctx)
-		if err != nil {
-			return fmt.Errorf("getting ComputeAutoscaler %s: %w", a.id, err)
-		}
+		return fmt.Errorf("ComputeAutoscaler resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	return a.updateStatus(ctx, updateOp, updated)
+	status := &krm.ComputeAutoscalerStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *ComputeAutoscalerAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeAutoscaler", "name", a.id)
-
-	req := &pb.DeleteAutoscalerRequest{
-		Project:    a.id.Project,
-		Zone:       a.id.Zone,
-		Autoscaler: a.id.Autoscaler,
-	}
-	op, err := a.gcpClient.Delete(ctx, req)
+func compareComputeAutoscaler(ctx context.Context, actual, desired *pb.ComputeAutoscaler) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeAutoscalerSpec_v1alpha1_FromProto, ComputeAutoscalerSpec_v1alpha1_ToProto)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting ComputeAutoscaler %s: %w", a.id, err)
+		return nil, nil, err
 	}
-
-	err = op.Wait(ctx)
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
-		return false, fmt.Errorf("waiting ComputeAutoscaler %s delete failed: %w", a.id, err)
+		return nil, nil, err
 	}
-
-	log.V(2).Info("successfully deleted ComputeAutoscaler", "name", a.id)
-	return true, nil
+	return diffs, updateMask, nil
 }
 
 func (a *ComputeAutoscalerAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -271,9 +218,7 @@ func (a *ComputeAutoscalerAdapter) Export(ctx context.Context) (*unstructured.Un
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.Zone = a.id.Zone
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Autoscaler)
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Zone)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -281,91 +226,13 @@ func (a *ComputeAutoscalerAdapter) Export(ctx context.Context) (*unstructured.Un
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.GetName())
+	u.SetName(a.id.Zone)
 	u.SetGroupVersionKind(krm.ComputeAutoscalerGVK)
 	return u, nil
 }
 
-func (a *ComputeAutoscalerAdapter) get(ctx context.Context) (*pb.Autoscaler, error) {
-	req := &pb.GetAutoscalerRequest{
-		Project:    a.id.Project,
-		Zone:       a.id.Zone,
-		Autoscaler: a.id.Autoscaler,
-	}
-	return a.gcpClient.Get(ctx, req)
-}
-
-func (a *ComputeAutoscalerAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Autoscaler) error {
-	mapCtx := &direct.MapContext{}
-	status := ComputeAutoscalerStatus_v1alpha1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareComputeAutoscaler(ctx context.Context, actual, desired *pb.Autoscaler) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, ComputeAutoscalerSpec_v1alpha1_FromProto, ComputeAutoscalerSpec_v1alpha1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *pb.Autoscaler) {
-		// Populate GCP/server defaults here if needed
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func resolveComputeAutoscalerRefs(ctx context.Context, reader client.Reader, obj *krm.ComputeAutoscaler) error {
-	defaultNamespace := obj.GetNamespace()
-
-	if obj.Spec.TargetRef.External != "" {
-		obj.Spec.TargetRef.External = refs.TrimComputeURIPrefix(obj.Spec.TargetRef.External)
-		return nil
-	}
-	if obj.Spec.TargetRef.Name == "" {
-		return nil
-	}
-	namespace := obj.Spec.TargetRef.Namespace
-	if namespace == "" {
-		namespace = defaultNamespace
-	}
-
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "compute.cnrm.cloud.google.com",
-		Version: "v1beta1",
-		Kind:    "ComputeInstanceGroupManager",
-	})
-	key := types.NamespacedName{
-		Namespace: namespace,
-		Name:      obj.Spec.TargetRef.Name,
-	}
-	if err := reader.Get(ctx, key, u); err != nil {
-		return fmt.Errorf("getting referenced ComputeInstanceGroupManager %s: %w", key, err)
-	}
-
-	externalRef, _, _ := unstructured.NestedString(u.Object, "status", "externalRef")
-	if externalRef != "" {
-		obj.Spec.TargetRef.External = refs.TrimComputeURIPrefix(externalRef)
-		return nil
-	}
-	selfLink, _, _ := unstructured.NestedString(u.Object, "status", "selfLink")
-	if selfLink != "" {
-		obj.Spec.TargetRef.External = refs.TrimComputeURIPrefix(selfLink)
-		return nil
-	}
-
-	return fmt.Errorf("referenced ComputeInstanceGroupManager %s does not have status.externalRef or status.selfLink", key)
+func (a *ComputeAutoscalerAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for ComputeAutoscaler, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

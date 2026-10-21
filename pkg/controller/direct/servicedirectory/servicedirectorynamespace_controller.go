@@ -17,10 +17,7 @@ package servicedirectory
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/servicedirectory/apiv1beta1"
-	pb "cloud.google.com/go/servicedirectory/apiv1beta1/servicedirectorypb"
-	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/servicedirectory/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -31,10 +28,13 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/servicedirectory/apiv1beta1"
+	pb "cloud.google.com/go/servicedirectory/apiv1beta1/servicedirectorypb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -45,230 +45,166 @@ func init() {
 }
 
 func NewNamespaceModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &namespaceModel{config: config}, nil
+	return &modelNamespace{config: *config}, nil
 }
 
-var _ directbase.Model = &namespaceModel{}
+var _ directbase.Model = &modelNamespace{}
+var _ = strings.TrimPrefix
 
-type namespaceModel struct {
-	config *config.ControllerConfig
+type modelNamespace struct {
+	config config.ControllerConfig
 }
 
-func (m *namespaceModel) client(ctx context.Context) (*gcp.RegistrationClient, error) {
+func (m *modelNamespace) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.ServiceDirectoryNamespace{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.ServiceDirectoryNamespaceIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &NamespaceAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelNamespace) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.ServiceDirectoryNamespaceIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &NamespaceAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelNamespace) client(ctx context.Context) (*gcp.RegistrationClient, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewRegistrationRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building ServiceDirectory registration client: %w", err)
+		return nil, fmt.Errorf("building Namespace client: %w", err)
 	}
-	return gcpClient, nil
+	return gcpClient, err
 }
 
-func (m *namespaceModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.ServiceDirectoryNamespace{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	// Always call common.NormalizeReferences to resolve references
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	idVal, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id, ok := idVal.(*krm.ServiceDirectoryNamespaceIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", idVal)
-	}
-
-	// Convert the KRM spec to API format
-	mapCtx := &direct.MapContext{}
-	desired := ServiceDirectoryNamespaceSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	// Support labels
-	desired.Labels = label.NewGCPLabelsFromK8sLabels(obj.GetLabels())
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ServiceDirectoryNamespaceAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   desired,
-	}, nil
-}
-
-func (m *namespaceModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.ServiceDirectoryNamespaceIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		// Not recognized
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ServiceDirectoryNamespaceAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-	}, nil
-}
-
-type ServiceDirectoryNamespaceAdapter struct {
+type NamespaceAdapter struct {
 	id        *krm.ServiceDirectoryNamespaceIdentity
 	gcpClient *gcp.RegistrationClient
-	desired   *pb.Namespace
+	desired   *krm.ServiceDirectoryNamespace
 	actual    *pb.Namespace
 }
 
-var _ directbase.Adapter = &ServiceDirectoryNamespaceAdapter{}
+var _ directbase.Adapter = &NamespaceAdapter{}
 
-func (a *ServiceDirectoryNamespaceAdapter) Find(ctx context.Context) (bool, error) {
+func (a *NamespaceAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("getting ServiceDirectoryNamespace", "name", fqn)
+	log.V(2).Info("getting Namespace", "name", a.id)
 
 	req := &pb.GetNamespaceRequest{
-		Name: fqn,
+		Name: a.id.String(),
 	}
-	resource, err := a.gcpClient.GetNamespace(ctx, req)
+	resp, err := a.gcpClient.GetNamespace(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting ServiceDirectoryNamespace %q: %w", fqn, err)
+		return false, fmt.Errorf("getting Namespace %q: %w", a.id, err)
 	}
 
-	a.actual = resource
+	a.actual = resp
 	return true, nil
 }
 
-func (a *ServiceDirectoryNamespaceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *NamespaceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	parent := a.id.ParentString()
-	fqn := a.id.String()
-	log.V(2).Info("creating ServiceDirectoryNamespace", "name", fqn)
+	log.V(2).Info("creating Namespace", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := ServiceDirectoryNamespaceSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateNamespaceRequest{
-		Parent:      parent,
+		Parent:      a.id.ParentString(),
 		NamespaceId: a.id.Namespace,
-		Namespace:   a.desired,
+		Namespace:   resource,
 	}
 	created, err := a.gcpClient.CreateNamespace(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating ServiceDirectoryNamespace %s: %w", a.id.Namespace, err)
+		return fmt.Errorf("creating Namespace %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created ServiceDirectoryNamespace", "name", created.Name)
+	log.V(2).Info("successfully created Namespace", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ServiceDirectoryNamespaceStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *ServiceDirectoryNamespaceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *NamespaceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("updating ServiceDirectoryNamespace", "name", fqn)
+	log.V(2).Info("updating Namespace", "name", a.id)
 
-	diffs, updateMask, err := compareNamespace(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := ServiceDirectoryNamespaceSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareNamespace(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desired := proto.CloneOf(a.desired)
-		desired.Name = fqn
+		desired.Name = a.id.String()
 
 		req := &pb.UpdateNamespaceRequest{
 			Namespace:  desired,
 			UpdateMask: updateMask,
 		}
-
 		updated, err := a.gcpClient.UpdateNamespace(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating ServiceDirectoryNamespace %s: %w", fqn, err)
+			return fmt.Errorf("updating Namespace %s: %w", a.id, err)
 		}
-		latest = updated
+		log.V(2).Info("successfully updated Namespace", "name", a.id)
+
+		status := &krm.ServiceDirectoryNamespaceStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func (a *ServiceDirectoryNamespaceAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Namespace) error {
-	mapCtx := &direct.MapContext{}
-	status := ServiceDirectoryNamespaceStatus_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *ServiceDirectoryNamespaceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	if a.actual == nil {
-		return nil, fmt.Errorf("Find() not called")
-	}
-	u := &unstructured.Unstructured{}
-
-	obj := &krm.ServiceDirectoryNamespace{}
-	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(ServiceDirectoryNamespaceSpec_FromProto(mapCtx, a.actual))
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	obj.Spec.Location = a.id.Location
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Namespace)
-	obj.Spec.ProjectRef = &refs.ProjectRef{
-		External: a.id.Project,
-	}
-
-	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
-	if err != nil {
-		return nil, err
-	}
-
-	u.Object = uObj
-	u.SetName(a.id.Namespace)
-	u.SetGroupVersionKind(krm.ServiceDirectoryNamespaceGVK)
-
-	export.SetLabels(u, a.actual.Labels)
-
-	return u, nil
-}
-
-func (a *ServiceDirectoryNamespaceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("deleting ServiceDirectoryNamespace", "name", fqn)
-
-	req := &pb.DeleteNamespaceRequest{Name: fqn}
-	err := a.gcpClient.DeleteNamespace(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent ServiceDirectoryNamespace, assuming it was already deleted", "name", fqn)
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting ServiceDirectoryNamespace %s: %w", fqn, err)
-	}
-	log.V(2).Info("successfully deleted ServiceDirectoryNamespace", "name", fqn)
-	return true, nil
+	return nil
 }
 
 func compareNamespace(ctx context.Context, actual, desired *pb.Namespace) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
@@ -282,4 +218,50 @@ func compareNamespace(ctx context.Context, actual, desired *pb.Namespace) (*stru
 		return nil, nil, err
 	}
 	return diffs, updateMask, nil
+}
+
+func (a *NamespaceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.ServiceDirectoryNamespace{}
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(ServiceDirectoryNamespaceSpec_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
+	}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Namespace)
+
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+
+	u.Object = uObj
+	u.SetName(a.id.Namespace)
+	u.SetGroupVersionKind(krm.ServiceDirectoryNamespaceGVK)
+	export.SetLabels(u, a.actual.Labels)
+	return u, nil
+}
+
+func (a *NamespaceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deleting Namespace", "name", a.id)
+
+	req := &pb.DeleteNamespaceRequest{
+		Name: a.id.String(),
+	}
+	err := a.gcpClient.DeleteNamespace(ctx, req)
+	if err != nil {
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deleting Namespace %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully deleted Namespace", "name", a.id)
+	return true, nil
 }

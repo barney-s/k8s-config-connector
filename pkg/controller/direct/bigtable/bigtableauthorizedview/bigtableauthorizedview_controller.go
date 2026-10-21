@@ -17,93 +17,98 @@ package bigtableauthorizedview
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/bigtable/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/bigtable"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/bigtable"
 	pb "cloud.google.com/go/bigtable/admin/apiv2/adminpb"
 	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.BigtableAuthorizedViewGVK, NewModel)
+	registry.RegisterModel(krm.BigtableAuthorizedViewGVK, NewBigtableAuthorizedViewModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewBigtableAuthorizedViewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelBigtableAuthorizedView{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelBigtableAuthorizedView{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelBigtableAuthorizedView struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context, projectID, instanceID string) (*gcp.AdminClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	if err != nil {
-		return nil, fmt.Errorf("building bigtable admin client options: %w", err)
-	}
-	gcpClient, err := gcp.NewAdminClient(ctx, projectID, instanceID, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building bigtable admin client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelBigtableAuthorizedView) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.BigtableAuthorizedView{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.AuthorizedViewIdentity{}
 
-	id, err := krm.NewAuthorizedViewIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	gcpClient, err := m.client(ctx, id.ProjectID(), id.InstanceID())
-	if err != nil {
-		return nil, err
-	}
-	return &Adapter{
+	return &BigtableAuthorizedViewAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelBigtableAuthorizedView) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
+func (m *modelBigtableAuthorizedView) client(ctx context.Context) (*gcp.AdminClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewAdminClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building BigtableAuthorizedView client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type BigtableAuthorizedViewAdapter struct {
 	id        *krm.AuthorizedViewIdentity
 	gcpClient *gcp.AdminClient
 	desired   *krm.BigtableAuthorizedView
-	actual    *gcp.AuthorizedViewInfo
+	actual    *pb.BigtableAuthorizedView
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &BigtableAuthorizedViewAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *BigtableAuthorizedViewAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting BigtableAuthorizedView", "name", a.id)
 
-	info, err := a.gcpClient.AuthorizedViewInfo(ctx, a.id.TableID(), a.id.ID())
+	req := &pb.GetBigtableAuthorizedViewRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBigtableAuthorizedView(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -111,68 +116,27 @@ func (a *Adapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting BigtableAuthorizedView %q: %w", a.id, err)
 	}
 
-	a.actual = info
+	a.actual = resp
 	return true, nil
 }
 
-func convertAuthorizedViewInfoToProto(info *gcp.AuthorizedViewInfo) *pb.AuthorizedView {
-	if info == nil {
-		return nil
-	}
-	out := &pb.AuthorizedView{}
-	if info.AuthorizedView != nil {
-		if sv, ok := info.AuthorizedView.(*gcp.SubsetViewInfo); ok {
-			out.AuthorizedView = &pb.AuthorizedView_SubsetView_{
-				SubsetView: &pb.AuthorizedView_SubsetView{
-					RowPrefixes: sv.RowPrefixes,
-				},
-			}
-		}
-	}
-	if info.DeletionProtection == gcp.Protected {
-		out.DeletionProtection = true
-	} else if info.DeletionProtection == gcp.Unprotected {
-		out.DeletionProtection = false
-	}
-	return out
-}
-
-func convertProtoToAuthorizedViewConf(id *krm.AuthorizedViewIdentity, pbView *pb.AuthorizedView) *gcp.AuthorizedViewConf {
-	if pbView == nil {
-		return nil
-	}
-	var subsetView *gcp.SubsetViewConf
-	if pbView.GetSubsetView() != nil {
-		subsetView = &gcp.SubsetViewConf{
-			RowPrefixes: pbView.GetSubsetView().RowPrefixes,
-		}
-	}
-	var deletionProtection gcp.DeletionProtection
-	if pbView.GetDeletionProtection() {
-		deletionProtection = gcp.Protected
-	} else {
-		deletionProtection = gcp.Unprotected
-	}
-	return &gcp.AuthorizedViewConf{
-		TableID:            id.TableID(),
-		AuthorizedViewID:   id.ID(),
-		AuthorizedView:     subsetView,
-		DeletionProtection: deletionProtection,
-	}
-}
-
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *BigtableAuthorizedViewAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating BigtableAuthorizedView", "name", a.id)
-
 	mapCtx := &direct.MapContext{}
-	desiredPb := bigtable.BigtableAuthorizedViewSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+
+	desired := a.desired.DeepCopy()
+	resource := BigtableAuthorizedViewSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	conf := convertProtoToAuthorizedViewConf(a.id, desiredPb)
-	err := a.gcpClient.CreateAuthorizedView(ctx, conf)
+	req := &pb.CreateBigtableAuthorizedViewRequest{
+		Parent:                   a.id.ParentString(),
+		BigtableAuthorizedViewId: a.id.ID(),
+		BigtableAuthorizedView:   resource,
+	}
+	created, err := a.gcpClient.CreateBigtableAuthorizedView(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating BigtableAuthorizedView %s: %w", a.id, err)
 	}
@@ -180,92 +144,73 @@ func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperati
 
 	status := &krm.BigtableAuthorizedViewStatus{}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *BigtableAuthorizedViewAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating BigtableAuthorizedView", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	desiredPb := bigtable.BigtableAuthorizedViewSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	desired := BigtableAuthorizedViewSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	actualPb := convertAuthorizedViewInfoToProto(a.actual)
-
-	paths, report, err := common.CompareProtoMessageStructuredDiff(desiredPb, actualPb, common.BasicDiff)
+	diffs, updateMask, err := compareBigtableAuthorizedView(ctx, a.actual, desired)
 	if err != nil {
 		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("BigtableAuthorizedView resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
 	status := &krm.BigtableAuthorizedViewStatus{}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		// According to Mandatory Rule 3, always call UpdateStatus before returning
-		return updateOp.UpdateStatus(ctx, status, nil)
-	}
-
-	report.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, report)
-
-	conf := convertProtoToAuthorizedViewConf(a.id, desiredPb)
-	updateConf := gcp.UpdateAuthorizedViewConf{
-		AuthorizedViewConf: *conf,
-	}
-
-	err = a.gcpClient.UpdateAuthorizedView(ctx, updateConf)
-	if err != nil {
-		return fmt.Errorf("updating BigtableAuthorizedView %s: %w", a.id, err)
-	}
-	log.V(2).Info("successfully updated BigtableAuthorizedView", "name", a.id)
-
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting BigtableAuthorizedView", "name", a.id)
-
-	err := a.gcpClient.DeleteAuthorizedView(ctx, a.id.TableID(), a.id.ID())
+func compareBigtableAuthorizedView(ctx context.Context, actual, desired *pb.BigtableAuthorizedView) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, BigtableAuthorizedViewSpec_v1alpha1_FromProto, BigtableAuthorizedViewSpec_v1alpha1_ToProto)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("deleting BigtableAuthorizedView %s: %w", a.id, err)
+		return nil, nil, err
 	}
-	log.V(2).Info("successfully deleted BigtableAuthorizedView", "name", a.id)
-	return true, nil
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *BigtableAuthorizedViewAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
 	u := &unstructured.Unstructured{}
 
 	obj := &krm.BigtableAuthorizedView{}
-	obj.Spec.SubsetView = &krm.AuthorizedView_SubsetView{}
-	if a.actual.AuthorizedView != nil {
-		if sv, ok := a.actual.AuthorizedView.(*gcp.SubsetViewInfo); ok {
-			obj.Spec.SubsetView.RowPrefixes = sv.RowPrefixes
-		}
-	}
-	if a.actual.DeletionProtection == gcp.Protected {
-		obj.Spec.DeletionProtection = direct.LazyPtr(true)
-	} else if a.actual.DeletionProtection == gcp.Unprotected {
-		obj.Spec.DeletionProtection = direct.LazyPtr(false)
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(BigtableAuthorizedViewSpec_v1alpha1_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
 	}
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("error converting to unstructured: %w", err)
+		return nil, err
 	}
 
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.BigtableAuthorizedViewGVK)
 	return u, nil
+}
+
+func (a *BigtableAuthorizedViewAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for BigtableAuthorizedView, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

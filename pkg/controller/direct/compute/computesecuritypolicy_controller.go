@@ -17,107 +17,102 @@ package compute
 import (
 	"context"
 	"fmt"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	pb "cloud.google.com/go/compute/apiv1/computepb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	pb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
-	registry.RegisterModel(krm.ComputeSecurityPolicyGVK, NewSecurityPolicyModel)
+	registry.RegisterModel(krm.ComputeSecurityPolicyGVK, NewComputeSecurityPolicyModel)
 }
 
-func NewSecurityPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &securityPolicyModel{config: config}, nil
+func NewComputeSecurityPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelComputeSecurityPolicy{config: *config}, nil
 }
 
-type securityPolicyModel struct {
-	config *config.ControllerConfig
+var _ directbase.Model = &modelComputeSecurityPolicy{}
+var _ = strings.TrimPrefix
+
+type modelComputeSecurityPolicy struct {
+	config config.ControllerConfig
 }
 
-// model implements the Model interface.
-var _ directbase.Model = &securityPolicyModel{}
-
-type SecurityPolicyAdapter struct {
-	globalClient   *compute.SecurityPoliciesClient
-	regionalClient *compute.RegionSecurityPoliciesClient
-	id             *krm.ComputeSecurityPolicyIdentity
-	desired        *pb.SecurityPolicy
-	actual         *pb.SecurityPolicy
-	reader         client.Reader
-}
-
-var _ directbase.Adapter = &SecurityPolicyAdapter{}
-
-func (m *securityPolicyModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeSecurityPolicy) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeSecurityPolicy{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.ComputeSecurityPolicyIdentity)
 
-	id, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ComputeSecurityPolicyAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelComputeSecurityPolicy) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelComputeSecurityPolicy) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	gcpClient, err := newGCPClient(m.config)
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
+		return nil, fmt.Errorf("building ComputeSecurityPolicy client: %w", err)
 	}
-
-	var globalClient *compute.SecurityPoliciesClient
-	var regionalClient *compute.RegionSecurityPoliciesClient
-	identity := id.(*krm.ComputeSecurityPolicyIdentity)
-	if !identity.IsGlobal() {
-		regionalClient, err = gcpClient.newRegionSecurityPoliciesClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		globalClient, err = gcpClient.newSecurityPoliciesClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := ComputeSecurityPolicySpec_v1beta1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desired.Name = direct.LazyPtr(identity.Name)
-
-	return &SecurityPolicyAdapter{
-		globalClient:   globalClient,
-		regionalClient: regionalClient,
-		id:             identity,
-		desired:        desired,
-		reader:         reader,
-	}, nil
+	return gcpClient, err
 }
 
-func (m *securityPolicyModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	return nil, nil
+type ComputeSecurityPolicyAdapter struct {
+	id        *krm.ComputeSecurityPolicyIdentity
+	gcpClient *gcp.Client
+	desired   *krm.ComputeSecurityPolicy
+	actual    *pb.ComputeSecurityPolicy
 }
 
-func (a *SecurityPolicyAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &ComputeSecurityPolicyAdapter{}
+
+func (a *ComputeSecurityPolicyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeSecurityPolicy", "name", a.id)
 
-	actual, err := a.get(ctx)
+	req := &pb.GetComputeSecurityPolicyRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetComputeSecurityPolicy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -125,171 +120,80 @@ func (a *SecurityPolicyAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting ComputeSecurityPolicy %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *SecurityPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ComputeSecurityPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ComputeSecurityPolicy", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	if !a.id.IsGlobal() {
-		req := &pb.InsertRegionSecurityPolicyRequest{
-			Project:                a.id.Project,
-			Region:                 a.id.Region,
-			SecurityPolicyResource: a.desired,
-		}
-		op, err := a.regionalClient.Insert(ctx, req)
-		if err != nil {
-			return fmt.Errorf("creating ComputeSecurityPolicy %s: %w", a.id, err)
-		}
-		if !op.Done() {
-			err = op.Wait(ctx)
-			if err != nil {
-				return fmt.Errorf("waiting ComputeSecurityPolicy %s create failed: %w", a.id, err)
-			}
-		}
-	} else {
-		req := &pb.InsertSecurityPolicyRequest{
-			Project:                a.id.Project,
-			SecurityPolicyResource: a.desired,
-		}
-		op, err := a.globalClient.Insert(ctx, req)
-		if err != nil {
-			return fmt.Errorf("creating ComputeSecurityPolicy %s: %w", a.id, err)
-		}
-		if !op.Done() {
-			err = op.Wait(ctx)
-			if err != nil {
-				return fmt.Errorf("waiting ComputeSecurityPolicy %s create failed: %w", a.id, err)
-			}
-		}
+	desired := a.desired.DeepCopy()
+	resource := ComputeSecurityPolicySpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	req := &pb.CreateComputeSecurityPolicyRequest{
+		Parent:                  a.id.ParentString(),
+		ComputeSecurityPolicyId: a.id.IsGlobal,
+		ComputeSecurityPolicy:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeSecurityPolicy(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating ComputeSecurityPolicy %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeSecurityPolicy %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created ComputeSecurityPolicy", "name", a.id)
 
-	// Get the created resource
-	created, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeSecurityPolicy %s: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ComputeSecurityPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *SecurityPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ComputeSecurityPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeSecurityPolicy", "name", a.id)
 
-	// Handle output-only fields from GCP
-	a.assignGCPDefaults(a.desired, a.actual)
+	mapCtx := &direct.MapContext{}
+	desired := ComputeSecurityPolicySpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
-	paths, report, err := common.CompareProtoMessageStructuredDiff(a.desired, a.actual, common.BasicDiff)
+	diffs, updateMask, err := compareComputeSecurityPolicy(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeSecurityPolicy resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	report.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, report)
+	status := &krm.ComputeSecurityPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
 
-	updateOp.RecordUpdatingEvent()
-
-	if !a.id.IsGlobal() {
-		req := &pb.PatchRegionSecurityPolicyRequest{
-			Project:                a.id.Project,
-			Region:                 a.id.Region,
-			SecurityPolicy:         a.id.Name,
-			SecurityPolicyResource: a.desired,
-		}
-		op, err := a.regionalClient.Patch(ctx, req)
-		if err != nil {
-			return fmt.Errorf("patching ComputeSecurityPolicy %s: %w", a.id, err)
-		}
-		if !op.Done() {
-			err = op.Wait(ctx)
-			if err != nil {
-				return fmt.Errorf("waiting ComputeSecurityPolicy %s patch failed: %w", a.id, err)
-			}
-		}
-	} else {
-		req := &pb.PatchSecurityPolicyRequest{
-			Project:                a.id.Project,
-			SecurityPolicy:         a.id.Name,
-			SecurityPolicyResource: a.desired,
-		}
-		op, err := a.globalClient.Patch(ctx, req)
-		if err != nil {
-			return fmt.Errorf("patching ComputeSecurityPolicy %s: %w", a.id, err)
-		}
-		if !op.Done() {
-			err = op.Wait(ctx)
-			if err != nil {
-				return fmt.Errorf("waiting ComputeSecurityPolicy %s patch failed: %w", a.id, err)
-			}
-		}
-	}
-	log.V(2).Info("successfully updated ComputeSecurityPolicy", "name", a.id)
-
-	// Get the updated resource
-	updated, err := a.get(ctx)
+func compareComputeSecurityPolicy(ctx context.Context, actual, desired *pb.ComputeSecurityPolicy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeSecurityPolicySpec_v1beta1_FromProto, ComputeSecurityPolicySpec_v1beta1_ToProto)
 	if err != nil {
-		return fmt.Errorf("getting ComputeSecurityPolicy %s: %w", a.id, err)
+		return nil, nil, err
 	}
-
-	return a.updateStatus(ctx, updateOp, updated)
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *SecurityPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeSecurityPolicy", "name", a.id)
-
-	if !a.id.IsGlobal() {
-		req := &pb.DeleteRegionSecurityPolicyRequest{
-			Project:        a.id.Project,
-			Region:         a.id.Region,
-			SecurityPolicy: a.id.Name,
-		}
-		op, err := a.regionalClient.Delete(ctx, req)
-		if err != nil {
-			if direct.IsNotFound(err) {
-				return true, nil
-			}
-			return false, fmt.Errorf("deleting ComputeSecurityPolicy %s: %w", a.id, err)
-		}
-		if !op.Done() {
-			err = op.Wait(ctx)
-			if err != nil {
-				return false, fmt.Errorf("waiting ComputeSecurityPolicy %s delete failed: %w", a.id, err)
-			}
-		}
-	} else {
-		req := &pb.DeleteSecurityPolicyRequest{
-			Project:        a.id.Project,
-			SecurityPolicy: a.id.Name,
-		}
-		op, err := a.globalClient.Delete(ctx, req)
-		if err != nil {
-			if direct.IsNotFound(err) {
-				return true, nil
-			}
-			return false, fmt.Errorf("deleting ComputeSecurityPolicy %s: %w", a.id, err)
-		}
-		if !op.Done() {
-			err = op.Wait(ctx)
-			if err != nil {
-				return false, fmt.Errorf("waiting ComputeSecurityPolicy %s delete failed: %w", a.id, err)
-			}
-		}
-	}
-	log.V(2).Info("successfully deleted ComputeSecurityPolicy", "name", a.id)
-	return true, nil
-}
-
-func (a *SecurityPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ComputeSecurityPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -308,98 +212,13 @@ func (a *SecurityPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstr
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.GetName())
+	u.SetName(a.id.IsGlobal)
 	u.SetGroupVersionKind(krm.ComputeSecurityPolicyGVK)
 	return u, nil
 }
 
-func (a *SecurityPolicyAdapter) get(ctx context.Context) (*pb.SecurityPolicy, error) {
-	if !a.id.IsGlobal() {
-		req := &pb.GetRegionSecurityPolicyRequest{
-			Project:        a.id.Project,
-			Region:         a.id.Region,
-			SecurityPolicy: a.id.Name,
-		}
-		return a.regionalClient.Get(ctx, req)
-	} else {
-		req := &pb.GetSecurityPolicyRequest{
-			Project:        a.id.Project,
-			SecurityPolicy: a.id.Name,
-		}
-		return a.globalClient.Get(ctx, req)
-	}
-}
-
-func (a *SecurityPolicyAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.SecurityPolicy) error {
-	mapCtx := &direct.MapContext{}
-	status := ComputeSecurityPolicyStatus_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *SecurityPolicyAdapter) assignGCPDefaults(desired, actual *pb.SecurityPolicy) {
-	desired.Id = actual.Id
-	desired.Kind = actual.Kind
-	desired.CreationTimestamp = actual.CreationTimestamp
-	desired.Fingerprint = actual.Fingerprint
-	desired.LabelFingerprint = actual.LabelFingerprint
-	desired.SelfLink = actual.SelfLink
-	// If region is us-central1, GCP API converts it to full url
-	// https://www.googleapis.com/compute/v1/projects/projectID/regions/us-central1
-	if actual.Region != nil {
-		*actual.Region = lastComponent(*actual.Region)
-	}
-	// If type is unspecified, the default value is "CLOUD_ARMOR"
-	if desired.Type == nil {
-		desired.Type = actual.Type
-	}
-	if len(desired.Rules) == len(actual.Rules) {
-		actualByPriority := make(map[int32]*pb.SecurityPolicyRule, len(actual.Rules))
-		for _, r := range actual.Rules {
-			if r.Priority != nil {
-				actualByPriority[*r.Priority] = r
-			}
-		}
-		reordered := make([]*pb.SecurityPolicyRule, 0, len(desired.Rules))
-		for _, dr := range desired.Rules {
-			if dr.Priority == nil {
-				break
-			}
-			ar, ok := actualByPriority[*dr.Priority]
-			if !ok {
-				break
-			}
-			if dr.Kind == nil {
-				ar.Kind = nil
-			}
-			if dr.Description == nil && ar.GetDescription() == "" {
-				ar.Description = nil
-			}
-			if dr.Preview == nil && !ar.GetPreview() {
-				ar.Preview = nil
-			}
-			if dr.RateLimitOptions != nil && ar.RateLimitOptions != nil {
-				if dr.RateLimitOptions.EnforceOnKey == nil && len(dr.RateLimitOptions.EnforceOnKeyConfigs) == 0 && ar.RateLimitOptions.GetEnforceOnKey() == "ALL" {
-					ar.RateLimitOptions.EnforceOnKey = nil
-				}
-			}
-			reordered = append(reordered, ar)
-		}
-		if len(reordered) == len(desired.Rules) {
-			actual.Rules = reordered
-		}
-	}
-}
-
-func ComputeSecurityPolicyStatus_v1beta1_FromProto(mapCtx *direct.MapContext, in *pb.SecurityPolicy) *krm.ComputeSecurityPolicyStatus {
-	if in == nil {
-		return nil
-	}
-	out := &krm.ComputeSecurityPolicyStatus{}
-	out.Fingerprint = in.Fingerprint
-	out.SelfLink = in.SelfLink
-	return out
+func (a *ComputeSecurityPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for ComputeSecurityPolicy, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

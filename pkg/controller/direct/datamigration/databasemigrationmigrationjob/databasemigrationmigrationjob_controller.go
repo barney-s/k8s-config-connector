@@ -17,193 +17,211 @@ package databasemigrationmigrationjob
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/clouddms/apiv1"
-	pb "cloud.google.com/go/clouddms/apiv1/clouddmspb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/datamigration/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/datamigration"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/clouddms/apiv1"
+	pb "cloud.google.com/go/clouddms/apiv1/clouddmspb"
 	"google.golang.org/api/option"
-	"google.golang.org/genproto/protobuf/field_mask"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.DatabaseMigrationMigrationJobGVK, NewModel)
+	registry.RegisterModel(krm.DatabaseMigrationMigrationJobGVK, NewMigrationJobModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewMigrationJobModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelMigrationJob{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelMigrationJob{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelMigrationJob struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.DataMigrationClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	if err != nil {
-		return nil, fmt.Errorf("building clouddms client options: %w", err)
-	}
-	gcpClient, err := gcp.NewDataMigrationClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building clouddms client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelMigrationJob) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DatabaseMigrationMigrationJob{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// Always call common.NormalizeReferences to resolve references
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	identityObj, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := identityObj.(*krm.DatabaseMigrationMigrationJobIdentity)
+	id := i.(*krm.DatabaseMigrationMigrationJobIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := datamigration.DatabaseMigrationMigrationJobSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &Adapter{
+	return &MigrationJobAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelMigrationJob) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
+func (m *modelMigrationJob) client(ctx context.Context) (*gcp.DataMigrationClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewDataMigrationClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building MigrationJob client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type MigrationJobAdapter struct {
 	id        *krm.DatabaseMigrationMigrationJobIdentity
 	gcpClient *gcp.DataMigrationClient
-	desired   *pb.MigrationJob
+	desired   *krm.DatabaseMigrationMigrationJob
 	actual    *pb.MigrationJob
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &MigrationJobAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *MigrationJobAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting DatabaseMigrationMigrationJob", "name", a.id)
+	log.V(2).Info("getting MigrationJob", "name", a.id)
 
-	req := &pb.GetMigrationJobRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetMigrationJob(ctx, req)
+	req := &pb.GetMigrationJobRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetMigrationJob(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting DatabaseMigrationMigrationJob %q: %w", a.id, err)
+		return false, fmt.Errorf("getting MigrationJob %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *MigrationJobAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating DatabaseMigrationMigrationJob", "name", a.id)
+	log.V(2).Info("creating MigrationJob", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := DatabaseMigrationMigrationJobSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateMigrationJobRequest{
 		Parent:         a.id.ParentString(),
 		MigrationJobId: a.id.MigrationJob,
-		MigrationJob:   a.desired,
+		MigrationJob:   resource,
 	}
 	op, err := a.gcpClient.CreateMigrationJob(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating DatabaseMigrationMigrationJob %s: %w", a.id, err)
+		return fmt.Errorf("creating MigrationJob %s: %w", a.id, err)
 	}
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting DatabaseMigrationMigrationJob %s creation: %w", a.id, err)
+		return fmt.Errorf("waiting create MigrationJob %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created DatabaseMigrationMigrationJob", "name", a.id)
+	log.V(2).Info("successfully created MigrationJob", "name", a.id)
 
-	// Fetch fully-populated resource before calling updateStatus (Rule: Reconciling Empty or Incomplete LRO Responses)
-	latest, err := a.gcpClient.GetMigrationJob(ctx, &pb.GetMigrationJobRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting DatabaseMigrationMigrationJob %s after creation: %w", a.id, err)
+	status := &krm.DatabaseMigrationMigrationJobStatus{}
+	status.ObservedState = DatabaseMigrationMigrationJobObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *MigrationJobAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating DatabaseMigrationMigrationJob", "name", a.id)
+	log.V(2).Info("updating MigrationJob", "name", a.id)
 
-	a.desired.Name = a.id.String()
+	mapCtx := &direct.MapContext{}
+	desired := DatabaseMigrationMigrationJobSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
-	diffs, updateMask, err := compareMigrationJob(ctx, a.actual, a.desired)
+	diffs, updateMask, err := compareMigrationJob(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no diff detected for DatabaseMigrationMigrationJob", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateMigrationJobRequest{
+			MigrationJob: desired,
+			UpdateMask:   updateMask,
+		}
+		op, err := a.gcpClient.UpdateMigrationJob(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating MigrationJob %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update MigrationJob %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated MigrationJob", "name", a.id)
+
+		status := &krm.DatabaseMigrationMigrationJobStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = DatabaseMigrationMigrationJobObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateMigrationJobRequest{
-		MigrationJob: a.desired,
-		UpdateMask:   updateMask,
-	}
-	op, err := a.gcpClient.UpdateMigrationJob(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating DatabaseMigrationMigrationJob %s: %w", a.id, err)
-	}
-	_, err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting DatabaseMigrationMigrationJob %s update: %w", a.id, err)
-	}
-	log.V(2).Info("successfully updated DatabaseMigrationMigrationJob", "name", a.id)
-
-	// Fetch fully-populated resource before calling updateStatus (Rule: Reconciling Empty or Incomplete LRO Responses)
-	latest, err := a.gcpClient.GetMigrationJob(ctx, &pb.GetMigrationJobRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting DatabaseMigrationMigrationJob %s after update: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareMigrationJob(ctx context.Context, actual, desired *pb.MigrationJob) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DatabaseMigrationMigrationJobSpec_FromProto, DatabaseMigrationMigrationJobSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *MigrationJobAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -211,7 +229,7 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 
 	obj := &krm.DatabaseMigrationMigrationJob{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(datamigration.DatabaseMigrationMigrationJobSpec_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(DatabaseMigrationMigrationJobSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
@@ -222,58 +240,31 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.Name)
+	u.SetName(a.id.MigrationJob)
 	u.SetGroupVersionKind(krm.DatabaseMigrationMigrationJobGVK)
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *MigrationJobAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting DatabaseMigrationMigrationJob", "name", a.id)
+	log.V(2).Info("deleting MigrationJob", "name", a.id)
 
-	req := &pb.DeleteMigrationJobRequest{Name: a.id.String()}
+	req := &pb.DeleteMigrationJobRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteMigrationJob(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent DatabaseMigrationMigrationJob, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting DatabaseMigrationMigrationJob %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting MigrationJob %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully initiated deletion of DatabaseMigrationMigrationJob", "name", a.id)
-
+	log.V(2).Info("successfully deleted MigrationJob", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete DatabaseMigrationMigrationJob %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete MigrationJob %s: %w", a.id, err)
+		}
 	}
-	log.V(2).Info("successfully waited for DatabaseMigrationMigrationJob deletion LRO", "name", a.id)
-
 	return true, nil
-}
-
-func compareMigrationJob(ctx context.Context, actual, desired *pb.MigrationJob) (*structuredreporting.Diff, *field_mask.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, datamigration.DatabaseMigrationMigrationJobSpec_FromProto, datamigration.DatabaseMigrationMigrationJobSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.Clone(desired).(*pb.MigrationJob)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.MigrationJob) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.DatabaseMigrationMigrationJobStatus{}
-	status.ObservedState = datamigration.DatabaseMigrationMigrationJobObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
 }

@@ -17,25 +17,23 @@ package configdeliveryfleetpackage
 import (
 	"context"
 	"fmt"
+	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/configdelivery/v1alpha1"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
 	"strings"
 
 	gcp "cloud.google.com/go/configdelivery/apiv1"
 	pb "cloud.google.com/go/configdelivery/apiv1/configdeliverypb"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/common/parent"
-	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/configdelivery/v1alpha1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/configdelivery"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
-
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -46,196 +44,199 @@ func init() {
 }
 
 func NewFleetPackageModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &fleetPackageModel{config: config}, nil
+	return &modelFleetPackage{config: *config}, nil
 }
 
-var _ directbase.Model = &fleetPackageModel{}
+var _ directbase.Model = &modelFleetPackage{}
+var _ = strings.TrimPrefix
 
-type fleetPackageModel struct {
-	config *config.ControllerConfig
+type modelFleetPackage struct {
+	config config.ControllerConfig
 }
 
-func (m *fleetPackageModel) client(ctx context.Context, project string) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions(config.WithDefaultQuotaProject(project))
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building ConfigDelivery client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *fleetPackageModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelFleetPackage) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ConfigDeliveryFleetPackage{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// Always call common.NormalizeReferences to resolve references
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.ConfigDeliveryFleetPackageIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	idVal, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := idVal.(*krm.ConfigDeliveryFleetPackageIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", idVal)
-	}
-
-	// Convert the KRM spec to API format
-	mapCtx := &direct.MapContext{}
-	desired := configdelivery.ConfigDeliveryFleetPackageSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desired.Labels = obj.GetLabels()
-	desired.Name = id.String()
-
-	gcpClient, err := m.client(ctx, id.Project)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ConfigDeliveryFleetPackageAdapter{
+	return &FleetPackageAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *fleetPackageModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelFleetPackage) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.ConfigDeliveryFleetPackageIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := m.client(ctx, id.Project)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &ConfigDeliveryFleetPackageAdapter{
+	return &FleetPackageAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type ConfigDeliveryFleetPackageAdapter struct {
+func (m *modelFleetPackage) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building FleetPackage client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type FleetPackageAdapter struct {
 	id        *krm.ConfigDeliveryFleetPackageIdentity
 	gcpClient *gcp.Client
-	desired   *pb.FleetPackage
+	desired   *krm.ConfigDeliveryFleetPackage
 	actual    *pb.FleetPackage
 }
 
-var _ directbase.Adapter = &ConfigDeliveryFleetPackageAdapter{}
+var _ directbase.Adapter = &FleetPackageAdapter{}
 
-func (a *ConfigDeliveryFleetPackageAdapter) Find(ctx context.Context) (bool, error) {
+func (a *FleetPackageAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("getting ConfigDeliveryFleetPackage", "name", fqn)
+	log.V(2).Info("getting FleetPackage", "name", a.id)
 
 	req := &pb.GetFleetPackageRequest{
-		Name: fqn,
+		Name: a.id.String(),
 	}
-	resource, err := a.gcpClient.GetFleetPackage(ctx, req)
+	resp, err := a.gcpClient.GetFleetPackage(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting ConfigDeliveryFleetPackage %q: %w", fqn, err)
+		return false, fmt.Errorf("getting FleetPackage %q: %w", a.id, err)
 	}
 
-	a.actual = resource
+	a.actual = resp
 	return true, nil
 }
 
-func (a *ConfigDeliveryFleetPackageAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *FleetPackageAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	parentPath := a.id.ParentString()
-	fqn := a.id.String()
-	log.V(2).Info("creating ConfigDeliveryFleetPackage", "name", fqn)
+	log.V(2).Info("creating FleetPackage", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := ConfigDeliveryFleetPackageSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateFleetPackageRequest{
-		Parent:         parentPath,
+		Parent:         a.id.ParentString(),
 		FleetPackageId: a.id.FleetPackage,
-		FleetPackage:   a.desired,
+		FleetPackage:   resource,
 	}
 	op, err := a.gcpClient.CreateFleetPackage(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating ConfigDeliveryFleetPackage %s: %w", a.id.FleetPackage, err)
+		return fmt.Errorf("creating FleetPackage %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for ConfigDeliveryFleetPackage creation: %w", err)
+		return fmt.Errorf("waiting create FleetPackage %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created FleetPackage", "name", a.id)
 
-	log.V(2).Info("successfully created ConfigDeliveryFleetPackage", "name", created.Name)
-
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ConfigDeliveryFleetPackageStatus{}
+	status.ObservedState = ConfigDeliveryFleetPackageObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *ConfigDeliveryFleetPackageAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *FleetPackageAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("updating ConfigDeliveryFleetPackage", "name", fqn)
+	log.V(2).Info("updating FleetPackage", "name", a.id)
 
-	diffs, updateMask, err := compareFleetPackage(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := ConfigDeliveryFleetPackageSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareFleetPackage(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desired := proto.Clone(a.desired).(*pb.FleetPackage)
-		desired.Name = fqn
+		desired.Name = a.id.String()
 
 		req := &pb.UpdateFleetPackageRequest{
 			FleetPackage: desired,
 			UpdateMask:   updateMask,
 		}
-
 		op, err := a.gcpClient.UpdateFleetPackage(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating ConfigDeliveryFleetPackage %s: %w", fqn, err)
+			return fmt.Errorf("updating FleetPackage %s: %w", a.id, err)
 		}
-
 		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("waiting for ConfigDeliveryFleetPackage update: %w", err)
+			return fmt.Errorf("waiting update FleetPackage %s: %w", a.id, err)
 		}
+		log.V(2).Info("successfully updated FleetPackage", "name", a.id)
 
-		latest = updated
+		status := &krm.ConfigDeliveryFleetPackageStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = ConfigDeliveryFleetPackageObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *ConfigDeliveryFleetPackageAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.FleetPackage) error {
-	mapCtx := &direct.MapContext{}
-	status := krm.ConfigDeliveryFleetPackageStatus{}
-	status.ObservedState = configdelivery.ConfigDeliveryFleetPackageObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func compareFleetPackage(ctx context.Context, actual, desired *pb.FleetPackage) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ConfigDeliveryFleetPackageSpec_FromProto, ConfigDeliveryFleetPackageSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	status.ExternalRef = direct.LazyPtr(latest.Name)
-	return op.UpdateStatus(ctx, &status, nil)
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *ConfigDeliveryFleetPackageAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *FleetPackageAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -243,14 +244,9 @@ func (a *ConfigDeliveryFleetPackageAdapter) Export(ctx context.Context) (*unstru
 
 	obj := &krm.ConfigDeliveryFleetPackage{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(configdelivery.ConfigDeliveryFleetPackageSpec_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(ConfigDeliveryFleetPackageSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
-	}
-
-	obj.Spec.ProjectAndLocationRef = &parent.ProjectAndLocationRef{
-		ProjectRef: &refsv1beta1.ProjectRef{External: a.id.Project},
-		Location:   a.id.Location,
 	}
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.FleetPackage)
 
@@ -262,72 +258,30 @@ func (a *ConfigDeliveryFleetPackageAdapter) Export(ctx context.Context) (*unstru
 	u.Object = uObj
 	u.SetName(a.id.FleetPackage)
 	u.SetGroupVersionKind(krm.ConfigDeliveryFleetPackageGVK)
-
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-func (a *ConfigDeliveryFleetPackageAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *FleetPackageAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("deleting ConfigDeliveryFleetPackage", "name", fqn)
+	log.V(2).Info("deleting FleetPackage", "name", a.id)
 
 	req := &pb.DeleteFleetPackageRequest{
-		Name:         fqn,
-		Force:        true,
-		AllowMissing: true,
+		Name: a.id.String(),
 	}
 	op, err := a.gcpClient.DeleteFleetPackage(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent ConfigDeliveryFleetPackage, assuming it was already deleted", "name", fqn)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting ConfigDeliveryFleetPackage %s: %w", fqn, err)
+		return false, fmt.Errorf("deleting FleetPackage %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted FleetPackage", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for ConfigDeliveryFleetPackage deletion: %w", err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete FleetPackage %s: %w", a.id, err)
+		}
 	}
-
-	log.V(2).Info("successfully deleted ConfigDeliveryFleetPackage", "name", fqn)
 	return true, nil
-}
-
-func compareFleetPackage(ctx context.Context, actual, desired *pb.FleetPackage) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, configdelivery.ConfigDeliveryFleetPackageSpec_FromProto, configdelivery.ConfigDeliveryFleetPackageSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Labels = actual.Labels
-	maskedActual.Name = desired.Name
-
-	normalizeProject := func(p string) string {
-		if p == "" {
-			return ""
-		}
-		if !strings.HasPrefix(p, "projects/") {
-			return "projects/" + p
-		}
-		return p
-	}
-
-	if desired.Target != nil && desired.Target.GetFleet() != nil {
-		desired.Target.GetFleet().Project = normalizeProject(desired.Target.GetFleet().Project)
-		if desired.Target.GetFleet().Selector == nil {
-			desired.Target.GetFleet().Selector = &pb.Fleet_LabelSelector{}
-		}
-	}
-	if maskedActual.Target != nil && maskedActual.Target.GetFleet() != nil {
-		maskedActual.Target.GetFleet().Project = normalizeProject(maskedActual.Target.GetFleet().Project)
-		if maskedActual.Target.GetFleet().Selector == nil {
-			maskedActual.Target.GetFleet().Selector = &pb.Fleet_LabelSelector{}
-		}
-	}
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

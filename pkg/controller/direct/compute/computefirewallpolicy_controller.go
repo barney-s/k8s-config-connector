@@ -17,28 +17,24 @@ package compute
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
-
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
-	"google.golang.org/protobuf/proto"
-
-	"google.golang.org/api/option"
-
-	gcp "cloud.google.com/go/compute/apiv1"
-	computepb "cloud.google.com/go/compute/apiv1/computepb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
-	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	computepb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -46,297 +42,186 @@ func init() {
 }
 
 func NewComputeFirewallPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeFirewallPolicyModel{config: config}, nil
+	return &modelComputeFirewallPolicy{config: *config}, nil
 }
 
-type computeFirewallPolicyModel struct {
-	config *config.ControllerConfig
+var _ directbase.Model = &modelComputeFirewallPolicy{}
+var _ = strings.TrimPrefix
+
+type modelComputeFirewallPolicy struct {
+	config config.ControllerConfig
 }
 
-var _ directbase.Model = &computeFirewallPolicyModel{}
+func (m *modelComputeFirewallPolicy) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.ComputeFirewallPolicy{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.ComputeFirewallPolicyIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
 
-type computeFirewallPolicyAdapter struct {
-	id                     *krm.ComputeFirewallPolicyIdentity
-	firewallPoliciesClient *gcp.FirewallPoliciesClient
-	desired                *computepb.FirewallPolicy
-	actual                 *computepb.FirewallPolicy
-	reader                 client.Reader
-	parent                 string
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ComputeFirewallPolicyAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
 }
 
-var _ directbase.Adapter = &computeFirewallPolicyAdapter{}
+func (m *modelComputeFirewallPolicy) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
 
-func (m *computeFirewallPolicyModel) client(ctx context.Context) (*gcp.FirewallPoliciesClient, error) {
+func (m *modelComputeFirewallPolicy) client(ctx context.Context) (*gcp.Client, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewFirewallPoliciesRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building FirewallPolicy client: %w", err)
+		return nil, fmt.Errorf("building ComputeFirewallPolicy client: %w", err)
 	}
 	return gcpClient, err
 }
 
-func (m *computeFirewallPolicyModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.ComputeFirewallPolicy{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	// We must first resolve/normalize the references in AdapterForObject
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := ComputeFirewallPolicySpec_v1beta1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	var parent string
-	if obj.Spec.FolderRef != nil {
-		parent = obj.Spec.FolderRef.External
-	} else if obj.Spec.OrganizationRef != nil {
-		parent = obj.Spec.OrganizationRef.External
-	}
-
-	if parent == "" {
-		return nil, fmt.Errorf("one of FolderRef or OrganizationRef must be specified")
-	}
-
-	adapter := &computeFirewallPolicyAdapter{
-		desired: desired,
-		reader:  reader,
-		parent:  parent,
-	}
-
-	rawID, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id := rawID.(*krm.ComputeFirewallPolicyIdentity)
-	adapter.id = id
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	adapter.firewallPoliciesClient = gcpClient
-
-	return adapter, nil
+type ComputeFirewallPolicyAdapter struct {
+	id        *krm.ComputeFirewallPolicyIdentity
+	gcpClient *gcp.Client
+	desired   *krm.ComputeFirewallPolicy
+	actual    *computepb.ComputeFirewallPolicy
 }
 
-func (m *computeFirewallPolicyModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	return nil, nil
-}
+var _ directbase.Adapter = &ComputeFirewallPolicyAdapter{}
 
-func (a *computeFirewallPolicyAdapter) Find(ctx context.Context) (bool, error) {
+func (a *ComputeFirewallPolicyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeFirewallPolicy", "name", a.id)
 
-	if a.id.FirewallPolicy == "" {
-		return false, nil
+	req := &computepb.GetComputeFirewallPolicyRequest{
+		Name: a.id.String(),
 	}
-
-	firewallPolicy, err := a.get(ctx)
+	resp, err := a.gcpClient.GetComputeFirewallPolicy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting ComputeFirewallPolicy %s: %w", a.id, err)
+		return false, fmt.Errorf("getting ComputeFirewallPolicy %q: %w", a.id, err)
 	}
 
-	a.actual = firewallPolicy
+	a.actual = resp
 	return true, nil
 }
 
-func (a *computeFirewallPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ComputeFirewallPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ComputeFirewallPolicy", "name", a.id)
-
-	req := &computepb.InsertFirewallPolicyRequest{
-		ParentId:               a.parent,
-		FirewallPolicyResource: a.desired,
-	}
-
-	op, err := a.firewallPoliciesClient.Insert(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating ComputeFirewallPolicy: %w", err)
-	}
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting ComputeFirewallPolicy create failed: %w", err)
-		}
-	}
-	log.V(2).Info("successfully created ComputeFirewallPolicy")
-
-	var policyID string
-	if op.Proto() != nil {
-		if op.Proto().TargetId != nil {
-			policyID = strconv.FormatUint(*op.Proto().TargetId, 10)
-		} else if op.Proto().TargetLink != nil {
-			link := *op.Proto().TargetLink
-			tokens := strings.Split(link, "/")
-			policyID = tokens[len(tokens)-1]
-		}
-	}
-
-	if policyID == "" {
-		return fmt.Errorf("could not determine the firewall policy ID from operation")
-	}
-
-	a.id.FirewallPolicy = policyID
-	created, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting created ComputeFirewallPolicy %s: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, createOp, created)
-}
-
-func (a *computeFirewallPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating ComputeFirewallPolicy", "name", a.id)
-
-	diffs, err := compareFirewallPolicy(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no diff detected for ComputeFirewallPolicy", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
-	}
-
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &computepb.PatchFirewallPolicyRequest{
-		FirewallPolicy:         a.id.FirewallPolicy,
-		FirewallPolicyResource: a.desired,
-	}
-
-	op, err := a.firewallPoliciesClient.Patch(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating ComputeFirewallPolicy %s: %w", a.id, err)
-	}
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting ComputeFirewallPolicy %s update failed: %w", a.id, err)
-		}
-	}
-	log.V(2).Info("successfully updated ComputeFirewallPolicy", "name", a.id)
-
-	// Get the updated resource
-	updated, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeFirewallPolicy %s: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, updateOp, updated)
-}
-
-func (a *computeFirewallPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	if a.actual == nil {
-		return nil, fmt.Errorf("ComputeFirewallPolicy %s not found", a.id)
-	}
-
-	mc := &direct.MapContext{}
-	spec := ComputeFirewallPolicySpec_v1beta1_FromProto(mc, a.actual)
-
-	if a.actual.Parent != nil {
-		parent := *a.actual.Parent
-		tokens := strings.Split(parent, "/")
-		if len(tokens) == 2 {
-			if tokens[0] == "folders" {
-				spec.FolderRef = &refs.FolderRef{External: parent}
-			} else if tokens[0] == "organizations" {
-				spec.OrganizationRef = &refs.OrganizationRef{External: parent}
-			}
-		}
-	}
-
-	specObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(spec)
-	if err != nil {
-		return nil, fmt.Errorf("error converting ComputeFirewallPolicy spec to unstructured: %w", err)
-	}
-
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(krm.ComputeFirewallPolicyGVK)
-
-	if err := unstructured.SetNestedField(u.Object, specObj, "spec"); err != nil {
-		return nil, fmt.Errorf("setting spec: %w", err)
-	}
-
-	return u, nil
-}
-
-func (a *computeFirewallPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeFirewallPolicy", "name", a.id)
-
-	if a.id.FirewallPolicy == "" {
-		return false, fmt.Errorf("cannot delete ComputeFirewallPolicy without an ID")
-	}
-
-	req := &computepb.DeleteFirewallPolicyRequest{
-		FirewallPolicy: a.id.FirewallPolicy,
-	}
-
-	op, err := a.firewallPoliciesClient.Delete(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting ComputeFirewallPolicy %s: %w", a.id, err)
-	}
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return false, fmt.Errorf("waiting ComputeFirewallPolicy %s delete failed: %w", a.id, err)
-		}
-	}
-	log.V(2).Info("successfully deleted ComputeFirewallPolicy", "name", a.id)
-	return true, nil
-}
-
-func (a *computeFirewallPolicyAdapter) get(ctx context.Context) (*computepb.FirewallPolicy, error) {
-	getReq := &computepb.GetFirewallPolicyRequest{
-		FirewallPolicy: a.id.FirewallPolicy,
-	}
-	return a.firewallPoliciesClient.Get(ctx, getReq)
-}
-
-func (a *computeFirewallPolicyAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *computepb.FirewallPolicy) error {
 	mapCtx := &direct.MapContext{}
-	status := ComputeFirewallPolicyStatus_v1beta1_FromProto(mapCtx, latest)
+
+	desired := a.desired.DeepCopy()
+	resource := ComputeFirewallPolicySpec_v1beta1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	return op.UpdateStatus(ctx, status, nil)
+
+	req := &computepb.CreateComputeFirewallPolicyRequest{
+		Parent:                  a.id.ParentString(),
+		ComputeFirewallPolicyId: a.id.FirewallPolicy,
+		ComputeFirewallPolicy:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeFirewallPolicy(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating ComputeFirewallPolicy %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeFirewallPolicy %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created ComputeFirewallPolicy", "name", a.id)
+
+	status := &krm.ComputeFirewallPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func compareFirewallPolicy(ctx context.Context, actual, desired *computepb.FirewallPolicy) (*structuredreporting.Diff, error) {
+func (a *ComputeFirewallPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating ComputeFirewallPolicy", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := ComputeFirewallPolicySpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareComputeFirewallPolicy(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeFirewallPolicy resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.ComputeFirewallPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
+
+func compareComputeFirewallPolicy(ctx context.Context, actual, desired *computepb.ComputeFirewallPolicy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
 	maskedActual, err := mappers.OnlySpecFields(actual, ComputeFirewallPolicySpec_v1beta1_FromProto, ComputeFirewallPolicySpec_v1beta1_ToProto)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	maskedActual.Name = desired.Name
-	maskedActual.Id = desired.Id
-	maskedActual.Parent = desired.Parent
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
 
-	clonedDesired := proto.CloneOf(desired)
+func (a *ComputeFirewallPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
 
-	diffs, _, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	obj := &krm.ComputeFirewallPolicy{}
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(ComputeFirewallPolicySpec_v1beta1_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
+	}
+
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
-	return diffs, nil
+
+	u.Object = uObj
+	u.SetName(a.id.FirewallPolicy)
+	u.SetGroupVersionKind(krm.ComputeFirewallPolicyGVK)
+	return u, nil
+}
+
+func (a *ComputeFirewallPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for ComputeFirewallPolicy, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

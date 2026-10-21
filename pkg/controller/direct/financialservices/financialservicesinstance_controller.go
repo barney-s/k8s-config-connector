@@ -17,19 +17,8 @@ package financialservices
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	gcp "cloud.google.com/go/financialservices/apiv1"
-	pb "cloud.google.com/go/financialservices/apiv1/financialservicespb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/financialservices/v1alpha1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
@@ -37,224 +26,213 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/financialservices/apiv1"
+	pb "cloud.google.com/go/financialservices/apiv1/financialservicespb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.FinancialServicesInstanceGVK, NewModel)
+	registry.RegisterModel(krm.FinancialServicesInstanceGVK, NewInstanceModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewInstanceModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelInstance{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelInstance{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelInstance struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.AMLClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewAMLRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building FinancialServices AML REST client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelInstance) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.FinancialServicesInstance{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	instanceID := id.(*krm.FinancialServicesInstanceIdentity)
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+	id := i.(*krm.FinancialServicesInstanceIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desired := FinancialServicesInstanceSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &Adapter{
-		id:        instanceID,
-		gcpClient: gcpClient,
-		desired:   desired,
-	}, nil
-}
-
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	if !strings.HasPrefix(url, "//financialservices.googleapis.com/") {
-		return nil, nil
-	}
-
-	trimmed := strings.TrimPrefix(url, "//")
-	id := &krm.FinancialServicesInstanceIdentity{}
-	if err := id.FromExternal(trimmed); err != nil {
-		return nil, nil
-	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{
+	return &InstanceAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelInstance) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.FinancialServicesInstanceIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &InstanceAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type Adapter struct {
+func (m *modelInstance) client(ctx context.Context) (*gcp.AMLClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewAMLRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Instance client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type InstanceAdapter struct {
 	id        *krm.FinancialServicesInstanceIdentity
 	gcpClient *gcp.AMLClient
-	desired   *pb.Instance
+	desired   *krm.FinancialServicesInstance
 	actual    *pb.Instance
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &InstanceAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *InstanceAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting FinancialServicesInstance", "name", a.id.String())
+	log.V(2).Info("getting Instance", "name", a.id)
 
-	req := &pb.GetInstanceRequest{Name: a.id.String()}
-	instancepb, err := a.gcpClient.GetInstance(ctx, req)
+	req := &pb.GetInstanceRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetInstance(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting FinancialServicesInstance %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Instance %q: %w", a.id, err)
 	}
 
-	a.actual = instancepb
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *InstanceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating FinancialServicesInstance", "name", a.id.String())
+	log.V(2).Info("creating Instance", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	instance := proto.Clone(a.desired).(*pb.Instance)
+	desired := a.desired.DeepCopy()
+	resource := FinancialServicesInstanceSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateInstanceRequest{
 		Parent:     a.id.ParentString(),
 		InstanceId: a.id.Instance,
-		Instance:   instance,
+		Instance:   resource,
 	}
 	op, err := a.gcpClient.CreateInstance(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating FinancialServicesInstance %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating Instance %s: %w", a.id, err)
 	}
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for creation of FinancialServicesInstance %s: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create Instance %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created FinancialServicesInstance", "name", a.id.String())
+	log.V(2).Info("successfully created Instance", "name", a.id)
 
-	latest, err := a.gcpClient.GetInstance(ctx, &pb.GetInstanceRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting FinancialServicesInstance %s after creation: %w", a.id.String(), err)
+	status := &krm.FinancialServicesInstanceStatus{}
+	status.ObservedState = FinancialServicesInstanceObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *InstanceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating FinancialServicesInstance", "name", a.id.String())
+	log.V(2).Info("updating Instance", "name", a.id)
 
-	diffs, updateMask, err := compareFinancialServicesInstance(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := FinancialServicesInstanceSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareInstance(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if diffs == nil || !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateInstanceRequest{
+			Instance:   desired,
+			UpdateMask: updateMask,
+		}
+		op, err := a.gcpClient.UpdateInstance(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Instance %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Instance %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Instance", "name", a.id)
+
+		status := &krm.FinancialServicesInstanceStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = FinancialServicesInstanceObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	instance := proto.Clone(a.desired).(*pb.Instance)
-	instance.Name = a.id.String()
-	instance.KmsKey = "" // kmsKey is immutable and should not be sent on update
-
-	req := &pb.UpdateInstanceRequest{
-		Instance:   instance,
-		UpdateMask: updateMask,
-	}
-
-	op, err := a.gcpClient.UpdateInstance(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating FinancialServicesInstance %s: %w", a.id.String(), err)
-	}
-	_, err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for update of FinancialServicesInstance %s: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully updated FinancialServicesInstance", "name", a.id.String())
-
-	latest, err := a.gcpClient.GetInstance(ctx, &pb.GetInstanceRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting FinancialServicesInstance %s after update: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func compareFinancialServicesInstance(ctx context.Context, actual, desired *pb.Instance) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+func compareInstance(ctx context.Context, actual, desired *pb.Instance) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
 	maskedActual, err := mappers.OnlySpecFields(actual, FinancialServicesInstanceSpec_FromProto, FinancialServicesInstanceSpec_ToProto)
 	if err != nil {
 		return nil, nil, err
 	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.Clone(desired).(*pb.Instance)
-
-	populateDefaults := func(obj *pb.Instance) {
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
 	}
 	return diffs, updateMask, nil
 }
 
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Instance) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.FinancialServicesInstanceStatus{}
-	status.ObservedState = FinancialServicesInstanceObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *InstanceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -266,41 +244,41 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = direct.PtrTo(a.id.Location)
-	obj.Spec.ResourceID = direct.PtrTo(a.id.Instance)
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Instance)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
 	u.SetName(a.id.Instance)
 	u.SetGroupVersionKind(krm.FinancialServicesInstanceGVK)
-
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *InstanceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting FinancialServicesInstance", "name", a.id.String())
+	log.V(2).Info("deleting Instance", "name", a.id)
 
-	req := &pb.DeleteInstanceRequest{Name: a.id.String()}
+	req := &pb.DeleteInstanceRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteInstance(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent FinancialServicesInstance, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting FinancialServicesInstance %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Instance %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully deleted Instance", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Instance %s: %w", a.id, err)
 		}
-		return false, fmt.Errorf("waiting for deletion of FinancialServicesInstance %s: %w", a.id.String(), err)
 	}
-	log.V(2).Info("successfully deleted FinancialServicesInstance", "name", a.id.String())
 	return true, nil
 }

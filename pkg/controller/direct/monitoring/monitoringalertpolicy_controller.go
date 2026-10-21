@@ -17,17 +17,6 @@ package monitoring
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	monitoring "cloud.google.com/go/monitoring/apiv3/v2"
-	pb "cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"google.golang.org/protobuf/types/known/wrapperspb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/monitoring/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -38,231 +27,199 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/monitoring/apiv3/v2"
+	pb "cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.MonitoringAlertPolicyGVK, newAlertPolicyModel)
+	registry.RegisterModel(krm.MonitoringAlertPolicyGVK, NewMonitoringAlertPolicyModel)
 }
 
-func newAlertPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &alertPolicyModel{config: config}, nil
+func NewMonitoringAlertPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelMonitoringAlertPolicy{config: *config}, nil
 }
 
-type alertPolicyModel struct {
-	config *config.ControllerConfig
+var _ directbase.Model = &modelMonitoringAlertPolicy{}
+var _ = strings.TrimPrefix
+
+type modelMonitoringAlertPolicy struct {
+	config config.ControllerConfig
 }
 
-// model implements the Model interface.
-var _ directbase.Model = &alertPolicyModel{}
-
-type alertPolicyAdapter struct {
-	id *krm.MonitoringAlertPolicyIdentity
-
-	desired *pb.AlertPolicy
-	actual  *pb.AlertPolicy
-
-	alertPolicyClient *monitoring.AlertPolicyClient
-}
-
-// adapter implements the Adapter interface.
-var _ directbase.Adapter = &alertPolicyAdapter{}
-
-// AdapterForObject implements the Model interface.
-func (m *alertPolicyModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelMonitoringAlertPolicy) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
-	kube := op.Reader
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-
-	alertPolicyClient, err := gcpClient.newAlertPolicyClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+	reader := op.Reader
+	_ = reader
 	obj := &krm.MonitoringAlertPolicy{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	if err := common.NormalizeReferences(ctx, kube, obj, nil); err != nil {
-		return nil, err
-	}
-
-	id, err := obj.GetIdentity(ctx, kube)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredProto := MonitoringAlertPolicySpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	id := i.(*krm.MonitoringAlertPolicyIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	desiredProto.UserLabels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
-	return &alertPolicyAdapter{
-		id:                id.(*krm.MonitoringAlertPolicyIdentity),
-		desired:           desiredProto,
-		alertPolicyClient: alertPolicyClient,
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &MonitoringAlertPolicyAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *alertPolicyModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// Format: //monitoring.googleapis.com/projects/PROJECT_NUMBER/alertPolicies/ALERT_POLICY_ID
-	if !strings.HasPrefix(url, "//monitoring.googleapis.com/") {
-		return nil, nil
-	}
-
+func (m *modelMonitoringAlertPolicy) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.MonitoringAlertPolicyIdentity{}
 	if err := id.FromExternal(url); err != nil {
 		return nil, nil
 	}
-
-	if !id.HasIdentitySpecified() {
-		return nil, nil
-	}
-
-	gcpClient, err := newGCPClient(m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
+		return nil, err
 	}
+	return &MonitoringAlertPolicyAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
 
-	alertPolicyClient, err := gcpClient.newAlertPolicyClient(ctx)
+func (m *modelMonitoringAlertPolicy) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	return &alertPolicyAdapter{
-		id:                id,
-		alertPolicyClient: alertPolicyClient,
-	}, nil
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building MonitoringAlertPolicy client: %w", err)
+	}
+	return gcpClient, err
 }
 
-// Find implements the Adapter interface.
-func (a *alertPolicyAdapter) Find(ctx context.Context) (bool, error) {
-	if !a.id.HasIdentitySpecified() {
-		return false, nil
-	}
+type MonitoringAlertPolicyAdapter struct {
+	id        *krm.MonitoringAlertPolicyIdentity
+	gcpClient *gcp.Client
+	desired   *krm.MonitoringAlertPolicy
+	actual    *pb.MonitoringAlertPolicy
+}
 
-	req := &pb.GetAlertPolicyRequest{
-		Name: a.fullyQualifiedName(),
+var _ directbase.Adapter = &MonitoringAlertPolicyAdapter{}
+
+func (a *MonitoringAlertPolicyAdapter) Find(ctx context.Context) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("getting MonitoringAlertPolicy", "name", a.id)
+
+	req := &pb.GetMonitoringAlertPolicyRequest{
+		Name: a.id.String(),
 	}
-	alertPolicy, err := a.alertPolicyClient.GetAlertPolicy(ctx, req)
+	resp, err := a.gcpClient.GetMonitoringAlertPolicy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, err
+		return false, fmt.Errorf("getting MonitoringAlertPolicy %q: %w", a.id, err)
 	}
 
-	a.actual = alertPolicy
-
+	a.actual = resp
 	return true, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *alertPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	if !a.id.HasIdentitySpecified() {
-		return false, nil
-	}
-
-	req := &pb.DeleteAlertPolicyRequest{
-		Name: a.fullyQualifiedName(),
-	}
-
-	if err := a.alertPolicyClient.DeleteAlertPolicy(ctx, req); err != nil {
-		if direct.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("deleting alert policy %s: %w", a.fullyQualifiedName(), err)
-	}
-
-	return true, nil
-}
-
-// Create implements the Adapter interface.
-func (a *alertPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
-	if a.id.HasIdentitySpecified() {
-		return fmt.Errorf("cannot create alert policy %q: server-generated identity is already specified", a.id.String())
-	}
-
-	u := createOp.GetUnstructured()
-
+func (a *MonitoringAlertPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating object", "u", u)
+	log.V(2).Info("creating MonitoringAlertPolicy", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	parent := a.id.ParentString()
-
-	req := &pb.CreateAlertPolicyRequest{
-		Name:        parent,
-		AlertPolicy: a.desired,
+	desired := a.desired.DeepCopy()
+	resource := MonitoringAlertPolicySpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	log.V(2).Info("creating alert policy", "req", req)
-	created, err := a.alertPolicyClient.CreateAlertPolicy(ctx, req)
+	req := &pb.CreateMonitoringAlertPolicyRequest{
+		Parent:                  a.id.ParentString(),
+		MonitoringAlertPolicyId: a.id.HasIdentitySpecified,
+		MonitoringAlertPolicy:   resource,
+	}
+	created, err := a.gcpClient.CreateMonitoringAlertPolicy(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating alert policy: %w", err)
+		return fmt.Errorf("creating MonitoringAlertPolicy %s: %w", a.id, err)
 	}
-	log.V(2).Info("created alert policy", "alertPolicy", created)
+	log.V(2).Info("successfully created MonitoringAlertPolicy", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.MonitoringAlertPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update implements the Adapter interface.
-func (a *alertPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	u := updateOp.GetUnstructured()
-
+func (a *MonitoringAlertPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating object", "u", u)
+	log.V(2).Info("updating MonitoringAlertPolicy", "name", a.id)
 
-	diffs, updateMask, err := compareAlertPolicy(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := MonitoringAlertPolicySpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareMonitoringAlertPolicy(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
+	_ = updateMask
 	if diffs.HasDiff() {
-		diffs.Object = u
+		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
-
-		log.V(2).Info("alert policy has diffs", "diffs", diffs)
-		req := &pb.UpdateAlertPolicyRequest{
-			AlertPolicy: a.desired,
-			UpdateMask:  updateMask,
-		}
-		req.AlertPolicy.Name = a.fullyQualifiedName()
-
-		log.V(2).Info("updating alert policy", "request", req)
-		updated, err := a.alertPolicyClient.UpdateAlertPolicy(ctx, req)
-		if err != nil {
-			return err
-		}
-		log.V(2).Info("updated alert policy", "alertPolicy", updated)
-		a.actual = updated
-	} else {
-		log.V(2).Info("alert policy has no diffs")
+		return fmt.Errorf("MonitoringAlertPolicy resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	return a.updateStatus(ctx, updateOp, a.actual)
+	status := &krm.MonitoringAlertPolicyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *alertPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	if a.actual == nil {
-		return nil, fmt.Errorf("alertPolicy %q not found", a.fullyQualifiedName())
+func compareMonitoringAlertPolicy(ctx context.Context, actual, desired *pb.MonitoringAlertPolicy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, MonitoringAlertPolicySpec_FromProto, MonitoringAlertPolicySpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
 
+func (a *MonitoringAlertPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
 	u := &unstructured.Unstructured{}
 
 	obj := &krm.MonitoringAlertPolicy{}
-	mc := &direct.MapContext{}
-	obj.Spec = *MonitoringAlertPolicySpec_FromProto(mc, a.actual)
-	if err := mc.Err(); err != nil {
-		return nil, fmt.Errorf("error converting alertPolicy from API %w", err)
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(MonitoringAlertPolicySpec_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.AlertPolicy)
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.HasIdentitySpecified)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -270,51 +227,14 @@ func (a *alertPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstruct
 	}
 
 	u.Object = uObj
-	u.SetName(a.id.AlertPolicy)
+	u.SetName(a.id.HasIdentitySpecified)
 	u.SetGroupVersionKind(krm.MonitoringAlertPolicyGVK)
-
-	export.SetProjectID(u, a.id.Project)
-	export.SetLabels(u, a.actual.UserLabels)
-
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-func (a *alertPolicyAdapter) fullyQualifiedName() string {
-	return a.id.String()
-}
-
-func (a *alertPolicyAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.AlertPolicy) error {
-	mapCtx := &direct.MapContext{}
-	status := MonitoringAlertPolicyStatus_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareAlertPolicy(ctx context.Context, actual, desired *pb.AlertPolicy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, MonitoringAlertPolicySpec_FromProto, MonitoringAlertPolicySpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = actual.Name
-	maskedActual.UserLabels = actual.UserLabels
-
-	populateDefaults := func(obj *pb.AlertPolicy) {
-		if obj.Enabled == nil {
-			obj.Enabled = &wrapperspb.BoolValue{Value: true}
-		}
-	}
-
-	clonedDesired := proto.CloneOf(desired)
-	clonedDesired.Name = actual.Name
-
-	populateDefaults(clonedDesired)
-	populateDefaults(maskedActual)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
+func (a *MonitoringAlertPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for MonitoringAlertPolicy, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

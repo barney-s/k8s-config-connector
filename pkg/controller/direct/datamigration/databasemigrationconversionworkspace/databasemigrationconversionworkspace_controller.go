@@ -17,193 +17,211 @@ package databasemigrationconversionworkspace
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/clouddms/apiv1"
-	pb "cloud.google.com/go/clouddms/apiv1/clouddmspb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/datamigration/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/datamigration"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/clouddms/apiv1"
+	pb "cloud.google.com/go/clouddms/apiv1/clouddmspb"
 	"google.golang.org/api/option"
-	"google.golang.org/genproto/protobuf/field_mask"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.DatabaseMigrationConversionWorkspaceGVK, NewModel)
+	registry.RegisterModel(krm.DatabaseMigrationConversionWorkspaceGVK, NewConversionWorkspaceModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewConversionWorkspaceModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelConversionWorkspace{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelConversionWorkspace{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelConversionWorkspace struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.DataMigrationClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	if err != nil {
-		return nil, fmt.Errorf("building clouddms client options: %w", err)
-	}
-	gcpClient, err := gcp.NewDataMigrationClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building clouddms client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelConversionWorkspace) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DatabaseMigrationConversionWorkspace{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// Always call common.NormalizeReferences to resolve references
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	identityObj, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := identityObj.(*krm.DatabaseMigrationConversionWorkspaceIdentity)
+	id := i.(*krm.DatabaseMigrationConversionWorkspaceIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := datamigration.DatabaseMigrationConversionWorkspaceSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &Adapter{
+	return &ConversionWorkspaceAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelConversionWorkspace) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
+func (m *modelConversionWorkspace) client(ctx context.Context) (*gcp.DataMigrationClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewDataMigrationClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ConversionWorkspace client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ConversionWorkspaceAdapter struct {
 	id        *krm.DatabaseMigrationConversionWorkspaceIdentity
 	gcpClient *gcp.DataMigrationClient
-	desired   *pb.ConversionWorkspace
+	desired   *krm.DatabaseMigrationConversionWorkspace
 	actual    *pb.ConversionWorkspace
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &ConversionWorkspaceAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *ConversionWorkspaceAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting DatabaseMigrationConversionWorkspace", "name", a.id)
+	log.V(2).Info("getting ConversionWorkspace", "name", a.id)
 
-	req := &pb.GetConversionWorkspaceRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetConversionWorkspace(ctx, req)
+	req := &pb.GetConversionWorkspaceRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetConversionWorkspace(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting DatabaseMigrationConversionWorkspace %q: %w", a.id, err)
+		return false, fmt.Errorf("getting ConversionWorkspace %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ConversionWorkspaceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating DatabaseMigrationConversionWorkspace", "name", a.id)
+	log.V(2).Info("creating ConversionWorkspace", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := DatabaseMigrationConversionWorkspaceSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateConversionWorkspaceRequest{
 		Parent:                a.id.ParentString(),
 		ConversionWorkspaceId: a.id.ConversionWorkspace,
-		ConversionWorkspace:   a.desired,
+		ConversionWorkspace:   resource,
 	}
 	op, err := a.gcpClient.CreateConversionWorkspace(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating DatabaseMigrationConversionWorkspace %s: %w", a.id, err)
+		return fmt.Errorf("creating ConversionWorkspace %s: %w", a.id, err)
 	}
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting DatabaseMigrationConversionWorkspace %s creation: %w", a.id, err)
+		return fmt.Errorf("waiting create ConversionWorkspace %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created DatabaseMigrationConversionWorkspace", "name", a.id)
+	log.V(2).Info("successfully created ConversionWorkspace", "name", a.id)
 
-	// Fetch fully-populated resource before calling updateStatus (Rule: Reconciling Empty or Incomplete LRO Responses)
-	latest, err := a.gcpClient.GetConversionWorkspace(ctx, &pb.GetConversionWorkspaceRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting DatabaseMigrationConversionWorkspace %s after creation: %w", a.id, err)
+	status := &krm.DatabaseMigrationConversionWorkspaceStatus{}
+	status.ObservedState = DatabaseMigrationConversionWorkspaceObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ConversionWorkspaceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating DatabaseMigrationConversionWorkspace", "name", a.id)
+	log.V(2).Info("updating ConversionWorkspace", "name", a.id)
 
-	a.desired.Name = a.id.String()
+	mapCtx := &direct.MapContext{}
+	desired := DatabaseMigrationConversionWorkspaceSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
-	diffs, updateMask, err := compareConversionWorkspace(ctx, a.actual, a.desired)
+	diffs, updateMask, err := compareConversionWorkspace(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no diff detected for DatabaseMigrationConversionWorkspace", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateConversionWorkspaceRequest{
+			ConversionWorkspace: desired,
+			UpdateMask:          updateMask,
+		}
+		op, err := a.gcpClient.UpdateConversionWorkspace(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating ConversionWorkspace %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update ConversionWorkspace %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated ConversionWorkspace", "name", a.id)
+
+		status := &krm.DatabaseMigrationConversionWorkspaceStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = DatabaseMigrationConversionWorkspaceObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateConversionWorkspaceRequest{
-		ConversionWorkspace: a.desired,
-		UpdateMask:          updateMask,
-	}
-	op, err := a.gcpClient.UpdateConversionWorkspace(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating DatabaseMigrationConversionWorkspace %s: %w", a.id, err)
-	}
-	_, err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting DatabaseMigrationConversionWorkspace %s update: %w", a.id, err)
-	}
-	log.V(2).Info("successfully updated DatabaseMigrationConversionWorkspace", "name", a.id)
-
-	// Fetch fully-populated resource before calling updateStatus (Rule: Reconciling Empty or Incomplete LRO Responses)
-	latest, err := a.gcpClient.GetConversionWorkspace(ctx, &pb.GetConversionWorkspaceRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting DatabaseMigrationConversionWorkspace %s after update: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareConversionWorkspace(ctx context.Context, actual, desired *pb.ConversionWorkspace) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DatabaseMigrationConversionWorkspaceSpec_FromProto, DatabaseMigrationConversionWorkspaceSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *ConversionWorkspaceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -211,7 +229,7 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 
 	obj := &krm.DatabaseMigrationConversionWorkspace{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(datamigration.DatabaseMigrationConversionWorkspaceSpec_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(DatabaseMigrationConversionWorkspaceSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
@@ -222,58 +240,31 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.Name)
+	u.SetName(a.id.ConversionWorkspace)
 	u.SetGroupVersionKind(krm.DatabaseMigrationConversionWorkspaceGVK)
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ConversionWorkspaceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting DatabaseMigrationConversionWorkspace", "name", a.id)
+	log.V(2).Info("deleting ConversionWorkspace", "name", a.id)
 
-	req := &pb.DeleteConversionWorkspaceRequest{Name: a.id.String()}
+	req := &pb.DeleteConversionWorkspaceRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteConversionWorkspace(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent DatabaseMigrationConversionWorkspace, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting DatabaseMigrationConversionWorkspace %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting ConversionWorkspace %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully initiated deletion of DatabaseMigrationConversionWorkspace", "name", a.id)
-
+	log.V(2).Info("successfully deleted ConversionWorkspace", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete DatabaseMigrationConversionWorkspace %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete ConversionWorkspace %s: %w", a.id, err)
+		}
 	}
-	log.V(2).Info("successfully waited for DatabaseMigrationConversionWorkspace deletion LRO", "name", a.id)
-
 	return true, nil
-}
-
-func compareConversionWorkspace(ctx context.Context, actual, desired *pb.ConversionWorkspace) (*structuredreporting.Diff, *field_mask.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, datamigration.DatabaseMigrationConversionWorkspaceSpec_FromProto, datamigration.DatabaseMigrationConversionWorkspaceSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.Clone(desired).(*pb.ConversionWorkspace)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.ConversionWorkspace) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.DatabaseMigrationConversionWorkspaceStatus{}
-	status.ObservedState = datamigration.DatabaseMigrationConversionWorkspaceObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
 }

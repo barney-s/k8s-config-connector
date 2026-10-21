@@ -17,9 +17,6 @@ package migrationcenter
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/migrationcenter/apiv1"
-	pb "cloud.google.com/go/migrationcenter/apiv1/migrationcenterpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/migrationcenter/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -29,8 +26,12 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/migrationcenter/apiv1"
+	pb "cloud.google.com/go/migrationcenter/apiv1/migrationcenterpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -42,66 +43,45 @@ func init() {
 }
 
 func NewSourceModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &sourceModel{config: *config}, nil
+	return &modelSource{config: *config}, nil
 }
 
-var _ directbase.Model = &sourceModel{}
+var _ directbase.Model = &modelSource{}
+var _ = strings.TrimPrefix
 
-type sourceModel struct {
-	config    config.ControllerConfig
-	gcpClient *gcp.Client
+type modelSource struct {
+	config config.ControllerConfig
 }
 
-func (m *sourceModel) client(ctx context.Context) (*gcp.Client, error) {
-	if m.gcpClient != nil {
-		return m.gcpClient, nil
-	}
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building migrationcenter client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *sourceModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelSource) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.MigrationCenterSource{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-	identity, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	sourceIdentity := identity.(*krm.MigrationCenterSourceIdentity)
-
-	mapCtx := &direct.MapContext{}
-	desired := MigrationCenterSourceSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	id := i.(*krm.MigrationCenterSourceIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &sourceAdapter{
-		id:        sourceIdentity,
+	return &SourceAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *sourceModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelSource) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.MigrationCenterSourceIdentity{}
 	if err := id.FromExternal(url); err != nil {
 		return nil, nil
@@ -110,135 +90,149 @@ func (m *sourceModel) AdapterForURL(ctx context.Context, url string) (directbase
 	if err != nil {
 		return nil, err
 	}
-	return &sourceAdapter{
+	return &SourceAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type sourceAdapter struct {
+func (m *modelSource) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Source client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type SourceAdapter struct {
 	id        *krm.MigrationCenterSourceIdentity
 	gcpClient *gcp.Client
-	desired   *pb.Source
+	desired   *krm.MigrationCenterSource
 	actual    *pb.Source
 }
 
-var _ directbase.Adapter = &sourceAdapter{}
+var _ directbase.Adapter = &SourceAdapter{}
 
-func (a *sourceAdapter) Find(ctx context.Context) (bool, error) {
+func (a *SourceAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
+	log.V(2).Info("getting Source", "name", a.id)
 
-	if a.id.Source == "" { // resource is not yet created
-		return false, nil
+	req := &pb.GetSourceRequest{
+		Name: a.id.String(),
 	}
-	fqn := a.id.String()
-	log.V(2).Info("getting MigrationCenterSource", "name", fqn)
-
-	req := &pb.GetSourceRequest{Name: fqn}
-	sourcePb, err := a.gcpClient.GetSource(ctx, req)
+	resp, err := a.gcpClient.GetSource(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting MigrationCenterSource %q: %w", fqn, err)
+		return false, fmt.Errorf("getting Source %q: %w", a.id, err)
 	}
 
-	a.actual = sourcePb
+	a.actual = resp
 	return true, nil
 }
 
-func (a *sourceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
-	fqn := a.id.String()
+func (a *SourceAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating MigrationCenterSource", "name", fqn)
-
-	parent := a.id.ParentString()
-	clonedDesired := proto.Clone(a.desired).(*pb.Source)
-	req := &pb.CreateSourceRequest{
-		Parent:   parent,
-		SourceId: a.id.Source,
-		Source:   clonedDesired,
-	}
-	op, err := a.gcpClient.CreateSource(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating MigrationCenterSource %s: %w", fqn, err)
-	}
-	created, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting MigrationCenterSource %s creation: %w", fqn, err)
-	}
-	log.V(2).Info("successfully created MigrationCenterSource", "name", created.Name)
-
-	latest, err := a.gcpClient.GetSource(ctx, &pb.GetSourceRequest{Name: fqn})
-	if err != nil {
-		latest = created
-	}
-
-	return a.updateStatus(ctx, createOp, latest)
-}
-
-func (a *sourceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	u := updateOp.GetUnstructured()
-
-	fqn := a.id.String()
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating MigrationCenterSource", "name", fqn)
-
-	maskedActual, err := mappers.OnlySpecFields(a.actual, MigrationCenterSourceSpec_FromProto, MigrationCenterSourceSpec_ToProto)
-	if err != nil {
-		return err
-	}
-
-	clonedDesired := proto.Clone(a.desired).(*pb.Source)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return err
-	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", fqn)
-		return a.updateStatus(ctx, updateOp, a.actual)
-	}
-
-	diffs.Object = u
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	clonedDesired.Name = a.actual.Name
-	req := &pb.UpdateSourceRequest{
-		Source:     clonedDesired,
-		UpdateMask: updateMask,
-	}
-	op, err := a.gcpClient.UpdateSource(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating MigrationCenterSource %s: %w", fqn, err)
-	}
-	updated, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting MigrationCenterSource %s update: %w", fqn, err)
-	}
-	log.V(2).Info("successfully updated MigrationCenterSource", "name", fqn)
-
-	latest, err := a.gcpClient.GetSource(ctx, &pb.GetSourceRequest{Name: fqn})
-	if err != nil {
-		latest = updated
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func (a *sourceAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Source) error {
+	log.V(2).Info("creating Source", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	status := &krm.MigrationCenterSourceStatus{}
-	status.ObservedState = MigrationCenterSourceObservedState_FromProto(mapCtx, latest)
+
+	desired := a.desired.DeepCopy()
+	resource := MigrationCenterSourceSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = &latest.Name
-	return op.UpdateStatus(ctx, status, nil)
+
+	req := &pb.CreateSourceRequest{
+		Parent:   a.id.ParentString(),
+		SourceId: a.id.Source,
+		Source:   resource,
+	}
+	op, err := a.gcpClient.CreateSource(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating Source %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create Source %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created Source", "name", a.id)
+
+	status := &krm.MigrationCenterSourceStatus{}
+	status.ObservedState = MigrationCenterSourceObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *sourceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *SourceAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating Source", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := MigrationCenterSourceSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareSource(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateSourceRequest{
+			Source:     desired,
+			UpdateMask: updateMask,
+		}
+		op, err := a.gcpClient.UpdateSource(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Source %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Source %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Source", "name", a.id)
+
+		status := &krm.MigrationCenterSourceStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = MigrationCenterSourceObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareSource(ctx context.Context, actual, desired *pb.Source) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, MigrationCenterSourceSpec_FromProto, MigrationCenterSourceSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *SourceAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -247,40 +241,44 @@ func (a *sourceAdapter) Export(ctx context.Context) (*unstructured.Unstructured,
 	obj := &krm.MigrationCenterSource{}
 	mapCtx := &direct.MapContext{}
 	obj.Spec = direct.ValueOf(MigrationCenterSourceSpec_FromProto(mapCtx, a.actual))
-	obj.Spec.ResourceID = &a.id.Source
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = &a.id.Location
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Source)
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
 	u.SetName(a.id.Source)
 	u.SetGroupVersionKind(krm.MigrationCenterSourceGVK)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *sourceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *SourceAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("deleting MigrationCenterSource", "name", fqn)
+	log.V(2).Info("deleting Source", "name", a.id)
 
-	req := &pb.DeleteSourceRequest{Name: fqn}
+	req := &pb.DeleteSourceRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteSource(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting MigrationCenterSource %s: %w", fqn, err)
+		return false, fmt.Errorf("deleting Source %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully deleted Source", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting MigrationCenterSource %s deletion: %w", fqn, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Source %s: %w", a.id, err)
+		}
 	}
-	log.V(2).Info("successfully deleted MigrationCenterSource", "name", fqn)
 	return true, nil
 }

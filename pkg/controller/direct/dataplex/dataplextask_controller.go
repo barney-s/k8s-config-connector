@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,37 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.dataplex.v1.DataplexService
-// proto.message: google.cloud.dataplex.v1.Task
-// crd.type: DataplexTask
-// crd.version: v1alpha1
-
 package dataplex
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
-
-	gcp "cloud.google.com/go/dataplex/apiv1"
-	pb "cloud.google.com/go/dataplex/apiv1/dataplexpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dataplex/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/dataplex/apiv1"
+	pb "cloud.google.com/go/dataplex/apiv1/dataplexpb"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -50,237 +44,193 @@ func init() {
 }
 
 func NewTaskModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &taskModel{config: config}, nil
+	return &modelTask{config: *config}, nil
 }
 
-var _ directbase.Model = &taskModel{}
+var _ directbase.Model = &modelTask{}
+var _ = strings.TrimPrefix
 
-type taskModel struct {
-	config *config.ControllerConfig
+type modelTask struct {
+	config config.ControllerConfig
 }
 
-func (m *taskModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelTask) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DataplexTask{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.TaskIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	copied := obj.DeepCopy()
-	mapCtx := &direct.MapContext{}
-	desired := DataplexTaskSpec_ToProto(mapCtx, &copied.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
-	idI, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := idI.(*krm.TaskIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type %T", idI)
-	}
-
-	taskAdapter := &taskAdapter{
-		id:      id,
-		desired: desired,
-		reader:  reader,
-	}
-
-	// Get GCP client
-	gcpClient, err := newGCPClient(ctx, m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	taskClient, err := gcpClient.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-	taskAdapter.gcpClient = taskClient
-
-	return taskAdapter, nil
+	return &TaskAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
 }
 
-func (m *taskModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelTask) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type taskAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.TaskIdentity
-	desired   *pb.Task
-	actual    *pb.Task
-	reader    client.Reader
+func (m *modelTask) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Task client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &taskAdapter{}
+type TaskAdapter struct {
+	id        *krm.TaskIdentity
+	gcpClient *gcp.Client
+	desired   *krm.DataplexTask
+	actual    *pb.Task
+}
 
-func (a *taskAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &TaskAdapter{}
+
+func (a *TaskAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting dataplex task", "name", a.id)
+	log.V(2).Info("getting Task", "name", a.id)
 
-	req := &pb.GetTaskRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetTask(ctx, req)
+	req := &pb.GetTaskRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetTask(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting dataplex task %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Task %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *taskAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *TaskAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating dataplex task", "name", a.id)
+	log.V(2).Info("creating Task", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := DataplexTaskSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateTaskRequest{
-		Parent: fmt.Sprintf("projects/%s/locations/%s/lakes/%s", a.id.Project, a.id.Location, a.id.Lake),
-		Task:   a.desired,
-		TaskId: a.id.Task,
+		Parent: a.id.ParentString(),
+		TaskId: a.id.Lake,
+		Task:   resource,
 	}
 	op, err := a.gcpClient.CreateTask(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating dataplex task %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating Task %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting create dataplex task %s failed: %w", a.id, err)
+		return fmt.Errorf("waiting create Task %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created Task", "name", a.id)
 
-	log.V(2).Info("successfully created dataplex task in gcp", "name", a.id)
-
-	mapCtx := &direct.MapContext{}
 	status := &krm.DataplexTaskStatus{}
 	status.ObservedState = DataplexTaskObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *taskAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *TaskAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating dataplex task", "name", a.id)
-
-	task := a.desired
-	task.Name = a.id.String()
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	// Set the required trigger type explicitly if unset, default to ON_DEMAND.
-	// This ensures comparison works correctly, even if the user didn't specify it.
-	if task.TriggerSpec == nil {
-		task.TriggerSpec = &pb.Task_TriggerSpec{}
-	}
-	if task.TriggerSpec.Type == pb.Task_TriggerSpec_TYPE_UNSPECIFIED {
-		task.TriggerSpec.Type = pb.Task_TriggerSpec_ON_DEMAND
-	}
-	// Do the same for the actual resource state for comparison.
-	if a.actual.TriggerSpec == nil {
-		a.actual.TriggerSpec = &pb.Task_TriggerSpec{}
-	}
-	if a.actual.TriggerSpec.Type == pb.Task_TriggerSpec_TYPE_UNSPECIFIED {
-		a.actual.TriggerSpec.Type = pb.Task_TriggerSpec_ON_DEMAND
-	}
-
-	updateMask := &fieldmaskpb.FieldMask{}
-	if !reflect.DeepEqual(task.Description, a.actual.Description) {
-		report.AddField("description", a.actual.Description, task.Description)
-		updateMask.Paths = append(updateMask.Paths, "description")
-	}
-	if !reflect.DeepEqual(task.DisplayName, a.actual.DisplayName) {
-		report.AddField("display_name", a.actual.DisplayName, task.DisplayName)
-		updateMask.Paths = append(updateMask.Paths, "display_name")
-	}
-	if !reflect.DeepEqual(task.Labels, a.actual.Labels) {
-		report.AddField("labels", a.actual.Labels, task.Labels)
-		updateMask.Paths = append(updateMask.Paths, "labels")
-	}
-	// TriggerSpec.Type is immutable, compare the rest of the spec
-	if !reflect.DeepEqual(task.TriggerSpec.StartTime, a.actual.TriggerSpec.StartTime) {
-		report.AddField("trigger_spec.start_time", a.actual.TriggerSpec.StartTime, task.TriggerSpec.StartTime)
-		updateMask.Paths = append(updateMask.Paths, "trigger_spec.start_time")
-	}
-	if !reflect.DeepEqual(task.TriggerSpec.Disabled, a.actual.TriggerSpec.Disabled) {
-		report.AddField("trigger_spec.disabled", a.actual.TriggerSpec.Disabled, task.TriggerSpec.Disabled)
-		updateMask.Paths = append(updateMask.Paths, "trigger_spec.disabled")
-	}
-	if !reflect.DeepEqual(task.TriggerSpec.MaxRetries, a.actual.TriggerSpec.MaxRetries) {
-		report.AddField("trigger_spec.max_retries", a.actual.TriggerSpec.MaxRetries, task.TriggerSpec.MaxRetries)
-		updateMask.Paths = append(updateMask.Paths, "trigger_spec.max_retries")
-	}
-	if !reflect.DeepEqual(task.TriggerSpec.GetSchedule(), a.actual.TriggerSpec.GetSchedule()) {
-		report.AddField("trigger_spec.schedule", a.actual.TriggerSpec.GetSchedule(), task.TriggerSpec.GetSchedule())
-		updateMask.Paths = append(updateMask.Paths, "trigger_spec.schedule")
-	}
-
-	if !cmp.Equal(task.ExecutionSpec, a.actual.ExecutionSpec, cmpopts.IgnoreUnexported(pb.Task_ExecutionSpec{})) {
-		report.AddField("execution_spec", a.actual.ExecutionSpec, task.ExecutionSpec)
-		updateMask.Paths = append(updateMask.Paths, "execution_spec")
-	}
-
-	// Compare task-specific config (spark or notebook)
-	if !cmp.Equal(task.GetSpark(), a.actual.GetSpark(), cmpopts.IgnoreUnexported(pb.Task_SparkTaskConfig{}, pb.Task_InfrastructureSpec{})) {
-		report.AddField("spark", a.actual.GetSpark(), task.GetSpark())
-		updateMask.Paths = append(updateMask.Paths, "spark")
-	}
-	if !cmp.Equal(task.GetNotebook(), a.actual.GetNotebook(), cmpopts.IgnoreUnexported(pb.Task_NotebookTaskConfig{}, pb.Task_InfrastructureSpec{})) {
-		report.AddField("notebook", a.actual.GetNotebook(), task.GetNotebook())
-		updateMask.Paths = append(updateMask.Paths, "notebook")
-	}
-
-	var updated *pb.Task
-	if len(updateMask.Paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-
-		// Even though there is no update, we still want to update KRM status
-		updated = a.actual
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		log.V(2).Info("updating dataplex task fields", "name", a.id, "paths", updateMask.Paths)
-		req := &pb.UpdateTaskRequest{
-			UpdateMask: updateMask,
-			Task:       task,
-		}
-		op, err := a.gcpClient.UpdateTask(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating dataplex task %s: %w", a.id.String(), err)
-		}
-		updated, err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting for update of dataplex task %s: %w", a.id.String(), err)
-		}
-		log.V(2).Info("successfully updated dataplex task", "name", a.id)
-	}
+	log.V(2).Info("updating Task", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	status := &krm.DataplexTaskStatus{}
-	status.ObservedState = DataplexTaskObservedState_FromProto(mapCtx, updated)
+	desired := DataplexTaskSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	return updateOp.UpdateStatus(ctx, status, nil)
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareTask(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateTaskRequest{
+			Task:       desired,
+			UpdateMask: updateMask,
+		}
+		op, err := a.gcpClient.UpdateTask(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Task %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Task %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Task", "name", a.id)
+
+		status := &krm.DataplexTaskStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = DataplexTaskObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
 }
 
-func (a *taskAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	log := klog.FromContext(ctx)
+func compareTask(ctx context.Context, actual, desired *pb.Task) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DataplexTaskSpec_FromProto, DataplexTaskSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
 
+func (a *TaskAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
 	obj := &krm.DataplexTask{}
 	mapCtx := &direct.MapContext{}
@@ -289,37 +239,38 @@ func (a *taskAdapter) Export(ctx context.Context) (*unstructured.Unstructured, e
 		return nil, mapCtx.Err()
 	}
 
-	// Set parent references
-	obj.Spec.LakeRef = &krm.LakeRef{External: fmt.Sprintf("projects/%s/locations/%s/lakes/%s", a.id.Project, a.id.Location, a.id.Lake)}
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u := &unstructured.Unstructured{Object: uObj}
-	u.SetName(a.id.Task) // Use the task_id as the KRM resource name
+	u.Object = uObj
+	u.SetName(a.id.Lake)
 	u.SetGroupVersionKind(krm.DataplexTaskGVK)
-
-	log.Info("exported object", "obj", u, "gvk", u.GroupVersionKind())
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *taskAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *TaskAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting dataplex task", "name", a.id)
+	log.V(2).Info("deleting Task", "name", a.id)
 
-	req := &pb.DeleteTaskRequest{Name: a.id.String()}
+	req := &pb.DeleteTaskRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteTask(ctx, req)
 	if err != nil {
-		return false, fmt.Errorf("deleting dataplex task %s: %w", a.id.String(), err)
+		if direct.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deleting Task %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully initiated dataplex task deletion", "name", a.id)
-
+	log.V(2).Info("successfully deleted Task", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for deletion of dataplex task %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Task %s: %w", a.id, err)
+		}
 	}
-	log.Info("successfully deleted dataplex task", "name", a.id)
 	return true, nil
 }

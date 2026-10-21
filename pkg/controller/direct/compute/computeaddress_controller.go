@@ -12,29 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.compute.v1.Addresses
-// proto.service: google.cloud.compute.v1.GlobalAddresses
-// proto.message: google.cloud.compute.v1.Address
-// crd.type: ComputeAddress
-// crd.version: v1beta1
-
 package compute
 
 import (
 	"context"
 	"fmt"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	pb "cloud.google.com/go/compute/apiv1/computepb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -45,6 +27,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	pb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -52,112 +44,78 @@ func init() {
 }
 
 func NewComputeAddressModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeAddressModel{config: config}, nil
+	return &modelComputeAddress{config: *config}, nil
 }
 
-var _ directbase.Model = &computeAddressModel{}
+var _ directbase.Model = &modelComputeAddress{}
+var _ = strings.TrimPrefix
 
-type computeAddressModel struct {
-	config *config.ControllerConfig
+type modelComputeAddress struct {
+	config config.ControllerConfig
 }
 
-func (m *computeAddressModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeAddress) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeAddress{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-
-	var addressesClient *compute.AddressesClient
-	var globalAddressesClient *compute.GlobalAddressesClient
-	addressId := id.(*krm.ComputeAddressIdentity)
-
-	if addressId.IsGlobal() {
-		globalAddressesClient, err = gcpClient.newGlobalAddressesClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		addressesClient, err = gcpClient.newAddressesClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-	}
-
+	id := i.(*krm.ComputeAddressIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desired := obj.DeepCopy()
-	resource := ComputeAddressSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
-
-	resource.Labels = label.NewGCPLabelsFromK8sLabels(obj.GetLabels())
-
 	return &ComputeAddressAdapter{
-		gcpClient:       addressesClient,
-		gcpGlobalClient: globalAddressesClient,
-		id:              addressId,
-		desired:         resource,
-		reader:          reader,
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *computeAddressModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeAddress) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.ComputeAddressIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := newGCPClient(m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
+		return nil, err
 	}
-
-	var addressesClient *compute.AddressesClient
-	var globalAddressesClient *compute.GlobalAddressesClient
-
-	if id.IsGlobal() {
-		globalAddressesClient, err = gcpClient.newGlobalAddressesClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		addressesClient, err = gcpClient.newAddressesClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	return &ComputeAddressAdapter{
-		id:              id,
-		gcpClient:       addressesClient,
-		gcpGlobalClient: globalAddressesClient,
+		id:        id,
+		gcpClient: gcpClient,
 	}, nil
+}
+
+func (m *modelComputeAddress) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeAddress client: %w", err)
+	}
+	return gcpClient, err
 }
 
 type ComputeAddressAdapter struct {
-	gcpClient       *compute.AddressesClient
-	gcpGlobalClient *compute.GlobalAddressesClient
-	id              *krm.ComputeAddressIdentity
-	desired         *pb.Address
-	actual          *pb.Address
-	reader          client.Reader
+	id        *krm.ComputeAddressIdentity
+	gcpClient *gcp.Client
+	desired   *krm.ComputeAddress
+	actual    *pb.ComputeAddress
 }
 
 var _ directbase.Adapter = &ComputeAddressAdapter{}
@@ -166,24 +124,10 @@ func (a *ComputeAddressAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeAddress", "name", a.id)
 
-	var actual *pb.Address
-	var err error
-
-	if a.id.IsGlobal() {
-		req := &pb.GetGlobalAddressRequest{
-			Project: a.id.Project,
-			Address: a.id.Address,
-		}
-		actual, err = a.gcpGlobalClient.Get(ctx, req)
-	} else {
-		req := &pb.GetAddressRequest{
-			Project: a.id.Project,
-			Region:  a.id.Region,
-			Address: a.id.Address,
-		}
-		actual, err = a.gcpClient.Get(ctx, req)
+	req := &pb.GetComputeAddressRequest{
+		Name: a.id.String(),
 	}
-
+	resp, err := a.gcpClient.GetComputeAddress(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -191,173 +135,89 @@ func (a *ComputeAddressAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting ComputeAddress %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
 func (a *ComputeAddressAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ComputeAddress", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	a.desired.Name = direct.LazyPtr(a.id.Address)
-
-	var err error
-	if a.id.IsGlobal() {
-		req := &pb.InsertGlobalAddressRequest{
-			Project:         a.id.Project,
-			AddressResource: a.desired,
-		}
-		op, errInsert := a.gcpGlobalClient.Insert(ctx, req)
-		if errInsert != nil {
-			return fmt.Errorf("creating ComputeGlobalAddress %s: %w", a.id, errInsert)
-		}
-		err = op.Wait(ctx)
-	} else {
-		req := &pb.InsertAddressRequest{
-			Project:         a.id.Project,
-			Region:          a.id.Region,
-			AddressResource: a.desired,
-		}
-		op, errInsert := a.gcpClient.Insert(ctx, req)
-		if errInsert != nil {
-			return fmt.Errorf("creating ComputeRegionalAddress %s: %w", a.id, errInsert)
-		}
-		err = op.Wait(ctx)
+	desired := a.desired.DeepCopy()
+	resource := ComputeAddressSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
+	req := &pb.CreateComputeAddressRequest{
+		Parent:           a.id.ParentString(),
+		ComputeAddressId: a.id.IsGlobal,
+		ComputeAddress:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeAddress(ctx, req)
 	if err != nil {
-		return fmt.Errorf("waiting ComputeAddress %s create failed: %w", a.id, err)
+		return fmt.Errorf("creating ComputeAddress %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeAddress %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created ComputeAddress", "name", a.id)
 
-	// Get latest state
-	latest, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeAddress %s after creation: %w", a.id, err)
+	status := &krm.ComputeAddressStatus{}
+	status.ObservedState = ComputeAddressObservedState_v1beta1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeAddressAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeAddress", "name", a.id)
 
-	diffs, _, err := compareAddress(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := ComputeAddressSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareComputeAddress(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeAddress resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	// Check if only labels changed by comparing actual vs desired without labels
-	actualNoLabels := proto.CloneOf(a.actual)
-	desiredNoLabels := proto.CloneOf(a.desired)
-	actualNoLabels.Labels = nil
-	desiredNoLabels.Labels = nil
-
-	specDiffs, _, err := compareAddress(ctx, actualNoLabels, desiredNoLabels)
-	if err != nil {
-		return err
+	status := &krm.ComputeAddressStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = ComputeAddressObservedState_v1beta1_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	if !specDiffs.HasDiff() {
-		// Only labels changed, so we can update labels!
-		log.V(2).Info("updating ComputeAddress labels", "name", a.id)
-		if a.id.IsGlobal() {
-			req := &pb.SetLabelsGlobalAddressRequest{
-				Project:  a.id.Project,
-				Resource: a.id.Address,
-				GlobalSetLabelsRequestResource: &pb.GlobalSetLabelsRequest{
-					Labels:           a.desired.Labels,
-					LabelFingerprint: a.actual.LabelFingerprint,
-				},
-			}
-			op, err := a.gcpGlobalClient.SetLabels(ctx, req)
-			if err != nil {
-				return fmt.Errorf("updating ComputeGlobalAddress labels %s: %w", a.id, err)
-			}
-			if err = op.Wait(ctx); err != nil {
-				return fmt.Errorf("waiting ComputeGlobalAddress %s labels update: %w", a.id, err)
-			}
-		} else {
-			req := &pb.SetLabelsAddressRequest{
-				Project:  a.id.Project,
-				Region:   a.id.Region,
-				Resource: a.id.Address,
-				RegionSetLabelsRequestResource: &pb.RegionSetLabelsRequest{
-					Labels:           a.desired.Labels,
-					LabelFingerprint: a.actual.LabelFingerprint,
-				},
-			}
-			op, err := a.gcpClient.SetLabels(ctx, req)
-			if err != nil {
-				return fmt.Errorf("updating ComputeRegionalAddress labels %s: %w", a.id, err)
-			}
-			if err = op.Wait(ctx); err != nil {
-				return fmt.Errorf("waiting ComputeRegionalAddress %s labels update: %w", a.id, err)
-			}
-		}
-
-		// Retrieve latest state after update
-		latest, err := a.get(ctx)
-		if err != nil {
-			return fmt.Errorf("getting ComputeAddress %s after labels update: %w", a.id, err)
-		}
-		return a.updateStatus(ctx, updateOp, latest)
-	}
-
-	// Surfacing exact diff back to the user
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	// Since ComputeAddress spec is immutable, any change is not supported.
-	return fmt.Errorf("ComputeAddress is immutable and cannot be updated")
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *ComputeAddressAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeAddress", "name", a.id)
-
-	var err error
-	if a.id.IsGlobal() {
-		req := &pb.DeleteGlobalAddressRequest{
-			Project: a.id.Project,
-			Address: a.id.Address,
-		}
-		op, errDelete := a.gcpGlobalClient.Delete(ctx, req)
-		if errDelete != nil {
-			if direct.IsNotFound(errDelete) {
-				return true, nil
-			}
-			return false, fmt.Errorf("deleting ComputeGlobalAddress %s: %w", a.id, errDelete)
-		}
-		err = op.Wait(ctx)
-	} else {
-		req := &pb.DeleteAddressRequest{
-			Project: a.id.Project,
-			Region:  a.id.Region,
-			Address: a.id.Address,
-		}
-		op, errDelete := a.gcpClient.Delete(ctx, req)
-		if errDelete != nil {
-			if direct.IsNotFound(errDelete) {
-				return true, nil
-			}
-			return false, fmt.Errorf("deleting ComputeRegionalAddress %s: %w", a.id, errDelete)
-		}
-		err = op.Wait(ctx)
-	}
-
+func compareComputeAddress(ctx context.Context, actual, desired *pb.ComputeAddress) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeAddressSpec_v1beta1_FromProto, ComputeAddressSpec_v1beta1_ToProto)
 	if err != nil {
-		return false, fmt.Errorf("waiting ComputeAddress %s delete failed: %w", a.id, err)
+		return nil, nil, err
 	}
-
-	log.V(2).Info("successfully deleted ComputeAddress", "name", a.id)
-	return true, nil
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *ComputeAddressAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -372,10 +232,8 @@ func (a *ComputeAddressAdapter) Export(ctx context.Context) (*unstructured.Unstr
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	// ComputeAddress requires location and resourceID
-	obj.Spec.Location = a.id.Region
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Address)
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.IsGlobal)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -383,74 +241,14 @@ func (a *ComputeAddressAdapter) Export(ctx context.Context) (*unstructured.Unstr
 	}
 
 	u.Object = uObj
-	u.SetName(a.id.Address)
+	u.SetName(a.id.IsGlobal)
 	u.SetGroupVersionKind(krm.ComputeAddressGVK)
-
-	export.SetProjectID(u, a.id.Project)
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
-func (a *ComputeAddressAdapter) get(ctx context.Context) (*pb.Address, error) {
-	if a.id.IsGlobal() {
-		req := &pb.GetGlobalAddressRequest{
-			Project: a.id.Project,
-			Address: a.id.Address,
-		}
-		return a.gcpGlobalClient.Get(ctx, req)
-	}
-
-	req := &pb.GetAddressRequest{
-		Project: a.id.Project,
-		Region:  a.id.Region,
-		Address: a.id.Address,
-	}
-	return a.gcpClient.Get(ctx, req)
-}
-
-func (a *ComputeAddressAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Address) error {
-	mapCtx := &direct.MapContext{}
-	status := ComputeAddressStatus_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	if status != nil {
-		status.ObservedState = ComputeAddressObservedState_v1beta1_FromProto(mapCtx, latest)
-	}
-
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareAddress(ctx context.Context, actual, desired *pb.Address) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, ComputeAddressSpec_v1beta1_FromProto, ComputeAddressSpec_v1beta1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	maskedActual.Labels = actual.Labels
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *pb.Address) {
-		// Even if empty, it's a good pattern to define and populate GCP/server defaults here
-		if obj.AddressType == nil {
-			obj.AddressType = direct.PtrTo("EXTERNAL")
-		}
-		if obj.IpVersion == nil {
-			obj.IpVersion = direct.PtrTo("IPV4")
-		}
-		if obj.NetworkTier == nil {
-			obj.NetworkTier = direct.PtrTo("PREMIUM")
-		}
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
+func (a *ComputeAddressAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for ComputeAddress, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

@@ -17,14 +17,15 @@ package logging
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/logging/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/logging/apiv2"
 	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
@@ -37,173 +38,183 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.LoggingLogBucketGVK, NewLoggingLogBucketModel)
+	registry.RegisterModel(krm.LoggingLogBucketGVK, NewBucketModel)
 }
 
-func NewLoggingLogBucketModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &modelLoggingLogBucket{config: *config}, nil
+func NewBucketModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelBucket{config: *config}, nil
 }
 
-var _ directbase.Model = &modelLoggingLogBucket{}
+var _ directbase.Model = &modelBucket{}
+var _ = strings.TrimPrefix
 
-type modelLoggingLogBucket struct {
+type modelBucket struct {
 	config config.ControllerConfig
 }
 
-func (m *modelLoggingLogBucket) client(ctx context.Context) (*gcp.ConfigClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewConfigRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building Logging Config client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *modelLoggingLogBucket) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelBucket) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.LoggingLogBucket{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.LogBucketIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	id, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := LoggingLogBucketSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &LoggingLogBucketAdapter{
-		id:        id.(*krm.LogBucketIdentity),
+	return &BucketAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desiredPb,
+		desired:   obj,
 	}, nil
 }
 
-func (m *modelLoggingLogBucket) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelBucket) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.LogBucketIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &LoggingLogBucketAdapter{
+	return &BucketAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type LoggingLogBucketAdapter struct {
-	id        *krm.LogBucketIdentity
-	gcpClient *gcp.ConfigClient
-	desired   *loggingpb.LogBucket
-	actual    *loggingpb.LogBucket
+func (m *modelBucket) client(ctx context.Context) (*gcp.ConfigClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewConfigRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Bucket client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &LoggingLogBucketAdapter{}
+type BucketAdapter struct {
+	id        *krm.LogBucketIdentity
+	gcpClient *gcp.ConfigClient
+	desired   *krm.LoggingLogBucket
+	actual    *loggingpb.Bucket
+}
 
-func (a *LoggingLogBucketAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &BucketAdapter{}
+
+func (a *BucketAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting LoggingLogBucket", "name", a.id)
+	log.V(2).Info("getting Bucket", "name", a.id)
 
-	req := &loggingpb.GetBucketRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetBucket(ctx, req)
+	req := &loggingpb.GetBucketRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBucket(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting LoggingLogBucket %q: %w", a.id, err)
+		return false, fmt.Errorf("getting Bucket %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *LoggingLogBucketAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *BucketAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("creating LoggingLogBucket", "id", fqn)
+	log.V(2).Info("creating Bucket", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	parent := a.id.ParentString()
-	resourceID := a.id.Bucket
+	desired := a.desired.DeepCopy()
+	resource := LoggingLogBucketSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &loggingpb.CreateBucketRequest{
-		Parent:   parent,
-		Bucket:   a.desired,
-		BucketId: resourceID,
+		Parent:   a.id.ParentString(),
+		BucketId: a.id.Bucket,
+		Bucket:   resource,
 	}
 	created, err := a.gcpClient.CreateBucket(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating LogBucket %s: %w", a.id, err)
+		return fmt.Errorf("creating Bucket %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created LogBucket", "name", a.id)
+	log.V(2).Info("successfully created Bucket", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.LoggingLogBucketStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *LoggingLogBucketAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *BucketAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating LoggingLogBucket", "name", a.id.String())
+	log.V(2).Info("updating Bucket", "name", a.id)
 
-	diffs, updateMask, err := compareBucket(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := LoggingLogBucketSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareBucket(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
+		desired.Name = a.id.String()
+
 		req := &loggingpb.UpdateBucketRequest{
-			Name:       a.id.String(),
-			Bucket:     a.desired,
+			Bucket:     desired,
 			UpdateMask: updateMask,
 		}
-
 		updated, err := a.gcpClient.UpdateBucket(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating LoggingLogBucket %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating Bucket %s: %w", a.id, err)
 		}
-		latest = updated
+		log.V(2).Info("successfully updated Bucket", "name", a.id)
+
+		status := &krm.LoggingLogBucketStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *LoggingLogBucketAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *loggingpb.LogBucket) error {
-	mapCtx := &direct.MapContext{}
-	status := LoggingLogBucketStatus_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func compareBucket(ctx context.Context, actual, desired *loggingpb.Bucket) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, LoggingLogBucketSpec_FromProto, LoggingLogBucketSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	return op.UpdateStatus(ctx, status, nil)
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *LoggingLogBucketAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *BucketAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -223,46 +234,25 @@ func (a *LoggingLogBucketAdapter) Export(ctx context.Context) (*unstructured.Uns
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.Name)
+	u.SetName(a.id.Bucket)
 	u.SetGroupVersionKind(krm.LoggingLogBucketGVK)
 	return u, nil
 }
 
-func (a *LoggingLogBucketAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *BucketAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting LogBucket", "name", a.id)
+	log.V(2).Info("deleting Bucket", "name", a.id)
 
-	req := &loggingpb.DeleteBucketRequest{Name: a.id.String()}
+	req := &loggingpb.DeleteBucketRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteBucket(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent LogBucket, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting LogBucket %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting Bucket %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted LogBucket", "name", a.id)
+	log.V(2).Info("successfully deleted Bucket", "name", a.id)
 	return true, nil
-}
-
-func compareBucket(ctx context.Context, actual, desired *loggingpb.LogBucket) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	var maskedActual *loggingpb.LogBucket
-	{
-		// A "trick" to only compare spec fields - round trip via the spec
-		mapCtx := &direct.MapContext{}
-		spec := LoggingLogBucketSpec_FromProto(mapCtx, actual)
-		if mapCtx.Err() != nil {
-			return nil, nil, mapCtx.Err()
-		}
-		maskedActual = LoggingLogBucketSpec_ToProto(mapCtx, spec)
-		if mapCtx.Err() != nil {
-			return nil, nil, mapCtx.Err()
-		}
-	}
-	maskedActual.Name = desired.Name
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

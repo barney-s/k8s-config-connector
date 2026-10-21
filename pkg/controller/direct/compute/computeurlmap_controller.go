@@ -17,114 +17,105 @@ package compute
 import (
 	"context"
 	"fmt"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	pb "cloud.google.com/go/compute/apiv1/computepb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	pb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
-	registry.RegisterModel(krm.ComputeURLMapGVK, NewURLMapModel)
+	registry.RegisterModel(krm.ComputeURLMapGVK, NewComputeURLMapModel)
 }
 
-func NewURLMapModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &urlMapModel{config: config}, nil
+func NewComputeURLMapModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelComputeURLMap{config: *config}, nil
 }
 
-type urlMapModel struct {
-	config *config.ControllerConfig
+var _ directbase.Model = &modelComputeURLMap{}
+var _ = strings.TrimPrefix
+
+type modelComputeURLMap struct {
+	config config.ControllerConfig
 }
 
-// model implements the Model interface.
-var _ directbase.Model = &urlMapModel{}
-
-type ComputeURLMapAdapter struct {
-	urlMapsClient       *compute.UrlMapsClient
-	regionUrlMapsClient *compute.RegionUrlMapsClient
-	id                  *krm.ComputeURLMapIdentity
-	desired             *pb.UrlMap
-	actual              *pb.UrlMap
-	reader              client.Reader
-}
-
-var _ directbase.Adapter = &ComputeURLMapAdapter{}
-
-func (m *urlMapModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeURLMap) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeURLMap{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// Always normalize references
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.ComputeURLMapIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	id, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ComputeURLMapAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelComputeURLMap) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelComputeURLMap) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	gcpClient, err := newGCPClient(m.config)
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
+		return nil, fmt.Errorf("building ComputeURLMap client: %w", err)
 	}
-
-	var urlMapsClient *compute.UrlMapsClient
-	var regionUrlMapsClient *compute.RegionUrlMapsClient
-
-	urlMapId := id.(*krm.ComputeURLMapIdentity)
-	if urlMapId.IsGlobal() {
-		urlMapsClient, err = gcpClient.newUrlMapsClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		regionUrlMapsClient, err = gcpClient.newRegionUrlMapsClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := ComputeURLMapSpec_v1beta1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	// Set name in proto
-	desired.Name = direct.LazyPtr(urlMapId.Urlmap)
-
-	return &ComputeURLMapAdapter{
-		urlMapsClient:       urlMapsClient,
-		regionUrlMapsClient: regionUrlMapsClient,
-		id:                  urlMapId,
-		desired:             desired,
-		reader:              reader,
-	}, nil
+	return gcpClient, err
 }
 
-func (m *urlMapModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	return nil, nil
+type ComputeURLMapAdapter struct {
+	id        *krm.ComputeURLMapIdentity
+	gcpClient *gcp.Client
+	desired   *krm.ComputeURLMap
+	actual    *pb.ComputeURLMap
 }
+
+var _ directbase.Adapter = &ComputeURLMapAdapter{}
 
 func (a *ComputeURLMapAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeURLMap", "name", a.id)
 
-	actual, err := a.get(ctx)
+	req := &pb.GetComputeURLMapRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetComputeURLMap(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -132,149 +123,77 @@ func (a *ComputeURLMapAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting ComputeURLMap %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
 func (a *ComputeURLMapAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ComputeURLMap", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	var op *compute.Operation
-	var err error
-
-	if a.id.IsGlobal() {
-		req := &pb.InsertUrlMapRequest{
-			Project:        a.id.Project,
-			UrlMapResource: a.desired,
-		}
-		op, err = a.urlMapsClient.Insert(ctx, req)
-	} else {
-		req := &pb.InsertRegionUrlMapRequest{
-			Project:        a.id.Project,
-			Region:         a.id.Region,
-			UrlMapResource: a.desired,
-		}
-		op, err = a.regionUrlMapsClient.Insert(ctx, req)
+	desired := a.desired.DeepCopy()
+	resource := ComputeURLMapSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
 
+	req := &pb.CreateComputeURLMapRequest{
+		Parent:          a.id.ParentString(),
+		ComputeURLMapId: a.id.IsGlobal,
+		ComputeURLMap:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeURLMap(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating ComputeURLMap %s: %w", a.id, err)
 	}
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting ComputeURLMap %s create failed: %w", a.id, err)
-		}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create ComputeURLMap %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created ComputeURLMap", "name", a.id)
 
-	// Get the created resource
-	created, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeURLMap %s: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ComputeURLMapStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeURLMapAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeURLMap", "name", a.id)
 
-	// Handle output-only fields from GCP
-	a.assignGCPDefaults(a.desired, a.actual)
+	mapCtx := &direct.MapContext{}
+	desired := ComputeURLMapSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
-	paths, report, err := common.CompareProtoMessageStructuredDiff(a.desired, a.actual, common.BasicDiff)
+	diffs, updateMask, err := compareComputeURLMap(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeURLMap resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	report.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, report)
-
-	updateOp.RecordUpdatingEvent()
-
-	var op *compute.Operation
-
-	if a.id.IsGlobal() {
-		req := &pb.UpdateUrlMapRequest{
-			Project:        a.id.Project,
-			UrlMap:         a.id.Urlmap,
-			UrlMapResource: a.desired,
-		}
-		op, err = a.urlMapsClient.Update(ctx, req)
-	} else {
-		req := &pb.UpdateRegionUrlMapRequest{
-			Project:        a.id.Project,
-			Region:         a.id.Region,
-			UrlMap:         a.id.Urlmap,
-			UrlMapResource: a.desired,
-		}
-		op, err = a.regionUrlMapsClient.Update(ctx, req)
-	}
-
-	if err != nil {
-		return fmt.Errorf("updating ComputeURLMap %s: %w", a.id, err)
-	}
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting ComputeURLMap %s update failed: %w", a.id, err)
-		}
-	}
-	log.V(2).Info("successfully updated ComputeURLMap", "name", a.id)
-
-	// Get the updated resource
-	updated, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeURLMap %s: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, updateOp, updated)
+	status := &krm.ComputeURLMapStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *ComputeURLMapAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeURLMap", "name", a.id)
-
-	var op *compute.Operation
-	var err error
-
-	if a.id.IsGlobal() {
-		req := &pb.DeleteUrlMapRequest{
-			Project: a.id.Project,
-			UrlMap:  a.id.Urlmap,
-		}
-		op, err = a.urlMapsClient.Delete(ctx, req)
-	} else {
-		req := &pb.DeleteRegionUrlMapRequest{
-			Project: a.id.Project,
-			Region:  a.id.Region,
-			UrlMap:  a.id.Urlmap,
-		}
-		op, err = a.regionUrlMapsClient.Delete(ctx, req)
-	}
-
+func compareComputeURLMap(ctx context.Context, actual, desired *pb.ComputeURLMap) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeURLMapSpec_v1beta1_FromProto, ComputeURLMapSpec_v1beta1_ToProto)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting ComputeURLMap %s: %w", a.id, err)
+		return nil, nil, err
 	}
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return false, fmt.Errorf("waiting ComputeURLMap %s delete failed: %w", a.id, err)
-		}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
 	}
-	log.V(2).Info("successfully deleted ComputeURLMap", "name", a.id)
-	return true, nil
+	return diffs, updateMask, nil
 }
 
 func (a *ComputeURLMapAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -296,42 +215,13 @@ func (a *ComputeURLMapAdapter) Export(ctx context.Context) (*unstructured.Unstru
 	}
 
 	u.Object = uObj
+	u.SetName(a.id.IsGlobal)
 	u.SetGroupVersionKind(krm.ComputeURLMapGVK)
 	return u, nil
 }
 
-func (a *ComputeURLMapAdapter) get(ctx context.Context) (*pb.UrlMap, error) {
-	if a.id.IsGlobal() {
-		req := &pb.GetUrlMapRequest{
-			Project: a.id.Project,
-			UrlMap:  a.id.Urlmap,
-		}
-		return a.urlMapsClient.Get(ctx, req)
-	} else {
-		req := &pb.GetRegionUrlMapRequest{
-			Project: a.id.Project,
-			Region:  a.id.Region,
-			UrlMap:  a.id.Urlmap,
-		}
-		return a.regionUrlMapsClient.Get(ctx, req)
-	}
-}
-
-func (a *ComputeURLMapAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.UrlMap) error {
-	mapCtx := &direct.MapContext{}
-	status := ComputeURLMapStatus_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *ComputeURLMapAdapter) assignGCPDefaults(desired, actual *pb.UrlMap) {
-	if actual != nil {
-		desired.Fingerprint = actual.Fingerprint
-		desired.Id = actual.Id
-		desired.SelfLink = actual.SelfLink
-		desired.CreationTimestamp = actual.CreationTimestamp
-		desired.Kind = actual.Kind
-	}
+func (a *ComputeURLMapAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for ComputeURLMap, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

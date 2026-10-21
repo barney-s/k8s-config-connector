@@ -17,19 +17,19 @@ package hypercomputecluster
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/hypercomputecluster/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/hypercomputecluster/apiv1"
 	pb "cloud.google.com/go/hypercomputecluster/apiv1/hypercomputeclusterpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -38,185 +38,190 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.HypercomputeClusterClusterGVK, NewModel)
+	registry.RegisterModel(krm.HypercomputeClusterClusterGVK, NewClusterModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewClusterModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelCluster{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelCluster{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelCluster struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building HypercomputeCluster client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelCluster) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.HypercomputeClusterCluster{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	clusterID := id.(*krm.HypercomputeClusterClusterIdentity)
+	id := i.(*krm.HypercomputeClusterClusterIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := HypercomputeClusterClusterSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desired.Name = clusterID.String()
-
-	return &Adapter{
-		id:        clusterID,
+	return &ClusterAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelCluster) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
+func (m *modelCluster) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Cluster client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ClusterAdapter struct {
 	id        *krm.HypercomputeClusterClusterIdentity
 	gcpClient *gcp.Client
-	desired   *pb.Cluster
+	desired   *krm.HypercomputeClusterCluster
 	actual    *pb.Cluster
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &ClusterAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *ClusterAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting HypercomputeClusterCluster", "name", a.id.String())
+	log.V(2).Info("getting Cluster", "name", a.id)
 
-	req := &pb.GetClusterRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetCluster(ctx, req)
+	req := &pb.GetClusterRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetCluster(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting HypercomputeClusterCluster %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Cluster %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ClusterAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating HypercomputeClusterCluster", "name", a.id.String())
-
-	req := &pb.CreateClusterRequest{
-		Parent:    a.id.ParentString(),
-		ClusterId: a.id.Cluster,
-		Cluster:   a.desired,
-	}
-
-	op, err := a.gcpClient.CreateCluster(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating HypercomputeClusterCluster %s: %w", a.id.String(), err)
-	}
-
-	if _, err := op.Wait(ctx); err != nil {
-		return fmt.Errorf("waiting for HypercomputeClusterCluster %s creation: %w", a.id.String(), err)
-	}
-
-	// Always GET immediately after creation to fetch fully-populated fields
-	getReq := &pb.GetClusterRequest{Name: a.id.String()}
-	latest, err := a.gcpClient.GetCluster(ctx, getReq)
-	if err != nil {
-		return fmt.Errorf("fetching newly created HypercomputeClusterCluster %s: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully created HypercomputeClusterCluster", "name", a.id.String())
-
-	return a.updateStatus(ctx, createOp, latest)
-}
-
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating HypercomputeClusterCluster", "name", a.id.String())
-
-	diffs, updateMask, err := compareCluster(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	latest := a.actual
-	if diffs.HasDiff() {
-		diffs.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diffs)
-
-		req := &pb.UpdateClusterRequest{
-			Cluster:    a.desired,
-			UpdateMask: updateMask,
-		}
-
-		op, err := a.gcpClient.UpdateCluster(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating HypercomputeClusterCluster %s: %w", a.id.String(), err)
-		}
-
-		if _, err := op.Wait(ctx); err != nil {
-			return fmt.Errorf("waiting for HypercomputeClusterCluster %s update: %w", a.id.String(), err)
-		}
-
-		// Always GET immediately after update to fetch fully-populated fields
-		getReq := &pb.GetClusterRequest{Name: a.id.String()}
-		latest, err = a.gcpClient.GetCluster(ctx, getReq)
-		if err != nil {
-			return fmt.Errorf("fetching updated HypercomputeClusterCluster %s: %w", a.id.String(), err)
-		}
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Cluster) error {
+	log.V(2).Info("creating Cluster", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	status := &krm.HypercomputeClusterClusterStatus{}
-	status.ObservedState = HypercomputeClusterClusterObservedState_FromProto(mapCtx, latest)
+
+	desired := a.desired.DeepCopy()
+	resource := HypercomputeClusterClusterSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
+	req := &pb.CreateClusterRequest{
+		Parent:    a.id.ParentString(),
+		ClusterId: a.id.Cluster,
+		Cluster:   resource,
+	}
+	op, err := a.gcpClient.CreateCluster(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating Cluster %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create Cluster %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created Cluster", "name", a.id)
 
-	return op.UpdateStatus(ctx, status, nil)
+	status := &krm.HypercomputeClusterClusterStatus{}
+	status.ObservedState = HypercomputeClusterClusterObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ClusterAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating Cluster", "name", a.id)
+
+	mapCtx := &direct.MapContext{}
+	desired := HypercomputeClusterClusterSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareCluster(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateClusterRequest{
+			Cluster:    desired,
+			UpdateMask: updateMask,
+		}
+		op, err := a.gcpClient.UpdateCluster(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Cluster %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Cluster %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Cluster", "name", a.id)
+
+		status := &krm.HypercomputeClusterClusterStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = HypercomputeClusterClusterObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareCluster(ctx context.Context, actual, desired *pb.Cluster) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, HypercomputeClusterClusterSpec_FromProto, HypercomputeClusterClusterSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *ClusterAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -240,55 +245,26 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ClusterAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting HypercomputeClusterCluster", "name", a.id.String())
+	log.V(2).Info("deleting Cluster", "name", a.id)
 
-	req := &pb.DeleteClusterRequest{Name: a.id.String()}
+	req := &pb.DeleteClusterRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteCluster(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting HypercomputeClusterCluster %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Cluster %s: %w", a.id, err)
 	}
-
-	if err := op.Wait(ctx); err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting HypercomputeClusterCluster %s waiting: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully deleted HypercomputeClusterCluster", "name", a.id.String())
-	return true, nil
-}
-
-func compareCluster(ctx context.Context, actual, desired *pb.Cluster) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	mapCtx := &direct.MapContext{}
-	actualSpec := HypercomputeClusterClusterSpec_FromProto(mapCtx, actual)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
-	}
-
-	maskedActual := HypercomputeClusterClusterSpec_ToProto(mapCtx, actualSpec)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
-	}
-
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.Clone(desired).(*pb.Cluster)
-
-	// network_resources is immutable and cannot be updated.
-	// To prevent false diffs (as GCP returns resolved references) and to avoid
-	// disallowed fields in the update mask, we clear it from the compared objects.
-	clonedDesired.NetworkResources = nil
-	maskedActual.NetworkResources = nil
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	log.V(2).Info("successfully deleted Cluster", "name", a.id)
+	err = op.Wait(ctx)
 	if err != nil {
-		return nil, nil, err
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Cluster %s: %w", a.id, err)
+		}
 	}
-	return diffs, updateMask, nil
+	return true, nil
 }

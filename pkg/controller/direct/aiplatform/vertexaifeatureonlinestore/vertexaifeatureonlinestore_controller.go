@@ -17,261 +17,257 @@ package vertexaifeatureonlinestore
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/aiplatform/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/aiplatform"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/aiplatform/apiv1"
 	pb "cloud.google.com/go/aiplatform/apiv1/aiplatformpb"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.VertexAIFeatureOnlineStoreGVK, NewModel)
+	registry.RegisterModel(krm.VertexAIFeatureOnlineStoreGVK, NewFeatureOnlineStoreModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: config}, nil
+func NewFeatureOnlineStoreModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelFeatureOnlineStore{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelFeatureOnlineStore{}
+var _ = strings.TrimPrefix
 
-type model struct {
-	config *config.ControllerConfig
+type modelFeatureOnlineStore struct {
+	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.FeatureOnlineStoreAdminClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewFeatureOnlineStoreAdminClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building featureOnlineStoreAdmin client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *model) AdapterForObject(ctx context.Context, reader *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelFeatureOnlineStore) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
 	obj := &krm.VertexAIFeatureOnlineStore{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(reader.Object.Object, &obj); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader.Reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
+	id := i.(*krm.FeatureOnlineStoreIdentity)
 
-	// Get featureOnlineStoreAdmin client
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	typedID, ok := id.(*krm.FeatureOnlineStoreIdentity)
-	if !ok {
-		return nil, fmt.Errorf("expected FeatureOnlineStoreIdentity, got %T", id)
-	}
-
-	return &Adapter{
-		id:        typedID,
+	return &FeatureOnlineStoreAdapter{
+		id:        id,
 		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// TODO: Support AdapterForURL
+func (m *modelFeatureOnlineStore) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
+func (m *modelFeatureOnlineStore) client(ctx context.Context) (*gcp.FeatureOnlineStoreAdminClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewFeatureOnlineStoreAdminClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building FeatureOnlineStore client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type FeatureOnlineStoreAdapter struct {
 	id        *krm.FeatureOnlineStoreIdentity
 	gcpClient *gcp.FeatureOnlineStoreAdminClient
 	desired   *krm.VertexAIFeatureOnlineStore
 	actual    *pb.FeatureOnlineStore
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &FeatureOnlineStoreAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *FeatureOnlineStoreAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting VertexAIFeatureOnlineStore", "name", a.id.String())
+	log.V(2).Info("getting FeatureOnlineStore", "name", a.id)
 
 	req := &pb.GetFeatureOnlineStoreRequest{
 		Name: a.id.String(),
 	}
-
-	featureOnlineStorepb, err := a.gcpClient.GetFeatureOnlineStore(ctx, req)
+	resp, err := a.gcpClient.GetFeatureOnlineStore(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting VertexAIFeatureOnlineStore %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting FeatureOnlineStore %q: %w", a.id, err)
 	}
 
-	a.actual = featureOnlineStorepb
-
-	mapCtx := &direct.MapContext{}
-	observedState := aiplatform.VertexAIFeatureOnlineStoreObservedState_FromProto(mapCtx, featureOnlineStorepb)
-	if mapCtx.Err() != nil {
-		return false, fmt.Errorf("mapping from proto to observed state: %w", mapCtx.Err())
-	}
-	a.desired.Status.ObservedState = observedState
-	a.desired.Status.ExternalRef = direct.LazyPtr(a.id.String())
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *FeatureOnlineStoreAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating VertexAIFeatureOnlineStore", "name", a.id.String())
-
+	log.V(2).Info("creating FeatureOnlineStore", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	featureOnlineStorepb := aiplatform.VertexAIFeatureOnlineStoreSpec_ToProto(mapCtx, &a.desired.Spec)
+
+	desired := a.desired.DeepCopy()
+	resource := VertexAIFeatureOnlineStoreSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
-		return fmt.Errorf("mapping from spec to proto: %w", mapCtx.Err())
+		return mapCtx.Err()
 	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateFeatureOnlineStoreRequest{
 		Parent:               a.id.Parent().String(),
 		FeatureOnlineStoreId: a.id.FeatureOnlineStore,
-		FeatureOnlineStore:   featureOnlineStorepb,
+		FeatureOnlineStore:   resource,
 	}
-
 	op, err := a.gcpClient.CreateFeatureOnlineStore(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating VertexAIFeatureOnlineStore %q: %w", a.id.String(), err)
+		return fmt.Errorf("creating FeatureOnlineStore %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for create VertexAIFeatureOnlineStore %q: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create FeatureOnlineStore %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created VertexAIFeatureOnlineStore", "name", a.id.String())
+	log.V(2).Info("successfully created FeatureOnlineStore", "name", a.id)
 
 	status := &krm.VertexAIFeatureOnlineStoreStatus{}
-	status.ObservedState = aiplatform.VertexAIFeatureOnlineStoreObservedState_FromProto(mapCtx, created)
+	status.ObservedState = VertexAIFeatureOnlineStoreObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
-		return fmt.Errorf("mapping from proto to observed state: %w", mapCtx.Err())
+		return mapCtx.Err()
 	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *FeatureOnlineStoreAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating VertexAIFeatureOnlineStore", "name", a.id.String())
+	log.V(2).Info("updating FeatureOnlineStore", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	featureOnlineStorepb := aiplatform.VertexAIFeatureOnlineStoreSpec_ToProto(mapCtx, &a.desired.Spec)
+	desired := VertexAIFeatureOnlineStoreSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
-		return fmt.Errorf("mapping from spec to proto: %w", mapCtx.Err())
+		return mapCtx.Err()
 	}
-	featureOnlineStorepb.Name = a.id.String()
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	paths := make(sets.Set[string])
-	if a.desired.Spec.Labels != nil {
-		actualLabels := a.actual.GetLabels()
-		desiredLabels := featureOnlineStorepb.GetLabels()
-		labelsChanged := false
-		if len(actualLabels) != len(desiredLabels) {
-			labelsChanged = true
-		} else {
-			for k, v := range desiredLabels {
-				if actualLabels[k] != v {
-					labelsChanged = true
-					break
-				}
-			}
-		}
-		if labelsChanged {
-			paths.Insert("labels")
-		}
-	}
-
-	if len(paths) == 0 {
-		return nil
-	}
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-	for path := range paths {
-		report.AddField(path, nil, nil)
-	}
-	structuredreporting.ReportDiff(ctx, report)
-
-	updateMask := &fieldmaskpb.FieldMask{
-		Paths: sets.List(paths),
-	}
-
-	req := &pb.UpdateFeatureOnlineStoreRequest{
-		FeatureOnlineStore: featureOnlineStorepb,
-		UpdateMask:         updateMask,
-	}
-
-	op, err := a.gcpClient.UpdateFeatureOnlineStore(ctx, req)
+	diffs, updateMask, err := compareFeatureOnlineStore(ctx, a.actual, desired)
 	if err != nil {
-		return fmt.Errorf("updating VertexAIFeatureOnlineStore %q: %w", a.id.String(), err)
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateFeatureOnlineStoreRequest{
+			FeatureOnlineStore: desired,
+			UpdateMask:         updateMask,
+		}
+		op, err := a.gcpClient.UpdateFeatureOnlineStore(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating FeatureOnlineStore %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update FeatureOnlineStore %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated FeatureOnlineStore", "name", a.id)
+
+		status := &krm.VertexAIFeatureOnlineStoreStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = VertexAIFeatureOnlineStoreObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	updated, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for update VertexAIFeatureOnlineStore %q: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully updated VertexAIFeatureOnlineStore", "name", a.id.String())
-
-	status := &krm.VertexAIFeatureOnlineStoreStatus{}
-	status.ObservedState = aiplatform.VertexAIFeatureOnlineStoreObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return fmt.Errorf("mapping from proto to observed state: %w", mapCtx.Err())
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	if a.desired == nil {
-		return nil, fmt.Errorf("adapter not initialized")
+func compareFeatureOnlineStore(ctx context.Context, actual, desired *pb.FeatureOnlineStore) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, VertexAIFeatureOnlineStoreSpec_FromProto, VertexAIFeatureOnlineStoreSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(a.desired)
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *FeatureOnlineStoreAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.VertexAIFeatureOnlineStore{}
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(VertexAIFeatureOnlineStoreSpec_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
+	}
+
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
-	return &unstructured.Unstructured{Object: obj}, nil
+
+	u.Object = uObj
+	u.SetName(a.id.FeatureOnlineStore)
+	u.SetGroupVersionKind(krm.VertexAIFeatureOnlineStoreGVK)
+	export.SetLabels(u, a.actual.Labels)
+	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *FeatureOnlineStoreAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting VertexAIFeatureOnlineStore", "name", a.id.String())
+	log.V(2).Info("deleting FeatureOnlineStore", "name", a.id)
 
 	req := &pb.DeleteFeatureOnlineStoreRequest{
 		Name: a.id.String(),
 	}
-
 	op, err := a.gcpClient.DeleteFeatureOnlineStore(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("deleting VertexAIFeatureOnlineStore %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting FeatureOnlineStore %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted FeatureOnlineStore", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for delete VertexAIFeatureOnlineStore %q: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete FeatureOnlineStore %s: %w", a.id, err)
+		}
 	}
-	log.V(2).Info("successfully deleted VertexAIFeatureOnlineStore", "name", a.id.String())
-
 	return true, nil
 }

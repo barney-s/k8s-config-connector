@@ -17,11 +17,8 @@ package certificatemanager
 import (
 	"context"
 	"fmt"
-	"regexp"
-
-	gcp "cloud.google.com/go/certificatemanager/apiv1"
-	pb "cloud.google.com/go/certificatemanager/apiv1/certificatemanagerpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/certificatemanager/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
@@ -31,10 +28,13 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/certificatemanager/apiv1"
+	pb "cloud.google.com/go/certificatemanager/apiv1/certificatemanagerpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -45,85 +45,77 @@ func init() {
 }
 
 func NewCertificateMapEntryModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &certificateMapEntryModel{config: *config}, nil
+	return &modelCertificateMapEntry{config: *config}, nil
 }
 
-type certificateMapEntryModel struct {
+var _ directbase.Model = &modelCertificateMapEntry{}
+var _ = strings.TrimPrefix
+
+type modelCertificateMapEntry struct {
 	config config.ControllerConfig
 }
 
-func (m *certificateMapEntryModel) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building CertificateMapEntry client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *certificateMapEntryModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelCertificateMapEntry) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.CertificateManagerCertificateMapEntry{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.CertificateManagerCertificateMapEntryIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	identity, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := CertificateManagerCertificateMapEntrySpec_v1beta1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desiredPb.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
 	return &CertificateMapEntryAdapter{
-		id:        identity.(*krm.CertificateManagerCertificateMapEntryIdentity),
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desiredPb,
+		desired:   obj,
 	}, nil
 }
 
-func (m *certificateMapEntryModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelCertificateMapEntry) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.CertificateManagerCertificateMapEntryIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	return &CertificateMapEntryAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
+func (m *modelCertificateMapEntry) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building CertificateMapEntry client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type CertificateMapEntryAdapter struct {
 	id        *krm.CertificateManagerCertificateMapEntryIdentity
 	gcpClient *gcp.Client
-	desired   *pb.CertificateMapEntry
+	desired   *krm.CertificateManagerCertificateMapEntry
 	actual    *pb.CertificateMapEntry
 }
 
@@ -131,90 +123,109 @@ var _ directbase.Adapter = &CertificateMapEntryAdapter{}
 
 func (a *CertificateMapEntryAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting CertificateManagerCertificateMapEntry", "name", a.id.String())
+	log.V(2).Info("getting CertificateMapEntry", "name", a.id)
 
-	req := &pb.GetCertificateMapEntryRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetCertificateMapEntry(ctx, req)
+	req := &pb.GetCertificateMapEntryRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetCertificateMapEntry(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting CertificateManagerCertificateMapEntry %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting CertificateMapEntry %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
 func (a *CertificateMapEntryAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("creating CertificateManagerCertificateMapEntry", "id", fqn)
+	log.V(2).Info("creating CertificateMapEntry", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	parent := a.id.ParentString()
+	desired := a.desired.DeepCopy()
+	resource := CertificateManagerCertificateMapEntrySpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateCertificateMapEntryRequest{
-		Parent:                parent,
-		CertificateMapEntry:   a.desired,
+		Parent:                a.id.ParentString(),
 		CertificateMapEntryId: a.id.CertificateMapEntry,
+		CertificateMapEntry:   resource,
 	}
 	op, err := a.gcpClient.CreateCertificateMapEntry(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating CertificateMapEntry %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating CertificateMapEntry %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting CertificateMapEntry %s creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create CertificateMapEntry %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created CertificateMapEntry", "name", a.id.String())
+	log.V(2).Info("successfully created CertificateMapEntry", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.CertificateManagerCertificateMapEntryStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *CertificateMapEntryAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating CertificateManagerCertificateMapEntry", "name", a.id.String())
+	log.V(2).Info("updating CertificateMapEntry", "name", a.id)
 
-	diffs, updateMask, err := compareCertificateMapEntry(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := CertificateManagerCertificateMapEntrySpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareCertificateMapEntry(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desiredCopy := proto.CloneOf(a.desired)
-		desiredCopy.Name = a.id.String()
+		desired.Name = a.id.String()
 
 		req := &pb.UpdateCertificateMapEntryRequest{
-			CertificateMapEntry: desiredCopy,
+			CertificateMapEntry: desired,
 			UpdateMask:          updateMask,
 		}
-
 		op, err := a.gcpClient.UpdateCertificateMapEntry(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating CertificateManagerCertificateMapEntry %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating CertificateMapEntry %s: %w", a.id, err)
 		}
-		latest, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("waiting CertificateManagerCertificateMapEntry %s update: %w", a.id.String(), err)
+			return fmt.Errorf("waiting update CertificateMapEntry %s: %w", a.id, err)
 		}
+		log.V(2).Info("successfully updated CertificateMapEntry", "name", a.id)
+
+		status := &krm.CertificateManagerCertificateMapEntryStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *CertificateMapEntryAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.CertificateMapEntry) error {
-	mapCtx := &direct.MapContext{}
-	status := CertificateManagerCertificateMapEntryStatus_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func compareCertificateMapEntry(ctx context.Context, actual, desired *pb.CertificateMapEntry) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, CertificateManagerCertificateMapEntrySpec_v1beta1_FromProto, CertificateManagerCertificateMapEntrySpec_v1beta1_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	return op.UpdateStatus(ctx, status, nil)
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *CertificateMapEntryAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -229,13 +240,7 @@ func (a *CertificateMapEntryAdapter) Export(ctx context.Context) (*unstructured.
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ProjectRef.External = a.id.Project
-	mapID := &krm.CertificateManagerCertificateMapIdentity{
-		Project:        a.id.Project,
-		CertificateMap: a.id.CertificateMap,
-	}
-	obj.Spec.MapRef.External = mapID.String()
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.CertificateMapEntry)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
@@ -246,103 +251,30 @@ func (a *CertificateMapEntryAdapter) Export(ctx context.Context) (*unstructured.
 	u.Object = uObj
 	u.SetName(a.id.CertificateMapEntry)
 	u.SetGroupVersionKind(krm.CertificateManagerCertificateMapEntryGVK)
-
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
 func (a *CertificateMapEntryAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting CertificateMapEntry", "name", a.id.String())
+	log.V(2).Info("deleting CertificateMapEntry", "name", a.id)
 
-	req := &pb.DeleteCertificateMapEntryRequest{Name: a.id.String()}
+	req := &pb.DeleteCertificateMapEntryRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteCertificateMapEntry(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent CertificateMapEntry, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting CertificateMapEntry %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting CertificateMapEntry %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted CertificateMapEntry", "name", a.id.String())
-
+	log.V(2).Info("successfully deleted CertificateMapEntry", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete CertificateMapEntry %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete CertificateMapEntry %s: %w", a.id, err)
+		}
 	}
 	return true, nil
-}
-
-var (
-	reProjectNumber = regexp.MustCompile(`^projects/\d+/`)
-	reProjectID     = regexp.MustCompile(`^projects/[^/]+/`)
-)
-
-func compareCertificateMapEntry(ctx context.Context, actual, desired *pb.CertificateMapEntry) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, CertificateManagerCertificateMapEntrySpec_v1beta1_FromProto, CertificateManagerCertificateMapEntrySpec_v1beta1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	maskedActual.Labels = actual.Labels
-
-	// In CertificateMapEntry, GCP returns certificates with project number instead of project ID.
-	// If the certificates match (ignoring project number vs project ID differences), align maskedActual with desired
-	// to avoid a false diff and unnecessary update.
-	if equalCertificateSlices(desired.Certificates, maskedActual.Certificates) {
-		maskedActual.Certificates = desired.Certificates
-	}
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func equalCertificateSlices(desired, actual []string) bool {
-	if len(desired) != len(actual) {
-		return false
-	}
-	allMatch := true
-	for i := range desired {
-		if !equalCertificateRef(desired[i], actual[i]) {
-			allMatch = false
-			break
-		}
-	}
-	if allMatch {
-		return true
-	}
-	matched := make([]bool, len(actual))
-	for _, d := range desired {
-		found := false
-		for j, a := range actual {
-			if !matched[j] && equalCertificateRef(d, a) {
-				matched[j] = true
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
-func equalCertificateRef(a, b string) bool {
-	if a == b {
-		return true
-	}
-	// Suppress diffs when the value read from GCP API has the project number instead of the project ID.
-	// Format: projects/<project>/locations/<location>/certificates/<certificate>
-	if reProjectNumber.MatchString(a) && !reProjectNumber.MatchString(b) && reProjectID.MatchString(b) {
-		return reProjectNumber.ReplaceAllString(a, "projects/_/") == reProjectID.ReplaceAllString(b, "projects/_/")
-	}
-	if !reProjectNumber.MatchString(a) && reProjectID.MatchString(a) && reProjectNumber.MatchString(b) {
-		return reProjectID.ReplaceAllString(a, "projects/_/") == reProjectNumber.ReplaceAllString(b, "projects/_/")
-	}
-	return false
 }

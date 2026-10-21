@@ -17,226 +17,188 @@ package privateca
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	iampb "cloud.google.com/go/iam/apiv1/iampb"
-	api "cloud.google.com/go/security/privateca/apiv1"
-	pb "cloud.google.com/go/security/privateca/apiv1/privatecapb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/privateca/v1beta1"
-	refsv1alpha1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/security/privateca/apiv1"
+	pb "cloud.google.com/go/security/privateca/apiv1/privatecapb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.PrivateCACertificateTemplateGVK, newCertificateTemplateModel)
+	registry.RegisterModel(krm.PrivateCACertificateTemplateGVK, NewPrivateCACertificateTemplateModel)
 }
 
-func newCertificateTemplateModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	gcpClient, err := newGCPClient(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("building GCP client: %w", err)
-	}
-	return &certificateTemplateModel{gcpClient: gcpClient}, nil
+func NewPrivateCACertificateTemplateModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelPrivateCACertificateTemplate{config: *config}, nil
 }
 
-type certificateTemplateModel struct {
-	*gcpClient
+var _ directbase.Model = &modelPrivateCACertificateTemplate{}
+var _ = strings.TrimPrefix
+
+type modelPrivateCACertificateTemplate struct {
+	config config.ControllerConfig
 }
 
-// model implements the Model interface.
-var _ directbase.Model = &certificateTemplateModel{}
-
-type certificateTemplateAdapter struct {
-	projectID             string
-	location              string
-	certificateTemplateID string
-
-	desired  *pb.CertificateTemplate
-	actual   *pb.CertificateTemplate
-	caClient *api.CertificateAuthorityClient
-}
-
-var _ directbase.Adapter = &certificateTemplateAdapter{}
-
-// AdapterForObject implements the Model interface.
-func (m *certificateTemplateModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelPrivateCACertificateTemplate) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
-	caClient, err := m.newCertificateAuthorityClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+	_ = reader
 	obj := &krm.PrivateCACertificateTemplate{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// Always call common.NormalizeReferences to resolve references
+	id := &krm.PrivateCACertificateTemplateIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	resourceID := direct.ValueOf(obj.Spec.ResourceID)
-	if resourceID == "" {
-		resourceID = obj.GetName()
-	}
-	if resourceID == "" {
-		return nil, fmt.Errorf("cannot resolve resource ID")
-	}
-
-	location := obj.Spec.Location
-	if location == "" {
-		return nil, fmt.Errorf("cannot resolve location")
-	}
-
-	projectID, err := refs.ResolveProjectID(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if projectID == "" {
-		return nil, fmt.Errorf("cannot resolve project")
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := PrivateCACertificateTemplateSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
-	return &certificateTemplateAdapter{
-		certificateTemplateID: resourceID,
-		location:              location,
-		projectID:             projectID,
-		desired:               desired,
-		caClient:              caClient,
+	return &PrivateCACertificateTemplateAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *certificateTemplateModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// Format is //privateca.googleapis.com/projects/PROJECT_ID/locations/LOCATION/certificateTemplates/CERTIFICATE_TEMPLATE_ID
-
-	if !strings.HasPrefix(url, "//privateca.googleapis.com/") {
-		return nil, nil
-	}
-
-	tokens := strings.Split(strings.TrimPrefix(url, "//privateca.googleapis.com/"), "/")
-	if len(tokens) == 6 && tokens[0] == "projects" && tokens[2] == "locations" && tokens[4] == "certificateTemplates" {
-		caClient, err := m.newCertificateAuthorityClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		return &certificateTemplateAdapter{
-			projectID:             tokens[1],
-			location:              tokens[3],
-			certificateTemplateID: tokens[5],
-			caClient:              caClient,
-		}, nil
-	}
-
+func (m *modelPrivateCACertificateTemplate) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *certificateTemplateAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting PrivateCACertificateTemplate", "name", a.fullyQualifiedName())
+func (m *modelPrivateCACertificateTemplate) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
 
-	req := &pb.DeleteCertificateTemplateRequest{Name: a.fullyQualifiedName()}
-	op, err := a.caClient.DeleteCertificateTemplate(ctx, req)
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building PrivateCACertificateTemplate client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type PrivateCACertificateTemplateAdapter struct {
+	id        *krm.PrivateCACertificateTemplateIdentity
+	gcpClient *gcp.Client
+	desired   *krm.PrivateCACertificateTemplate
+	actual    *pb.PrivateCACertificateTemplate
+}
+
+var _ directbase.Adapter = &PrivateCACertificateTemplateAdapter{}
+
+func (a *PrivateCACertificateTemplateAdapter) Find(ctx context.Context) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("getting PrivateCACertificateTemplate", "name", a.id)
+
+	req := &pb.GetPrivateCACertificateTemplateRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetPrivateCACertificateTemplate(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent PrivateCACertificateTemplate, assuming it was already deleted", "name", a.fullyQualifiedName())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting PrivateCACertificateTemplate %s: %w", a.fullyQualifiedName(), err)
+		return false, fmt.Errorf("getting PrivateCACertificateTemplate %q: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted PrivateCACertificateTemplate", "name", a.fullyQualifiedName())
 
-	err = op.Wait(ctx)
-	if err != nil {
-		return false, fmt.Errorf("waiting delete PrivateCACertificateTemplate %s: %w", a.fullyQualifiedName(), err)
-	}
+	a.actual = resp
 	return true, nil
 }
 
-// Create implements the Adapter interface.
-func (a *certificateTemplateAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *PrivateCACertificateTemplateAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating PrivateCACertificateTemplate", "id", a.fullyQualifiedName())
+	log.V(2).Info("creating PrivateCACertificateTemplate", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	parent := fmt.Sprintf("projects/%s/locations/%s", a.projectID, a.location)
-
-	req := &pb.CreateCertificateTemplateRequest{
-		Parent:                parent,
-		CertificateTemplateId: a.certificateTemplateID,
-		CertificateTemplate:   a.desired,
+	desired := a.desired.DeepCopy()
+	resource := PrivateCACertificateTemplateSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	op, err := a.caClient.CreateCertificateTemplate(ctx, req)
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	req := &pb.CreatePrivateCACertificateTemplateRequest{
+		Parent:                         a.id.ParentString(),
+		PrivateCACertificateTemplateId: a.id.PrivateCACertificateTemplate,
+		PrivateCACertificateTemplate:   resource,
+	}
+	op, err := a.gcpClient.CreatePrivateCACertificateTemplate(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating PrivateCACertificateTemplate %s: %w", a.fullyQualifiedName(), err)
+		return fmt.Errorf("creating PrivateCACertificateTemplate %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting PrivateCACertificateTemplate %s creation: %w", a.fullyQualifiedName(), err)
+		return fmt.Errorf("waiting create PrivateCACertificateTemplate %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created PrivateCACertificateTemplate", "name", a.fullyQualifiedName())
+	log.V(2).Info("successfully created PrivateCACertificateTemplate", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.PrivateCACertificateTemplateStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update implements the Adapter interface.
-func (a *certificateTemplateAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *PrivateCACertificateTemplateAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating PrivateCACertificateTemplate", "name", a.fullyQualifiedName())
+	log.V(2).Info("updating PrivateCACertificateTemplate", "name", a.id)
 
-	diffs, updateMask, err := comparePrivateCACertificateTemplate(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := PrivateCACertificateTemplateSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := comparePrivateCACertificateTemplate(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
+	_ = updateMask
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
-
-		a.desired.Name = a.fullyQualifiedName()
-		req := &pb.UpdateCertificateTemplateRequest{
-			UpdateMask:          updateMask,
-			CertificateTemplate: a.desired,
-		}
-		op, err := a.caClient.UpdateCertificateTemplate(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating PrivateCACertificateTemplate %s: %w", a.fullyQualifiedName(), err)
-		}
-		updated, err := op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting update PrivateCACertificateTemplate %s: %w", a.fullyQualifiedName(), err)
-		}
-		log.V(2).Info("successfully updated PrivateCACertificateTemplate", "name", a.fullyQualifiedName())
-		latest = updated
+		return fmt.Errorf("PrivateCACertificateTemplate resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	status := &krm.PrivateCACertificateTemplateStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export implements the Adapter interface.
-func (a *certificateTemplateAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func comparePrivateCACertificateTemplate(ctx context.Context, actual, desired *pb.PrivateCACertificateTemplate) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, PrivateCACertificateTemplateSpec_FromProto, PrivateCACertificateTemplateSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *PrivateCACertificateTemplateAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -248,97 +210,24 @@ func (a *certificateTemplateAdapter) Export(ctx context.Context) (*unstructured.
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.PrivateCACertificateTemplate)
 
-	obj.Spec.ProjectRef = &refsv1alpha1.ProjectRef{Name: a.projectID}
-	obj.Spec.Location = a.location
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
-	u.SetName(a.actual.Name)
+	u.SetName(a.id.PrivateCACertificateTemplate)
 	u.SetGroupVersionKind(krm.PrivateCACertificateTemplateGVK)
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-func comparePrivateCACertificateTemplate(ctx context.Context, actual, desired *pb.CertificateTemplate) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, PrivateCACertificateTemplateSpec_FromProto, PrivateCACertificateTemplateSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	maskedActual.Labels = actual.Labels
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func (a *certificateTemplateAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.CertificateTemplate) error {
-	mapCtx := &direct.MapContext{}
-	status := PrivateCACertificateTemplateStatus_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-// Find implements the Adapter interface.
-func (a *certificateTemplateAdapter) Find(ctx context.Context) (bool, error) {
-	if a.certificateTemplateID == "" {
-		return false, nil
-	}
-
-	req := &pb.GetCertificateTemplateRequest{
-		Name: a.fullyQualifiedName(),
-	}
-	resp, err := a.caClient.GetCertificateTemplate(ctx, req)
-	if err != nil {
-		if direct.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("getting PrivateCACertificateTemplate %q: %w", a.fullyQualifiedName(), err)
-	}
-
-	a.actual = resp
-
+func (a *PrivateCACertificateTemplateAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for PrivateCACertificateTemplate, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func (a *certificateTemplateAdapter) GetIAMPolicy(ctx context.Context) (*iampb.Policy, error) {
-	if a.certificateTemplateID == "" {
-		return nil, fmt.Errorf("cannot get iam policy for missing resource")
-	}
-
-	req := &iampb.GetIamPolicyRequest{
-		Resource: a.fullyQualifiedName(),
-	}
-	policy, err := a.caClient.GetIamPolicy(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("getting iam policy for %q: %w", a.fullyQualifiedName(), err)
-	}
-
-	return policy, nil
-}
-
-func (a *certificateTemplateAdapter) SetIAMPolicy(ctx context.Context, policy *iampb.Policy) (*iampb.Policy, error) {
-	if a.certificateTemplateID == "" {
-		return nil, fmt.Errorf("cannot get iam policy for missing resource")
-	}
-
-	req := &iampb.SetIamPolicyRequest{
-		Resource: a.fullyQualifiedName(),
-		Policy:   policy,
-	}
-	newPolicy, err := a.caClient.SetIamPolicy(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("setting iam policy for %q: %w", a.fullyQualifiedName(), err)
-	}
-
-	return newPolicy, nil
-}
-
-func (a *certificateTemplateAdapter) fullyQualifiedName() string {
-	return fmt.Sprintf("projects/%s/locations/%s/certificateTemplates/%s", a.projectID, a.location, a.certificateTemplateID)
 }

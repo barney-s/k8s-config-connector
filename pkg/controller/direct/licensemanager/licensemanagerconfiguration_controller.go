@@ -17,9 +17,6 @@ package licensemanager
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/licensemanager/apiv1"
-	pb "cloud.google.com/go/licensemanager/apiv1/licensemanagerpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/licensemanager/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -31,211 +28,216 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/licensemanager/apiv1"
+	pb "cloud.google.com/go/licensemanager/apiv1/licensemanagerpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.LicenseManagerConfigurationGVK, NewModel)
+	registry.RegisterModel(krm.LicenseManagerConfigurationGVK, NewConfigurationModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewConfigurationModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelConfiguration{config: *config}, nil
 }
 
-type model struct {
+var _ directbase.Model = &modelConfiguration{}
+var _ = strings.TrimPrefix
+
+type modelConfiguration struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building LicenseManager client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelConfiguration) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.LicenseManagerConfiguration{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.LicenseManagerConfigurationIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	identity, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := LicenseManagerConfigurationSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desiredPb.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
-	return &LicenseManagerConfigurationAdapter{
-		id:        identity.(*krm.LicenseManagerConfigurationIdentity),
+	return &ConfigurationAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desiredPb,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelConfiguration) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.LicenseManagerConfigurationIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &LicenseManagerConfigurationAdapter{
+	return &ConfigurationAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type LicenseManagerConfigurationAdapter struct {
+func (m *modelConfiguration) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Configuration client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ConfigurationAdapter struct {
 	id        *krm.LicenseManagerConfigurationIdentity
 	gcpClient *gcp.Client
-	desired   *pb.Configuration
+	desired   *krm.LicenseManagerConfiguration
 	actual    *pb.Configuration
 }
 
-var _ directbase.Adapter = &LicenseManagerConfigurationAdapter{}
+var _ directbase.Adapter = &ConfigurationAdapter{}
 
-func (a *LicenseManagerConfigurationAdapter) Find(ctx context.Context) (bool, error) {
+func (a *ConfigurationAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting LicenseManagerConfiguration", "name", a.id.String())
+	log.V(2).Info("getting Configuration", "name", a.id)
 
-	req := &pb.GetConfigurationRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetConfiguration(ctx, req)
+	req := &pb.GetConfigurationRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetConfiguration(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting LicenseManagerConfiguration %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Configuration %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *LicenseManagerConfigurationAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ConfigurationAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("creating LicenseManagerConfiguration", "id", fqn)
+	log.V(2).Info("creating Configuration", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	parent := a.id.ParentString()
+	desired := a.desired.DeepCopy()
+	resource := LicenseManagerConfigurationSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateConfigurationRequest{
-		Parent:          parent,
-		Configuration:   a.desired,
+		Parent:          a.id.ParentString(),
 		ConfigurationId: a.id.Configuration,
+		Configuration:   resource,
 	}
 	op, err := a.gcpClient.CreateConfiguration(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating LicenseManagerConfiguration %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating Configuration %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting LicenseManagerConfiguration %s creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create Configuration %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created LicenseManagerConfiguration", "name", a.id.String())
+	log.V(2).Info("successfully created Configuration", "name", a.id)
 
-	// Fetch fully-populated resource immediately after LRO completion (per rule: Reconciling Empty or Incomplete LRO Responses)
-	getReq := &pb.GetConfigurationRequest{Name: a.id.String()}
-	latest, err := a.gcpClient.GetConfiguration(ctx, getReq)
-	if err != nil {
-		return fmt.Errorf("fetching LicenseManagerConfiguration %s after creation: %w", a.id.String(), err)
+	status := &krm.LicenseManagerConfigurationStatus{}
+	status.ObservedState = LicenseManagerConfigurationObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *LicenseManagerConfigurationAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ConfigurationAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating LicenseManagerConfiguration", "name", a.id.String())
+	log.V(2).Info("updating Configuration", "name", a.id)
 
-	diffs, updateMask, err := compareLicenseManagerConfiguration(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := LicenseManagerConfigurationSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareConfiguration(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		clonedDesired := proto.Clone(a.desired).(*pb.Configuration)
-		clonedDesired.Name = a.id.String()
+		desired.Name = a.id.String()
 
 		req := &pb.UpdateConfigurationRequest{
-			Configuration: clonedDesired,
+			Configuration: desired,
 			UpdateMask:    updateMask,
 		}
-
 		op, err := a.gcpClient.UpdateConfiguration(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating LicenseManagerConfiguration %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating Configuration %s: %w", a.id, err)
 		}
-
-		_, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("waiting LicenseManagerConfiguration %s update: %w", a.id.String(), err)
+			return fmt.Errorf("waiting update Configuration %s: %w", a.id, err)
 		}
+		log.V(2).Info("successfully updated Configuration", "name", a.id)
 
-		// Fetch fully-populated resource immediately after LRO completion (per rule: Reconciling Empty or Incomplete LRO Responses)
-		getReq := &pb.GetConfigurationRequest{Name: a.id.String()}
-		latest, err = a.gcpClient.GetConfiguration(ctx, getReq)
-		if err != nil {
-			return fmt.Errorf("fetching LicenseManagerConfiguration %s after update: %w", a.id.String(), err)
+		status := &krm.LicenseManagerConfigurationStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = LicenseManagerConfigurationObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
 		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *LicenseManagerConfigurationAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Configuration) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.LicenseManagerConfigurationStatus{}
-	status.ObservedState = LicenseManagerConfigurationObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func compareConfiguration(ctx context.Context, actual, desired *pb.Configuration) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, LicenseManagerConfigurationSpec_FromProto, LicenseManagerConfigurationSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	identity := a.id.String()
-	status.ExternalRef = &identity
-
-	return op.UpdateStatus(ctx, status, nil)
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *LicenseManagerConfigurationAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ConfigurationAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -247,10 +249,9 @@ func (a *LicenseManagerConfigurationAdapter) Export(ctx context.Context) (*unstr
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Configuration)
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Configuration)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -260,44 +261,30 @@ func (a *LicenseManagerConfigurationAdapter) Export(ctx context.Context) (*unstr
 	u.Object = uObj
 	u.SetName(a.id.Configuration)
 	u.SetGroupVersionKind(krm.LicenseManagerConfigurationGVK)
-
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
-func (a *LicenseManagerConfigurationAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ConfigurationAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting LicenseManagerConfiguration", "name", a.id.String())
+	log.V(2).Info("deleting Configuration", "name", a.id)
 
-	req := &pb.DeleteConfigurationRequest{Name: a.id.String()}
+	req := &pb.DeleteConfigurationRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteConfiguration(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent LicenseManagerConfiguration, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting LicenseManagerConfiguration %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Configuration %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted LicenseManagerConfiguration", "name", a.id.String())
-
+	log.V(2).Info("successfully deleted Configuration", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete LicenseManagerConfiguration %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Configuration %s: %w", a.id, err)
+		}
 	}
 	return true, nil
-}
-
-func compareLicenseManagerConfiguration(ctx context.Context, actual, desired *pb.Configuration) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, LicenseManagerConfigurationSpec_FromProto, LicenseManagerConfigurationSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	maskedActual.Labels = actual.Labels
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

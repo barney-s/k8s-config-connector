@@ -23,6 +23,7 @@ import (
 // It is composed of four orthogonal traits: Identity, Lifecycle, Execution, and Transport.
 type ControllerProfile struct {
 	// KRM Metadata
+	Package       string // e.g., "vertexaifeatureonlinestore" or "parametermanager"
 	KCCService    string // e.g., "aiplatform" or "cloudchannel"
 	KCCVersion    string // e.g., "v1alpha1" or "v1beta1"
 	Kind          string // e.g., "AIPlatformFeatureView"

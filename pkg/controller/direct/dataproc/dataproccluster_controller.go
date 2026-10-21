@@ -12,389 +12,217 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.dataproc.v1.ClusterController
-// proto.message: google.cloud.dataproc.v1.Cluster
-// crd.type: DataprocCluster
-// crd.version: v1beta1
-
 package dataproc
 
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
-
-	dataproc "cloud.google.com/go/dataproc/v2/apiv1"
-	pb "cloud.google.com/go/dataproc/v2/apiv1/dataprocpb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/common/parent"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dataproc/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/dataproc/v2/apiv1"
+	pb "cloud.google.com/go/dataproc/v2/apiv1/dataprocpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.DataprocClusterGVK, NewDataprocClusterModel)
+	registry.RegisterModel(krm.DataprocClusterGVK, NewClusterModel)
 }
 
-func NewDataprocClusterModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &dataprocClusterModel{config: *config}, nil
+func NewClusterModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelCluster{config: *config}, nil
 }
 
-var _ directbase.Model = &dataprocClusterModel{}
+var _ directbase.Model = &modelCluster{}
+var _ = strings.TrimPrefix
 
-type dataprocClusterModel struct {
+type modelCluster struct {
 	config config.ControllerConfig
 }
 
-func (m *dataprocClusterModel) client(ctx context.Context) (*dataproc.ClusterControllerClient, error) {
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-
-	return dataproc.NewClusterControllerRESTClient(ctx, opts...)
-}
-
-func (m *dataprocClusterModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelCluster) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DataprocCluster{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// Always call common.NormalizeReferences to resolve any resource references:
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	id, err := krm.GetIdentity(ctx, reader, obj)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	clusterID, ok := id.(*krm.DataprocClusterIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", id)
+	id := i.(*krm.DataprocClusterIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &dataprocClusterAdapter{
+	return &ClusterAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		id:        clusterID,
 		desired:   obj,
 	}, nil
 }
 
-func (m *dataprocClusterModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelCluster) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-var _ directbase.Adapter = &dataprocClusterAdapter{}
+func (m *modelCluster) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
 
-type dataprocClusterAdapter struct {
-	gcpClient *dataproc.ClusterControllerClient
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Cluster client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ClusterAdapter struct {
 	id        *krm.DataprocClusterIdentity
+	gcpClient *gcp.Client
 	desired   *krm.DataprocCluster
 	actual    *pb.Cluster
 }
 
-func (a *dataprocClusterAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &ClusterAdapter{}
+
+func (a *ClusterAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting dataproc cluster", "name", a.id)
+	log.V(2).Info("getting Cluster", "name", a.id)
 
 	req := &pb.GetClusterRequest{
-		ProjectId:   a.id.Project,
-		Region:      a.id.Region,
-		ClusterName: a.id.Cluster,
+		Name: a.id.String(),
 	}
-	actual, err := a.gcpClient.GetCluster(ctx, req)
+	resp, err := a.gcpClient.GetCluster(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting dataproc cluster %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Cluster %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *dataprocClusterAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ClusterAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating dataproc cluster", "name", a.id)
+	log.V(2).Info("creating Cluster", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
-	cluster := DataprocClusterSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	resource := DataprocClusterSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-
-	cluster.ClusterName = a.id.Cluster
-	cluster.ProjectId = a.id.Project
-
-	cluster.Labels = make(map[string]string)
-	for k, v := range a.desired.GetObjectMeta().GetLabels() {
-		cluster.Labels[k] = v
-	}
-	cluster.Labels["managed-by-cnrm"] = "true"
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateClusterRequest{
-		ProjectId: a.id.Project,
-		Region:    a.id.Region,
-		Cluster:   cluster,
+		Parent:    a.id.ParentString(),
+		ProjectId: a.id.Region,
+		Cluster:   resource,
 	}
 	op, err := a.gcpClient.CreateCluster(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating dataproc cluster %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating Cluster %s: %w", a.id, err)
 	}
-
-	log.V(2).Info("waiting for dataproc cluster creation", "name", a.id)
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for dataproc cluster %s creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create Cluster %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created dataproc cluster in gcp", "name", a.id)
+	log.V(2).Info("successfully created Cluster", "name", a.id)
 
-	latest, err := a.gcpClient.GetCluster(ctx, &pb.GetClusterRequest{
-		ProjectId:   a.id.Project,
-		Region:      a.id.Region,
-		ClusterName: a.id.Cluster,
-	})
-	if err != nil {
-		return fmt.Errorf("getting latest dataproc cluster after creation: %w", err)
-	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status := &krm.DataprocClusterStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *dataprocClusterAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ClusterAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating dataproc cluster", "name", a.id)
-	mapCtx := &direct.MapContext{}
+	log.V(2).Info("updating Cluster", "name", a.id)
 
-	desired := a.desired.DeepCopy()
-	cluster := DataprocClusterSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	mapCtx := &direct.MapContext{}
+	desired := DataprocClusterSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	cluster.ClusterName = a.id.Cluster
-	cluster.ProjectId = a.id.Project
-
-	cluster.Labels = make(map[string]string)
-	for k, v := range a.desired.GetObjectMeta().GetLabels() {
-		cluster.Labels[k] = v
-	}
-	cluster.Labels["managed-by-cnrm"] = "true"
-
-	// Populate defaults to avoid false drift
-	if cluster.Config == nil {
-		cluster.Config = a.actual.Config
-	} else {
-		if cluster.Config.ConfigBucket == "" {
-			cluster.Config.ConfigBucket = a.actual.Config.ConfigBucket
-		}
-		if cluster.Config.TempBucket == "" {
-			cluster.Config.TempBucket = a.actual.Config.TempBucket
-		}
-		if cluster.Config.GceClusterConfig == nil {
-			cluster.Config.GceClusterConfig = a.actual.Config.GceClusterConfig
-		} else {
-			if cluster.Config.GceClusterConfig.Metadata == nil {
-				cluster.Config.GceClusterConfig.Metadata = a.actual.Config.GceClusterConfig.Metadata
-			}
-			if cluster.Config.GceClusterConfig.ServiceAccountScopes == nil {
-				cluster.Config.GceClusterConfig.ServiceAccountScopes = a.actual.Config.GceClusterConfig.ServiceAccountScopes
-			}
-			if cluster.Config.GceClusterConfig.NetworkUri == "" {
-				cluster.Config.GceClusterConfig.NetworkUri = a.actual.Config.GceClusterConfig.NetworkUri
-			}
-			if cluster.Config.GceClusterConfig.ShieldedInstanceConfig == nil {
-				cluster.Config.GceClusterConfig.ShieldedInstanceConfig = a.actual.Config.GceClusterConfig.ShieldedInstanceConfig
-			}
-			if cluster.Config.GceClusterConfig.InternalIpOnly == nil {
-				cluster.Config.GceClusterConfig.InternalIpOnly = a.actual.Config.GceClusterConfig.InternalIpOnly
-			}
-			if cluster.Config.GceClusterConfig.ZoneUri == "" {
-				cluster.Config.GceClusterConfig.ZoneUri = a.actual.Config.GceClusterConfig.ZoneUri
-			} else {
-				// Convert Zone to ZoneUri
-				cluster.Config.GceClusterConfig.ZoneUri = fmt.Sprintf("https://www.googleapis.com/compute/v1/projects/%s/zones/%s", a.id.Project, direct.ValueOf(a.desired.Spec.Config.GceClusterConfig.Zone))
-			}
-		}
-		if cluster.Config.InitializationActions == nil {
-			cluster.Config.InitializationActions = a.actual.Config.InitializationActions
-		}
-		if cluster.Config.SoftwareConfig == nil {
-			cluster.Config.SoftwareConfig = a.actual.Config.SoftwareConfig
-		} else {
-			if cluster.Config.SoftwareConfig.OptionalComponents == nil {
-				cluster.Config.SoftwareConfig.OptionalComponents = []pb.Component{}
-			}
-			if cluster.Config.SoftwareConfig.ImageVersion == "" {
-				cluster.Config.SoftwareConfig.ImageVersion = a.actual.Config.SoftwareConfig.ImageVersion
-			}
-			if cluster.Config.SoftwareConfig.Properties == nil {
-				cluster.Config.SoftwareConfig.Properties = a.actual.Config.SoftwareConfig.Properties
-			} else {
-				// Merge user-specified values and service defaults.
-				for key, value := range a.actual.Config.SoftwareConfig.Properties {
-					cluster.Config.SoftwareConfig.Properties[key] = value
-				}
-			}
-		}
-		// For MasterConfig, it is immutable
-		cluster.Config.MasterConfig = alignInstanceGroupConfig(cluster.Config.MasterConfig, a.actual.Config.MasterConfig, a.actual.Config.GceClusterConfig.ZoneUri)
-
-		// For WorkerConfig: only NumInstances is mutable, so copy other fields (like MachineTypeUri, DiskConfig, etc.)
-		cluster.Config.WorkerConfig = alignInstanceGroupConfig(cluster.Config.WorkerConfig, a.actual.Config.WorkerConfig, a.actual.Config.GceClusterConfig.ZoneUri)
-
-		// For SecondaryWorkerConfig: only NumInstances is mutable
-		cluster.Config.SecondaryWorkerConfig = alignInstanceGroupConfig(cluster.Config.SecondaryWorkerConfig, a.actual.Config.SecondaryWorkerConfig, a.actual.Config.GceClusterConfig.ZoneUri)
-		if cluster.Config.SecondaryWorkerConfig != nil {
-			if cluster.Config.SecondaryWorkerConfig.IsPreemptible == false {
-				cluster.Config.SecondaryWorkerConfig.IsPreemptible = true
-			}
-			if cluster.Config.SecondaryWorkerConfig.ManagedGroupConfig == nil && a.actual.Config.SecondaryWorkerConfig != nil {
-				cluster.Config.SecondaryWorkerConfig.ManagedGroupConfig = a.actual.Config.SecondaryWorkerConfig.ManagedGroupConfig
-			}
-		}
-		// For SecurityConfig: only UserServiceAccountMapping is mutable
-		if cluster.Config.SecurityConfig == nil {
-			cluster.Config.SecurityConfig = a.actual.Config.SecurityConfig
-		} else if cluster.Config.SecurityConfig.IdentityConfig == nil {
-			cluster.Config.SecurityConfig.IdentityConfig = a.actual.Config.SecurityConfig.IdentityConfig
-		}
-	}
-
-	// Align output-only fields of the top-level pb.Cluster
-	cluster.Status = a.actual.Status
-	cluster.StatusHistory = a.actual.StatusHistory
-	cluster.ClusterUuid = a.actual.ClusterUuid
-	cluster.Metrics = a.actual.Metrics
-
-	// todo: replace CompareProtoMessageStructuredDiff with CompareBrownfieldSpec
-	// Compute the diff using common.CompareProtoMessageStructuredDiff
-	paths, diffs, err := common.CompareProtoMessageStructuredDiff(cluster, a.actual, common.BasicDiff)
+	diffs, updateMask, err := compareCluster(ctx, a.actual, desired)
 	if err != nil {
-		return fmt.Errorf("comparing cluster spec: %w", err)
+		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	// Filter out any paths that are not mutable on update.
-	// Only allow the following paths in the updateMask:
-	allowedPaths := map[string]bool{
-		"labels":                             true,
-		"config.worker_config.num_instances": true,
-		"config.secondary_worker_config.num_instances":                        true,
-		"config.autoscaling_config.policy_uri":                                true,
-		"config.lifecycle_config.auto_delete_ttl":                             true,
-		"config.lifecycle_config.auto_delete_time":                            true,
-		"config.lifecycle_config.idle_delete_ttl":                             true,
-		"config.security_config.identity_config.user_service_account_mapping": true,
-	}
+		desired.Name = a.id.String()
 
-	for path := range paths {
-		if !allowedPaths[path] {
-			return fmt.Errorf("field %s is immutable", path)
+		req := &pb.UpdateClusterRequest{
+			Cluster:    desired,
+			UpdateMask: updateMask,
 		}
+		op, err := a.gcpClient.UpdateCluster(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Cluster %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Cluster %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Cluster", "name", a.id)
+
+		status := &krm.DataprocClusterStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	if len(paths) == 0 {
-		log.V(2).Info("no diff detected, skipping update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
-	}
-
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	pathsList := paths.UnsortedList()
-	sort.Strings(pathsList)
-	updateMask := &fieldmaskpb.FieldMask{
-		Paths: pathsList,
-	}
-
-	req := &pb.UpdateClusterRequest{
-		ProjectId:   a.id.Project,
-		Region:      a.id.Region,
-		ClusterName: a.id.Cluster,
-		Cluster:     cluster,
-		UpdateMask:  updateMask,
-	}
-	op, err := a.gcpClient.UpdateCluster(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating dataproc cluster %s: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("waiting for dataproc cluster update", "name", a.id)
-	_, err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for dataproc cluster %s update: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully updated dataproc cluster", "name", a.id)
-
-	latest, err := a.gcpClient.GetCluster(ctx, &pb.GetClusterRequest{
-		ProjectId:   a.id.Project,
-		Region:      a.id.Region,
-		ClusterName: a.id.Cluster,
-	})
-	if err != nil {
-		return fmt.Errorf("getting latest dataproc cluster after update: %w", err)
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *dataprocClusterAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting dataproc cluster", "name", a.id)
-
-	req := &pb.DeleteClusterRequest{
-		ProjectId:   a.id.Project,
-		Region:      a.id.Region,
-		ClusterName: a.id.Cluster,
-	}
-	op, err := a.gcpClient.DeleteCluster(ctx, req)
+func compareCluster(ctx context.Context, actual, desired *pb.Cluster) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DataprocClusterSpec_v1beta1_FromProto, DataprocClusterSpec_v1beta1_ToProto)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting dataproc cluster %s: %w", a.id.String(), err)
+		return nil, nil, err
 	}
-
-	log.V(2).Info("waiting for dataproc cluster deletion", "name", a.id)
-	err = op.Wait(ctx)
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
-		return false, fmt.Errorf("waiting for dataproc cluster %s deletion: %w", a.id.String(), err)
+		return nil, nil, err
 	}
-	log.V(2).Info("successfully deleted dataproc cluster", "name", a.id)
-
-	return true, nil
+	return diffs, updateMask, nil
 }
 
-// Export implements the Adapter interface.
-func (a *dataprocClusterAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	log := klog.FromContext(ctx)
-
+func (a *ClusterAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
 	obj := &krm.DataprocCluster{}
 	mapCtx := &direct.MapContext{}
@@ -402,68 +230,41 @@ func (a *dataprocClusterAdapter) Export(ctx context.Context) (*unstructured.Unst
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 
-	obj.Spec.ProjectRef = &parent.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = a.id.Region
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u := &unstructured.Unstructured{Object: uObj}
-	u.SetName(a.id.Cluster)
+	u.Object = uObj
+	u.SetName(a.id.Region)
 	u.SetGroupVersionKind(krm.DataprocClusterGVK)
-
-	log.Info("exported object", "obj", u, "gvk", u.GroupVersionKind())
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-func (a *dataprocClusterAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Cluster) error {
-	mapCtx := &direct.MapContext{}
-	status := DataprocClusterStatus_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(krm.DataprocClusterIdentityFormatRelative.ToString(*a.id))
-	return op.UpdateStatus(ctx, status, nil)
-}
+func (a *ClusterAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deleting Cluster", "name", a.id)
 
-func alignInstanceGroupConfig(desired, actual *pb.InstanceGroupConfig, zoneUri string) *pb.InstanceGroupConfig {
-	if desired == nil {
-		return actual
+	req := &pb.DeleteClusterRequest{
+		Name: a.id.String(),
 	}
-	if desired.ImageUri == "" {
-		desired.ImageUri = actual.ImageUri
-	}
-	if desired.MachineTypeUri == "" {
-		desired.MachineTypeUri = actual.MachineTypeUri
-	} else if !strings.HasPrefix(desired.MachineTypeUri, "https://") {
-		desired.MachineTypeUri = fmt.Sprintf("%s/machineTypes/%s", zoneUri, desired.MachineTypeUri)
-	}
-	if desired.DiskConfig == nil {
-		desired.DiskConfig = actual.DiskConfig
-	} else {
-		if desired.DiskConfig.BootDiskSizeGb == 0 {
-			desired.DiskConfig.BootDiskSizeGb = actual.DiskConfig.BootDiskSizeGb
+	op, err := a.gcpClient.DeleteCluster(ctx, req)
+	if err != nil {
+		if direct.IsNotFound(err) {
+			return false, nil
 		}
-		if desired.DiskConfig.BootDiskType == "" {
-			desired.DiskConfig.BootDiskType = actual.DiskConfig.BootDiskType
+		return false, fmt.Errorf("deleting Cluster %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully deleted Cluster", "name", a.id)
+	err = op.Wait(ctx)
+	if err != nil {
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Cluster %s: %w", a.id, err)
 		}
 	}
-	if desired.Preemptibility == pb.InstanceGroupConfig_PREEMPTIBILITY_UNSPECIFIED {
-		desired.Preemptibility = actual.Preemptibility
-	}
-	if desired.MinCpuPlatform == "" {
-		desired.MinCpuPlatform = actual.MinCpuPlatform
-	}
-	if desired.Accelerators == nil {
-		desired.Accelerators = actual.Accelerators
-	}
-	if desired.InstanceNames == nil {
-		desired.InstanceNames = actual.InstanceNames
-	}
-	if desired.StartupConfig == nil {
-		desired.StartupConfig = actual.StartupConfig
-	}
-	return desired
+	return true, nil
 }

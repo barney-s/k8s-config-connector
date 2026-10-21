@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,32 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.datastream.v1.Datastream
-// proto.message: google.cloud.datastream.v1.Route
-// crd.type: DatastreamRoute
-// crd.version: v1alpha1
-
 package datastream
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/datastream/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/datastream/apiv1"
 	pb "cloud.google.com/go/datastream/apiv1/datastreampb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -49,6 +48,7 @@ func NewRouteModel(ctx context.Context, config *config.ControllerConfig) (direct
 }
 
 var _ directbase.Model = &modelRoute{}
+var _ = strings.TrimPrefix
 
 type modelRoute struct {
 	config config.ControllerConfig
@@ -57,30 +57,21 @@ type modelRoute struct {
 func (m *modelRoute) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DatastreamRoute{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.RouteIdentity{}
 
-	id, err := krm.NewRouteIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get datastream GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
-	if err != nil {
-		return nil, err
-	}
-	datastreamClient, err := gcpClient.newDatastreamClient(ctx)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &RouteAdapter{
 		id:        id,
-		gcpClient: datastreamClient,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
@@ -89,26 +80,37 @@ func (m *modelRoute) AdapterForURL(ctx context.Context, url string) (directbase.
 	return nil, nil
 }
 
+func (m *modelRoute) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Route client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type RouteAdapter struct {
 	id        *krm.RouteIdentity
 	gcpClient *gcp.Client
 	desired   *krm.DatastreamRoute
 	actual    *pb.Route
-	reader    client.Reader
 }
 
 var _ directbase.Adapter = &RouteAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *RouteAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting Route", "name", a.id)
 
-	req := &pb.GetRouteRequest{Name: a.id.String()}
-	routepb, err := a.gcpClient.GetRoute(ctx, req)
+	req := &pb.GetRouteRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetRoute(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -116,21 +118,21 @@ func (a *RouteAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting Route %q: %w", a.id, err)
 	}
 
-	a.actual = routepb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *RouteAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating Route", "name", a.id)
-
 	mapCtx := &direct.MapContext{}
+
 	desired := a.desired.DeepCopy()
 	resource := DatastreamRouteSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateRouteRequest{
 		Parent:  a.id.Parent().String(),
@@ -143,7 +145,7 @@ func (a *RouteAdapter) Create(ctx context.Context, createOp *directbase.CreateOp
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("Route %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create Route %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created Route", "name", a.id)
 
@@ -156,45 +158,30 @@ func (a *RouteAdapter) Create(ctx context.Context, createOp *directbase.CreateOp
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *RouteAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating Route", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	desired := a.desired.DeepCopy()
-	resource := DatastreamRouteSpec_ToProto(mapCtx, &desired.Spec)
+	desired := DatastreamRouteSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	paths := []string{}
-	if desired.Spec.DisplayName != nil && !reflect.DeepEqual(resource.DisplayName, a.actual.DisplayName) {
-		report.AddField("display_name", a.actual.DisplayName, resource.DisplayName)
-		paths = append(paths, "display_name")
+	diffs, updateMask, err := compareRoute(ctx, a.actual, desired)
+	if err != nil {
+		return err
 	}
-	if desired.Spec.Labels != nil && !reflect.DeepEqual(resource.Labels, a.actual.Labels) {
-		report.AddField("labels", a.actual.Labels, resource.Labels)
-		paths = append(paths, "labels")
-	}
-	if desired.Spec.DestinationAddress != nil && !reflect.DeepEqual(resource.DestinationAddress, a.actual.DestinationAddress) {
-		report.AddField("destination_address", a.actual.DestinationAddress, resource.DestinationAddress)
-		paths = append(paths, "destination_address")
-	}
-	if desired.Spec.DestinationPort != nil && !reflect.DeepEqual(resource.DestinationPort, a.actual.DestinationPort) {
-		report.AddField("destination_port", a.actual.DestinationPort, resource.DestinationPort)
-		paths = append(paths, "destination_port")
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("DatastreamRoute resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	if len(paths) != 0 {
-		structuredreporting.ReportDiff(ctx, report)
-		return fmt.Errorf("updating Route %q is not supported, fields: %v", a.id, paths)
-	}
-
-	// still need to update status (in the event of acquiring an existing resource)
 	status := &krm.DatastreamRouteStatus{}
+	mapCtx = &direct.MapContext{}
 	status.ObservedState = DatastreamRouteObservedState_FromProto(mapCtx, a.actual)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
@@ -203,7 +190,19 @@ func (a *RouteAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOp
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func compareRoute(ctx context.Context, actual, desired *pb.Route) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DatastreamRouteSpec_FromProto, DatastreamRouteSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
 func (a *RouteAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -216,39 +215,39 @@ func (a *RouteAdapter) Export(ctx context.Context) (*unstructured.Unstructured, 
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.PrivateConnectionRef = &krm.PrivateConnectionRef{External: a.id.Parent().String()}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("converting DatastreamRoute to unstructured: %w", err)
+		return nil, err
 	}
 
-	u.SetName(a.id.ID()) // Use route_id as K8s name
-	u.SetGroupVersionKind(krm.DatastreamRouteGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.DatastreamRouteGVK)
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *RouteAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting Route", "name", a.id)
 
-	req := &pb.DeleteRouteRequest{Name: a.id.String()}
+	req := &pb.DeleteRouteRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteRoute(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent Route, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting Route %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted Route", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete Route %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Route %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

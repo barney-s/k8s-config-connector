@@ -17,277 +17,260 @@ package mirroringdeployment
 import (
 	"context"
 	"fmt"
-	"reflect"
-	"time"
-
-	"google.golang.org/api/option"
-	"google.golang.org/api/transport/grpc"
-	longrunningpb "google.golang.org/genproto/googleapis/longrunning"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/networksecurity/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/networksecurity/apiv1"
 	pb "cloud.google.com/go/networksecurity/apiv1/networksecuritypb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.NetworkSecurityMirroringDeploymentGVK, NewModel)
+	registry.RegisterModel(krm.NetworkSecurityMirroringDeploymentGVK, NewMirroringDeploymentModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewMirroringDeploymentModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelMirroringDeployment{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelMirroringDeployment{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelMirroringDeployment struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (pb.MirroringClient, longrunningpb.OperationsClient, error) {
-	var opts []option.ClientOption
-
-	config := m.config
-	opts, err := config.GRPCClientOptions()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	opts = append(opts, option.WithEndpoint("networksecurity.googleapis.com:443"))
-
-	conn, err := grpc.Dial(ctx, opts...)
-	if err != nil {
-		return nil, nil, fmt.Errorf("dialing networksecurity mirroring service: %w", err)
-	}
-
-	return pb.NewMirroringClient(conn), longrunningpb.NewOperationsClient(conn), nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelMirroringDeployment) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.NetworkSecurityMirroringDeployment{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
+	id := i.(*krm.NetworkSecurityMirroringDeploymentIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, err
-	}
-	mapCtx := &direct.MapContext{}
-	desired := NetworkSecurityMirroringDeploymentSpec_ToProto(mapCtx, &obj.Spec)
-	if err := mapCtx.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	gcpClient, operationsClient, err := m.client(ctx)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &adapter{
-		gcpClient:        gcpClient,
-		operationsClient: operationsClient,
-		id:               id.(*krm.NetworkSecurityMirroringDeploymentIdentity),
-		desired:          desired,
+	return &MirroringDeploymentAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelMirroringDeployment) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type adapter struct {
-	gcpClient        pb.MirroringClient
-	operationsClient longrunningpb.OperationsClient
-	id               *krm.NetworkSecurityMirroringDeploymentIdentity
-	desired          *pb.MirroringDeployment
-	actual           *pb.MirroringDeployment
+func (m *modelMirroringDeployment) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building MirroringDeployment client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &adapter{}
+type MirroringDeploymentAdapter struct {
+	id        *krm.NetworkSecurityMirroringDeploymentIdentity
+	gcpClient *gcp.Client
+	desired   *krm.NetworkSecurityMirroringDeployment
+	actual    *pb.MirroringDeployment
+}
 
-func (a *adapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &MirroringDeploymentAdapter{}
+
+func (a *MirroringDeploymentAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.Info("getting networksecurity mirroring deployment", "name", a.id)
+	log.V(2).Info("getting MirroringDeployment", "name", a.id)
 
-	req := &pb.GetMirroringDeploymentRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetMirroringDeployment(ctx, req)
+	req := &pb.GetMirroringDeploymentRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetMirroringDeployment(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting networksecurity mirroring deployment %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting MirroringDeployment %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *MirroringDeploymentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.Info("creating networksecurity mirroring deployment", "name", a.id)
+	log.V(2).Info("creating MirroringDeployment", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	parent := fmt.Sprintf("projects/%s/locations/%s", a.id.Project, a.id.Location)
+	desired := a.desired.DeepCopy()
+	resource := NetworkSecurityMirroringDeploymentSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
 	req := &pb.CreateMirroringDeploymentRequest{
-		Parent:                parent,
-		MirroringDeploymentId: a.id.Mirroring_deployment,
-		MirroringDeployment:   a.desired,
+		Parent:                a.id.ParentString(),
+		MirroringDeploymentId: a.id.Mirroring,
+		MirroringDeployment:   resource,
 	}
 	op, err := a.gcpClient.CreateMirroringDeployment(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating networksecurity mirroring deployment %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating MirroringDeployment %s: %w", a.id, err)
 	}
-
-	err = a.waitForOperation(ctx, op)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("networksecurity mirroring deployment %s waiting for creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create MirroringDeployment %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created MirroringDeployment", "name", a.id)
 
-	actual, err := a.gcpClient.GetMirroringDeployment(ctx, &pb.GetMirroringDeploymentRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting networksecurity mirroring deployment after creation: %w", err)
-	}
-
-	log.V(2).Info("successfully created networksecurity mirroring deployment", "name", a.id.String())
-
-	mapCtx := &direct.MapContext{}
 	status := &krm.NetworkSecurityMirroringDeploymentStatus{}
-	status.ObservedState = NetworkSecurityMirroringDeploymentObservedState_FromProto(mapCtx, actual)
+	status.ObservedState = NetworkSecurityMirroringDeploymentObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
-
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *MirroringDeploymentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.Info("updating networksecurity mirroring deployment", "name", a.id)
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-	var paths []string
-
-	if !reflect.DeepEqual(a.desired.Labels, a.actual.Labels) {
-		report.AddField("labels", a.actual.Labels, a.desired.Labels)
-		paths = append(paths, "labels")
-	}
-
-	if a.desired.Description != a.actual.Description {
-		report.AddField("description", a.actual.Description, a.desired.Description)
-		paths = append(paths, "description")
-	}
-
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return nil
-	}
-
-	structuredreporting.ReportDiff(ctx, report)
-
-	a.desired.Name = a.id.String()
-	updateMask := &fieldmaskpb.FieldMask{Paths: paths}
-
-	req := &pb.UpdateMirroringDeploymentRequest{
-		UpdateMask:          updateMask,
-		MirroringDeployment: a.desired,
-	}
-
-	op, err := a.gcpClient.UpdateMirroringDeployment(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating networksecurity mirroring deployment %s: %w", a.id.String(), err)
-	}
-
-	err = a.waitForOperation(ctx, op)
-	if err != nil {
-		return fmt.Errorf("networksecurity mirroring deployment %s waiting for update: %w", a.id.String(), err)
-	}
-
-	actual, err := a.gcpClient.GetMirroringDeployment(ctx, &pb.GetMirroringDeploymentRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting networksecurity mirroring deployment after update: %w", err)
-	}
-
-	log.V(2).Info("successfully updated networksecurity mirroring deployment", "name", a.id.String())
+	log.V(2).Info("updating MirroringDeployment", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	status := &krm.NetworkSecurityMirroringDeploymentStatus{}
-	status.ObservedState = NetworkSecurityMirroringDeploymentObservedState_FromProto(mapCtx, actual)
+	desired := NetworkSecurityMirroringDeploymentSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
+	diffs, updateMask, err := compareMirroringDeployment(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	return updateOp.UpdateStatus(ctx, status, nil)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateMirroringDeploymentRequest{
+			MirroringDeployment: desired,
+			UpdateMask:          updateMask,
+		}
+		op, err := a.gcpClient.UpdateMirroringDeployment(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating MirroringDeployment %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update MirroringDeployment %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated MirroringDeployment", "name", a.id)
+
+		status := &krm.NetworkSecurityMirroringDeploymentStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = NetworkSecurityMirroringDeploymentObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
 }
 
-func (a *adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	return nil, nil
+func compareMirroringDeployment(ctx context.Context, actual, desired *pb.MirroringDeployment) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, NetworkSecurityMirroringDeploymentSpec_FromProto, NetworkSecurityMirroringDeploymentSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *MirroringDeploymentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.NetworkSecurityMirroringDeployment{}
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(NetworkSecurityMirroringDeploymentSpec_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
+	}
+
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+
+	u.Object = uObj
+	u.SetName(a.id.Mirroring)
+	u.SetGroupVersionKind(krm.NetworkSecurityMirroringDeploymentGVK)
+	export.SetLabels(u, a.actual.Labels)
+	return u, nil
+}
+
+func (a *MirroringDeploymentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.Info("deleting networksecurity mirroring deployment", "name", a.id)
+	log.V(2).Info("deleting MirroringDeployment", "name", a.id)
 
-	req := &pb.DeleteMirroringDeploymentRequest{Name: a.id.String()}
+	req := &pb.DeleteMirroringDeploymentRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteMirroringDeployment(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("deleting networksecurity mirroring deployment %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting MirroringDeployment %s: %w", a.id, err)
 	}
-
-	err = a.waitForOperation(ctx, op)
+	log.V(2).Info("successfully deleted MirroringDeployment", "name", a.id)
+	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("networksecurity mirroring deployment %s waiting for deletion: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete MirroringDeployment %s: %w", a.id, err)
+		}
 	}
-
 	return true, nil
-}
-
-func (a *adapter) waitForOperation(ctx context.Context, op *longrunningpb.Operation) error {
-	if op.Done {
-		if op.GetError() != nil {
-			return fmt.Errorf("operation failed: %s", op.GetError().GetMessage())
-		}
-		return nil
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-			current, err := a.operationsClient.GetOperation(ctx, &longrunningpb.GetOperationRequest{Name: op.Name})
-			if err != nil {
-				return fmt.Errorf("getting operation %q: %w", op.Name, err)
-			}
-			if current.Done {
-				if current.GetError() != nil {
-					return fmt.Errorf("operation failed: %s", current.GetError().GetMessage())
-				}
-				return nil
-			}
-		}
-	}
 }

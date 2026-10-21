@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,18 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.backupdr.v1.BackupDR
-// proto.message: google.cloud.backupdr.v1.BackupVault
-// crd.type: BackupDRBackupVault
-// crd.version: v1beta1
-
 package backupdr
 
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/backupdr/v1beta1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -35,14 +28,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/backupdr/apiv1"
 	pb "cloud.google.com/go/backupdr/apiv1/backupdrpb"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -54,6 +49,7 @@ func NewBackupVaultModel(ctx context.Context, config *config.ControllerConfig) (
 }
 
 var _ directbase.Model = &modelBackupVault{}
+var _ = strings.TrimPrefix
 
 type modelBackupVault struct {
 	config config.ControllerConfig
@@ -62,93 +58,73 @@ type modelBackupVault struct {
 func (m *modelBackupVault) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.BackupDRBackupVault{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// Always call common.NormalizeReferences to resolve references
+	id := &krm.BackupVaultIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	id, err := krm.NewBackupVaultIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// Get backupdr GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
-	if err != nil {
-		return nil, err
-	}
-	backupDRClient, err := gcpClient.newBackupDRClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	// Convert KCC resource spec to GCP proto message
-	desiredProto := BackupDRBackupVaultSpec_v1beta1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	// Handle GCP Labels
-	desiredProto.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
 	return &BackupVaultAdapter{
-		id:                        id,
-		gcpClient:                 backupDRClient,
-		reader:                    reader,
-		desired:                   desiredProto,
-		ignoreInactiveDatasources: obj.Spec.IgnoreInactiveDatasources,
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
 func (m *modelBackupVault) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.BackupVaultIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := newGCPClient(ctx, &m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	backupDRClient, err := gcpClient.newBackupDRClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	return &BackupVaultAdapter{
 		id:        id,
-		gcpClient: backupDRClient,
+		gcpClient: gcpClient,
 	}, nil
 }
 
+func (m *modelBackupVault) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building BackupVault client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type BackupVaultAdapter struct {
-	id                        *krm.BackupVaultIdentity
-	gcpClient                 *gcp.Client
-	desired                   *pb.BackupVault
-	actual                    *pb.BackupVault
-	reader                    client.Reader
-	ignoreInactiveDatasources *bool
+	id        *krm.BackupVaultIdentity
+	gcpClient *gcp.Client
+	desired   *krm.BackupDRBackupVault
+	actual    *pb.BackupVault
 }
 
 var _ directbase.Adapter = &BackupVaultAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *BackupVaultAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting BackupVault", "name", a.id)
 
-	req := &pb.GetBackupVaultRequest{Name: a.id.String()}
-	backupvaultpb, err := a.gcpClient.GetBackupVault(ctx, req)
+	req := &pb.GetBackupVaultRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBackupVault(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -156,19 +132,26 @@ func (a *BackupVaultAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting BackupVault %q: %w", a.id, err)
 	}
 
-	a.actual = backupvaultpb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *BackupVaultAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating BackupVault", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := BackupDRBackupVaultSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateBackupVaultRequest{
 		Parent:        a.id.Parent().String(),
 		BackupVaultId: a.id.ID(),
-		BackupVault:   a.desired,
+		BackupVault:   resource,
 	}
 	op, err := a.gcpClient.CreateBackupVault(ctx, req)
 	if err != nil {
@@ -176,58 +159,65 @@ func (a *BackupVaultAdapter) Create(ctx context.Context, createOp *directbase.Cr
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("BackupVault %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create BackupVault %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created BackupVault", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.BackupDRBackupVaultStatus{}
+	status.ObservedState = BackupDRBackupVaultObservedState_v1beta1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *BackupVaultAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating BackupVault", "name", a.id)
 
-	diffs, updateMask, err := compareBackupVault(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := BackupDRBackupVaultSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareBackupVault(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		a.desired.Name = a.id.String() // we need to set the name so that GCP API can identify the resource
-		a.desired.Etag = a.actual.Etag // Etag is always updated, even if it is not changed.
+		desired.Name = a.id.String()
+
 		req := &pb.UpdateBackupVaultRequest{
-			BackupVault: a.desired,
+			BackupVault: desired,
 			UpdateMask:  updateMask,
 		}
 		op, err := a.gcpClient.UpdateBackupVault(ctx, req)
 		if err != nil {
 			return fmt.Errorf("updating BackupVault %s: %w", a.id, err)
 		}
-
-		latest, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("BackupVault %s waiting update: %w", a.id, err)
+			return fmt.Errorf("waiting update BackupVault %s: %w", a.id, err)
 		}
 		log.V(2).Info("successfully updated BackupVault", "name", a.id)
+
+		status := &krm.BackupDRBackupVaultStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = BackupDRBackupVaultObservedState_v1beta1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func (a *BackupVaultAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.BackupVault) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.BackupDRBackupVaultStatus{}
-	status.ObservedState = BackupDRBackupVaultObservedState_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
 func compareBackupVault(ctx context.Context, actual, desired *pb.BackupVault) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
@@ -235,7 +225,6 @@ func compareBackupVault(ctx context.Context, actual, desired *pb.BackupVault) (*
 	if err != nil {
 		return nil, nil, err
 	}
-	maskedActual.Name = desired.Name
 	maskedActual.Labels = actual.Labels
 	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
@@ -244,7 +233,6 @@ func compareBackupVault(ctx context.Context, actual, desired *pb.BackupVault) (*
 	return diffs, updateMask, nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
 func (a *BackupVaultAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -259,7 +247,7 @@ func (a *BackupVaultAdapter) Export(ctx context.Context) (*unstructured.Unstruct
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = a.id.Location
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.BackupVault)
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.ID())
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -267,38 +255,32 @@ func (a *BackupVaultAdapter) Export(ctx context.Context) (*unstructured.Unstruct
 	}
 
 	u.Object = uObj
+	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.BackupDRBackupVaultGVK)
-	u.SetName(a.id.BackupVault)
-
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *BackupVaultAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting BackupVault", "name", a.id)
 
-	req := &pb.DeleteBackupVaultRequest{Name: a.id.String()}
-
-	if a.ignoreInactiveDatasources != nil && *a.ignoreInactiveDatasources {
-		req.Force = true
+	req := &pb.DeleteBackupVaultRequest{
+		Name: a.id.String(),
 	}
 	op, err := a.gcpClient.DeleteBackupVault(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent BackupVault, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting BackupVault %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted BackupVault", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete BackupVault %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete BackupVault %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

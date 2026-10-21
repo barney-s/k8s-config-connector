@@ -17,195 +17,208 @@ package saasservicemgmt
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	gcp "cloud.google.com/go/saasplatform/saasservicemgmt/apiv1beta1"
-	pb "cloud.google.com/go/saasplatform/saasservicemgmt/apiv1beta1/saasservicemgmtpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/saasservicemgmt/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/saasplatform/saasservicemgmt/apiv1beta1"
+	pb "cloud.google.com/go/saasplatform/saasservicemgmt/apiv1beta1/saasservicemgmtpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.SaasServiceMgmtReleaseGVK, NewModel)
+	registry.RegisterModel(krm.SaasServiceMgmtReleaseGVK, NewReleaseModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: config}, nil
+func NewReleaseModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelRelease{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelRelease{}
+var _ = strings.TrimPrefix
 
-type model struct {
-	config *config.ControllerConfig
+type modelRelease struct {
+	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.SaasDeploymentsClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewSaasDeploymentsRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building SaasServiceMgmt deployments client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelRelease) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.SaasServiceMgmtRelease{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// Resolve resource references
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	idVal, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := idVal.(*krm.SaasServiceMgmtReleaseIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", idVal)
+	id := i.(*krm.SaasServiceMgmtReleaseIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
-
-	// Convert KRM spec to API format
-	mapCtx := &direct.MapContext{}
-	desired := SaasServiceMgmtReleaseSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desired.Labels = label.NewGCPLabelsFromK8sLabels(obj.GetLabels())
-	desired.Annotations = filterSystemAnnotations(obj.GetAnnotations())
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &SaasServiceMgmtReleaseAdapter{
+	return &ReleaseAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelRelease) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type SaasServiceMgmtReleaseAdapter struct {
+func (m *modelRelease) client(ctx context.Context) (*gcp.SaasDeploymentsClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewSaasDeploymentsRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Release client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ReleaseAdapter struct {
 	id        *krm.SaasServiceMgmtReleaseIdentity
 	gcpClient *gcp.SaasDeploymentsClient
-	desired   *pb.Release
+	desired   *krm.SaasServiceMgmtRelease
 	actual    *pb.Release
 }
 
-var _ directbase.Adapter = &SaasServiceMgmtReleaseAdapter{}
+var _ directbase.Adapter = &ReleaseAdapter{}
 
-func (a *SaasServiceMgmtReleaseAdapter) Find(ctx context.Context) (bool, error) {
+func (a *ReleaseAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("getting SaasServiceMgmtRelease", "name", fqn)
+	log.V(2).Info("getting Release", "name", a.id)
 
 	req := &pb.GetReleaseRequest{
-		Name: fqn,
+		Name: a.id.String(),
 	}
-	resource, err := a.gcpClient.GetRelease(ctx, req)
+	resp, err := a.gcpClient.GetRelease(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting SaasServiceMgmtRelease %q: %w", fqn, err)
+		return false, fmt.Errorf("getting Release %q: %w", a.id, err)
 	}
 
-	a.actual = resource
+	a.actual = resp
 	return true, nil
 }
 
-func (a *SaasServiceMgmtReleaseAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ReleaseAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	parent := a.id.ParentString()
-	fqn := a.id.String()
-	log.V(2).Info("creating SaasServiceMgmtRelease", "name", fqn)
+	log.V(2).Info("creating Release", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := SaasServiceMgmtReleaseSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateReleaseRequest{
-		Parent:    parent,
+		Parent:    a.id.ParentString(),
 		ReleaseId: a.id.Release,
-		Release:   a.desired,
+		Release:   resource,
 	}
 	created, err := a.gcpClient.CreateRelease(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating SaasServiceMgmtRelease %s: %w", a.id.Release, err)
+		return fmt.Errorf("creating Release %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created SaasServiceMgmtRelease", "name", created.Name)
+	log.V(2).Info("successfully created Release", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.SaasServiceMgmtReleaseStatus{}
+	status.ObservedState = SaasServiceMgmtReleaseObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *SaasServiceMgmtReleaseAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ReleaseAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("updating SaasServiceMgmtRelease", "name", fqn)
+	log.V(2).Info("updating Release", "name", a.id)
 
-	diffs, updateMask, err := compareRelease(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := SaasServiceMgmtReleaseSpec_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+
+	diffs, updateMask, err := compareRelease(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desired := proto.CloneOf(a.desired)
-		desired.Name = fqn
+		desired.Name = a.id.String()
 
 		req := &pb.UpdateReleaseRequest{
 			Release:    desired,
 			UpdateMask: updateMask,
 		}
-
 		updated, err := a.gcpClient.UpdateRelease(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating SaasServiceMgmtRelease %s: %w", fqn, err)
+			return fmt.Errorf("updating Release %s: %w", a.id, err)
 		}
-		latest = updated
+		log.V(2).Info("successfully updated Release", "name", a.id)
+
+		status := &krm.SaasServiceMgmtReleaseStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = SaasServiceMgmtReleaseObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *SaasServiceMgmtReleaseAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Release) error {
-	mapCtx := &direct.MapContext{}
-	status := SaasServiceMgmtReleaseStatus_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
+func compareRelease(ctx context.Context, actual, desired *pb.Release) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, SaasServiceMgmtReleaseSpec_FromProto, SaasServiceMgmtReleaseSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	return op.UpdateStatus(ctx, status, nil)
+	maskedActual.Labels = actual.Labels
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *SaasServiceMgmtReleaseAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ReleaseAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -224,65 +237,26 @@ func (a *SaasServiceMgmtReleaseAdapter) Export(ctx context.Context) (*unstructur
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.Name)
+	u.SetName(a.id.Release)
 	u.SetGroupVersionKind(krm.SaasServiceMgmtReleaseGVK)
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-func (a *SaasServiceMgmtReleaseAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ReleaseAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("deleting SaasServiceMgmtRelease", "name", fqn)
+	log.V(2).Info("deleting Release", "name", a.id)
 
-	req := &pb.DeleteReleaseRequest{Name: fqn}
+	req := &pb.DeleteReleaseRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteRelease(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent SaasServiceMgmtRelease, assuming it was already deleted", "name", fqn)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting SaasServiceMgmtRelease %s: %w", fqn, err)
+		return false, fmt.Errorf("deleting Release %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted SaasServiceMgmtRelease", "name", fqn)
+	log.V(2).Info("successfully deleted Release", "name", a.id)
 	return true, nil
-}
-
-func compareRelease(ctx context.Context, actual, desired *pb.Release) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, SaasServiceMgmtReleaseSpec_FromProto, SaasServiceMgmtReleaseSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Labels = actual.Labels
-	maskedActual.Annotations = filterSystemAnnotations(actual.Annotations)
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func filterSystemAnnotations(annotations map[string]string) map[string]string {
-	if annotations == nil {
-		return nil
-	}
-	filtered := make(map[string]string)
-	for k, v := range annotations {
-		if strings.HasPrefix(k, "cnrm.cloud.google.com/") || strings.HasPrefix(k, "test.cnrm.cloud.google.com/") {
-			continue
-		}
-		filtered[k] = v
-	}
-	return filtered
-}
-
-func SaasServiceMgmtReleaseStatus_FromProto(mapCtx *direct.MapContext, in *pb.Release) *krm.SaasServiceMgmtReleaseStatus {
-	if in == nil {
-		return nil
-	}
-	out := &krm.SaasServiceMgmtReleaseStatus{}
-	if in.Name != "" {
-		out.ExternalRef = &in.Name
-	}
-	out.ObservedState = SaasServiceMgmtReleaseObservedState_FromProto(mapCtx, in)
-	return out
 }

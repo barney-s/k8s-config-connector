@@ -17,20 +17,18 @@ package networksecurity
 import (
 	"context"
 	"fmt"
-
-	certificatemanagerv1alpha1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/certificatemanager/v1alpha1"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/networksecurity/v1alpha1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/privateca/privatecarefs"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
-	networksecurity "cloud.google.com/go/networksecurity/apiv1"
+	gcp "cloud.google.com/go/networksecurity/apiv1"
 	pb "cloud.google.com/go/networksecurity/apiv1/networksecuritypb"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -41,90 +39,84 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.NetworkSecurityTLSInspectionPolicyGVK, NewTLSInspectionPolicyModel)
+	registry.RegisterModel(krm.NetworkSecurityTLSInspectionPolicyGVK, NewTlsInspectionPolicyModel)
 }
 
-func NewTLSInspectionPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &tlsInspectionPolicyModel{config: *config}, nil
+func NewTlsInspectionPolicyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelTlsInspectionPolicy{config: *config}, nil
 }
 
-var _ directbase.Model = &tlsInspectionPolicyModel{}
+var _ directbase.Model = &modelTlsInspectionPolicy{}
+var _ = strings.TrimPrefix
 
-type tlsInspectionPolicyModel struct {
+type modelTlsInspectionPolicy struct {
 	config config.ControllerConfig
 }
 
-func (m *tlsInspectionPolicyModel) client(ctx context.Context) (*networksecurity.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-
-	gcpClient, err := networksecurity.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building NetworkSecurity client: %w", err)
-	}
-
-	return gcpClient, nil
-}
-
-func (m *tlsInspectionPolicyModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelTlsInspectionPolicy) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.NetworkSecurityTLSInspectionPolicy{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
+	}
+	id := i.(*krm.NetworkSecurityTLSInspectionPolicyIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := NetworkSecurityTLSInspectionPolicySpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desired.Name = id.(*krm.NetworkSecurityTLSInspectionPolicyIdentity).String()
-
-	return &tlsInspectionPolicyAdapter{
-		id:        id.(*krm.NetworkSecurityTLSInspectionPolicyIdentity),
+	return &TlsInspectionPolicyAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *tlsInspectionPolicyModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelTlsInspectionPolicy) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type tlsInspectionPolicyAdapter struct {
+func (m *modelTlsInspectionPolicy) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building TlsInspectionPolicy client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type TlsInspectionPolicyAdapter struct {
 	id        *krm.NetworkSecurityTLSInspectionPolicyIdentity
-	gcpClient *networksecurity.Client
-	desired   *pb.TlsInspectionPolicy
+	gcpClient *gcp.Client
+	desired   *krm.NetworkSecurityTLSInspectionPolicy
 	actual    *pb.TlsInspectionPolicy
 }
 
-var _ directbase.Adapter = &tlsInspectionPolicyAdapter{}
+var _ directbase.Adapter = &TlsInspectionPolicyAdapter{}
 
-func (a *tlsInspectionPolicyAdapter) Find(ctx context.Context) (bool, error) {
+func (a *TlsInspectionPolicyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting TlsInspectionPolicy", "name", a.id)
 
-	req := &pb.GetTlsInspectionPolicyRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetTlsInspectionPolicy(ctx, req)
+	req := &pb.GetTlsInspectionPolicyRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetTlsInspectionPolicy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -132,82 +124,97 @@ func (a *tlsInspectionPolicyAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting TlsInspectionPolicy %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *tlsInspectionPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *TlsInspectionPolicyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating TlsInspectionPolicy", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := NetworkSecurityTLSInspectionPolicySpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateTlsInspectionPolicyRequest{
 		Parent:                a.id.ParentString(),
 		TlsInspectionPolicyId: a.id.TlsInspectionPolicy,
-		TlsInspectionPolicy:   a.desired,
+		TlsInspectionPolicy:   resource,
 	}
 	op, err := a.gcpClient.CreateTlsInspectionPolicy(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating TlsInspectionPolicy %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("creating TlsInspectionPolicy %s: %w", a.id, err)
+		return fmt.Errorf("waiting create TlsInspectionPolicy %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created TlsInspectionPolicy", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.NetworkSecurityTLSInspectionPolicyStatus{}
+	status.ObservedState = NetworkSecurityTLSInspectionPolicyObservedState_v1alpha1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *tlsInspectionPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *TlsInspectionPolicyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating TlsInspectionPolicy", "name", a.id)
 
-	diffs, updateMask, err := compareTlsInspectionPolicy(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := NetworkSecurityTLSInspectionPolicySpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareTlsInspectionPolicy(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
+		desired.Name = a.id.String()
 
-	updated := a.actual
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-	} else {
-		log.V(2).Info("fields need update", "name", a.id, "updateMask", updateMask)
 		req := &pb.UpdateTlsInspectionPolicyRequest{
+			TlsInspectionPolicy: desired,
 			UpdateMask:          updateMask,
-			TlsInspectionPolicy: a.desired,
 		}
-		req.TlsInspectionPolicy.Name = a.id.String()
-
 		op, err := a.gcpClient.UpdateTlsInspectionPolicy(ctx, req)
 		if err != nil {
 			return fmt.Errorf("updating TlsInspectionPolicy %s: %w", a.id, err)
 		}
-		updated, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("creating TlsInspectionPolicy %s: %w", a.id, err)
+			return fmt.Errorf("waiting update TlsInspectionPolicy %s: %w", a.id, err)
 		}
 		log.V(2).Info("successfully updated TlsInspectionPolicy", "name", a.id)
+
+		status := &krm.NetworkSecurityTLSInspectionPolicyStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = NetworkSecurityTLSInspectionPolicyObservedState_v1alpha1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, updated)
+	return nil
 }
 
 func compareTlsInspectionPolicy(ctx context.Context, actual, desired *pb.TlsInspectionPolicy) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	mapCtx := &direct.MapContext{}
-	spec := NetworkSecurityTLSInspectionPolicySpec_v1alpha1_FromProto(mapCtx, actual)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
+	maskedActual, err := mappers.OnlySpecFields(actual, NetworkSecurityTLSInspectionPolicySpec_v1alpha1_FromProto, NetworkSecurityTLSInspectionPolicySpec_v1alpha1_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	maskedActual := NetworkSecurityTLSInspectionPolicySpec_v1alpha1_ToProto(mapCtx, spec)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
-	}
-	maskedActual.Name = desired.Name
-
 	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
@@ -215,7 +222,7 @@ func compareTlsInspectionPolicy(ctx context.Context, actual, desired *pb.TlsInsp
 	return diffs, updateMask, nil
 }
 
-func (a *tlsInspectionPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *TlsInspectionPolicyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -227,58 +234,40 @@ func (a *tlsInspectionPolicyAdapter) Export(ctx context.Context) (*unstructured.
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{External: a.id.Project}
-	obj.Spec.Location = direct.LazyPtr(a.id.Location)
-
-	if a.actual.CaPool != "" {
-		obj.Spec.CaPoolRef = &privatecarefs.PrivateCACAPoolRef{External: a.actual.CaPool}
-	}
-	if a.actual.TrustConfig != "" {
-		obj.Spec.TrustConfigRef = &certificatemanagerv1alpha1.CertificateManagerTrustConfigRef{External: a.actual.TrustConfig}
-	}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.TlsInspectionPolicy)
 	u.SetGroupVersionKind(krm.NetworkSecurityTLSInspectionPolicyGVK)
-
-	u.Object = uObj
 	return u, nil
 }
 
-func (a *tlsInspectionPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *TlsInspectionPolicyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting TlsInspectionPolicy", "name", a.id)
 
-	req := &pb.DeleteTlsInspectionPolicyRequest{Name: a.id.String()}
+	req := &pb.DeleteTlsInspectionPolicyRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteTlsInspectionPolicy(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent TlsInspectionPolicy, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting TlsInspectionPolicy %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted TlsInspectionPolicy", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete TlsInspectionPolicy %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete TlsInspectionPolicy %s: %w", a.id, err)
+		}
 	}
-
-	log.V(2).Info("successfully deleted TlsInspectionPolicy", "name", a.id)
 	return true, nil
-}
-
-func (a *tlsInspectionPolicyAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.TlsInspectionPolicy) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.NetworkSecurityTLSInspectionPolicyStatus{}
-	status.ObservedState = NetworkSecurityTLSInspectionPolicyObservedState_v1alpha1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
 }

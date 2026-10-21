@@ -56,6 +56,7 @@ func ExtractProfileFromSource(filePath string) (*controllerprofile.ControllerPro
 	}
 
 	profile := &controllerprofile.ControllerProfile{
+		Package:    file.Name.Name,
 		KCCService: kccService,
 		KCCVersion: "v1beta1", // default, may be overridden by krm import
 	}
@@ -103,6 +104,10 @@ func ExtractProfileFromSource(filePath string) (*controllerprofile.ControllerPro
 		if lastSlash != -1 {
 			gcpImport = pbImport[:lastSlash]
 		}
+	}
+
+	if krmImport == "" || gcpImport == "" || pbImport == "" {
+		return nil, fmt.Errorf("non-GAPIC/proto controller (krm=%q, gcp=%q, pb=%q)", krmImport, gcpImport, pbImport)
 	}
 
 	profile.Transport.GCPClientImportPath = gcpImport

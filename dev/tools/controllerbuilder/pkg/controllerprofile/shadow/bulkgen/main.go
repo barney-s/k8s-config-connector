@@ -42,6 +42,12 @@ func main() {
 				return err
 			}
 			if !d.IsDir() && strings.HasSuffix(path, "_controller.go") && !strings.HasSuffix(path, "_test.go") {
+				// Skip infrastructure packages that are not resource reconcilers
+				if strings.Contains(path, "/directbase/") || strings.Contains(path, "/common/") ||
+					strings.Contains(path, "/registry/") || strings.Contains(path, "/register/") ||
+					strings.Contains(path, "/mappings/") || strings.Contains(path, "/debug/") {
+					return nil
+				}
 				if *serviceFilter == "" || strings.Contains(path, "/"+*serviceFilter+"/") {
 					controllerFiles = append(controllerFiles, path)
 				}

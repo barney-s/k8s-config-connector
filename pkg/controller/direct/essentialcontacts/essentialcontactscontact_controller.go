@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,37 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.essentialcontacts.v1.EssentialContactsService
-// proto.message: google.cloud.essentialcontacts.v1.Contact
-// crd.type: EssentialContactsContact
-// crd.version: v1alpha1
-
 package essentialcontacts
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"reflect"
+	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/essentialcontacts/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
 	"strings"
 
 	gcp "cloud.google.com/go/essentialcontacts/apiv1"
 	pb "cloud.google.com/go/essentialcontacts/apiv1/essentialcontactspb"
-	refv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
-	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/essentialcontacts/v1beta1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
 )
 
 func init() {
@@ -50,106 +43,87 @@ func init() {
 }
 
 func NewContactModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &contactModel{config: *config}, nil
+	return &modelContact{config: *config}, nil
 }
 
-var _ directbase.Model = &contactModel{}
+var _ directbase.Model = &modelContact{}
+var _ = strings.TrimPrefix
 
-type contactModel struct {
+type modelContact struct {
 	config config.ControllerConfig
 }
 
-func (m *contactModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelContact) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.EssentialContactsContact{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
+	id := &krm.ContactIdentity{}
 
-	id, err := krm.NewContactIdentity(ctx, reader, obj)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	config := m.config
-	// the service requires that a quota project be set
-	if !config.UserProjectOverride || config.BillingProject == "" {
-		config.UserProjectOverride = true
-		config.BillingProject = id.Parent().ProjectID
-	}
-	// Get GCP client
-	gcpClient, err := newGCPClient(ctx, &config)
-	if err != nil {
-		return nil, err
-	}
-	client, err := gcpClient.newEssentialContactsClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &contactAdapter{
-		gcpClient: client,
+	return &ContactAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *contactModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelContact) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type contactAdapter struct {
-	gcpClient *gcp.Client
-	id        *krm.ContactIdentity
-	desired   *krm.EssentialContactsContact
-	actual    *pb.Contact
-	reader    client.Reader
-}
-
-var _ directbase.Adapter = &contactAdapter{}
-
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
-func (a *contactAdapter) Find(ctx context.Context) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("getting essential contact", "name", a.id)
-
-	// This resource has a server-generated ID. This means user should not know
-	// the ID before the resource is created, and 'metadata.name' won't be used
-	// as the default resource ID. So empty value for 'spec.resourceID' should
-	// also be valid:
-	// 1. When 'spec.resourceID' is not set or set to an empty value, the
-	//    intention is to create the resource.
-	// 2. When 'spec.resourceID' is set, the intention is to acquire an existing
-	//    resource.
-	//    2.1. When 'spec.resourceID' is set but the corresponding GCP resource
-	//         is not found, then it is a real error.
-	if a.id.ID() == "" {
-		log.V(2).Info("no resource ID in get indicates the create intention", "name", a.id)
-		return false, nil
+func (m *modelContact) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
 	}
 
-	req := &pb.GetContactRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetContact(ctx, req)
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Contact client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ContactAdapter struct {
+	id        *krm.ContactIdentity
+	gcpClient *gcp.Client
+	desired   *krm.EssentialContactsContact
+	actual    *pb.Contact
+}
+
+var _ directbase.Adapter = &ContactAdapter{}
+
+func (a *ContactAdapter) Find(ctx context.Context) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("getting Contact", "name", a.id)
+
+	req := &pb.GetContactRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetContact(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting essential contact %q: %w", a.id, err)
+		return false, fmt.Errorf("getting Contact %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *contactAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ContactAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating essential contact", "name", a.id)
+	log.V(2).Info("creating Contact", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
@@ -159,165 +133,81 @@ func (a *contactAdapter) Create(ctx context.Context, createOp *directbase.Create
 	}
 
 	req := &pb.CreateContactRequest{
-		Parent:  a.id.Parent().String(),
-		Contact: resource,
+		Parent:    a.id.Parent().String(),
+		ContactId: a.id.ID(),
+		Contact:   resource,
 	}
 	created, err := a.gcpClient.CreateContact(ctx, req)
 	if err != nil {
-		if direct.IsAlreadyExists(err) && a.id.ID() == "" {
-			log.V(0).Info("essential contact already exists, attempting to acquire", "parent", a.id.Parent().String(), "email", direct.ValueOf(desired.Spec.Email))
-			return a.acquireExistingContact(ctx, createOp)
-		}
-		return fmt.Errorf("creating essential contact %s: %w", a.id, err)
+		return fmt.Errorf("creating Contact %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created essential contact", "name", a.id)
+	log.V(2).Info("successfully created Contact", "name", a.id)
 
 	status := &krm.EssentialContactsContactStatus{}
 	status.ObservedState = EssentialContactsContactObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.LazyPtr(created.Name)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// acquireExistingContact looks up an existing Contact by parent and email after an ALREADY_EXISTS error,
-// updates any mutable fields if they differ from desired, and sets the externalRef and status to adopt the resource.
-func (a *contactAdapter) acquireExistingContact(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ContactAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-
-	existing, err := a.findContactByEmail(ctx)
-	if err != nil {
-		return err
-	}
-	if existing == nil {
-		return fmt.Errorf("essential contact with email %q not found under %q despite ALREADY_EXISTS error", direct.ValueOf(a.desired.Spec.Email), a.id.Parent().String())
-	}
-	log.V(0).Info("acquired existing essential contact", "name", existing.GetName())
-
-	_, resourceID, err := krm.ParseContactExternal(existing.GetName())
-	if err != nil {
-		return err
-	}
-	a.id.SetID(resourceID)
-	a.actual = existing
+	log.V(2).Info("updating Contact", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	desired := a.desired.DeepCopy()
-	resource := EssentialContactsContactSpec_ToProto(mapCtx, &desired.Spec)
+	desired := EssentialContactsContactSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	resource.Name = existing.GetName()
 
-	paths := []string{}
-	if !reflect.DeepEqual(resource.NotificationCategorySubscriptions, existing.NotificationCategorySubscriptions) {
-		paths = append(paths, "notification_category_subscriptions")
+	diffs, updateMask, err := compareContact(ctx, a.actual, desired)
+	if err != nil {
+		return err
 	}
-	if !reflect.DeepEqual(resource.LanguageTag, existing.LanguageTag) {
-		paths = append(paths, "language_tag")
-	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	contact := existing
-	if len(paths) > 0 {
+		desired.Name = a.id.String()
+
 		req := &pb.UpdateContactRequest{
-			Contact:    resource,
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: paths},
+			Contact:    desired,
+			UpdateMask: updateMask,
 		}
 		updated, err := a.gcpClient.UpdateContact(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating acquired essential contact %s: %w", a.id, err)
+			return fmt.Errorf("updating Contact %s: %w", a.id, err)
 		}
-		contact = updated
-		log.V(2).Info("successfully updated acquired essential contact", "name", a.id)
+		log.V(2).Info("successfully updated Contact", "name", a.id)
+
+		status := &krm.EssentialContactsContactStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = EssentialContactsContactObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	status := &krm.EssentialContactsContactStatus{}
-	status.ObservedState = EssentialContactsContactObservedState_FromProto(mapCtx, contact)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(contact.Name)
-	return createOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-// findContactByEmail lists contacts under the parent and returns the one matching the desired email.
-func (a *contactAdapter) findContactByEmail(ctx context.Context) (*pb.Contact, error) {
-	desiredEmail := direct.ValueOf(a.desired.Spec.Email)
-	req := &pb.ListContactsRequest{
-		Parent: a.id.Parent().String(),
+func compareContact(ctx context.Context, actual, desired *pb.Contact) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, EssentialContactsContactSpec_FromProto, EssentialContactsContactSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
 	}
-	it := a.gcpClient.ListContacts(ctx, req)
-	for {
-		contact, err := it.Next()
-		if err != nil {
-			if errors.Is(err, iterator.Done) {
-				break
-			}
-			return nil, fmt.Errorf("listing essential contacts under %q: %w", a.id.Parent().String(), err)
-		}
-		if strings.EqualFold(contact.GetEmail(), desiredEmail) {
-			return contact, nil
-		}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
 	}
-	return nil, nil
+	return diffs, updateMask, nil
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *contactAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating essential contact", "name", a.id)
-	mapCtx := &direct.MapContext{}
-
-	desired := a.desired.DeepCopy()
-	resource := EssentialContactsContactSpec_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	resource.Name = a.id.String() // Set name for update request
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	paths := []string{}
-	if !reflect.DeepEqual(resource.NotificationCategorySubscriptions, a.actual.NotificationCategorySubscriptions) {
-		report.AddField("notification_category_subscriptions", a.actual.NotificationCategorySubscriptions, resource.NotificationCategorySubscriptions)
-		paths = append(paths, "notification_category_subscriptions")
-	}
-	if !reflect.DeepEqual(resource.LanguageTag, a.actual.LanguageTag) {
-		report.AddField("language_tag", a.actual.LanguageTag, resource.LanguageTag)
-		paths = append(paths, "language_tag")
-	}
-
-	var updated *pb.Contact
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		updated = a.actual
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		req := &pb.UpdateContactRequest{
-			Contact:    resource,
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: paths},
-		}
-		var err error
-		updated, err = a.gcpClient.UpdateContact(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating essential contact %s: %w", a.id, err)
-		}
-		log.V(2).Info("successfully updated essential contact", "name", a.id)
-	}
-
-	status := &krm.EssentialContactsContactStatus{}
-	status.ObservedState = EssentialContactsContactObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(updated.Name)
-
-	return updateOp.UpdateStatus(ctx, status, nil)
-}
-
-// Export maps the GCP object to a Config Connector resource `spec`.
-func (a *contactAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ContactAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -329,56 +219,33 @@ func (a *contactAdapter) Export(ctx context.Context) (*unstructured.Unstructured
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	// Set parent ref based on the actual name format
-	parentIdentity, resourceID, err := krm.ParseContactExternal(a.id.String())
-	if err != nil {
-		return nil, fmt.Errorf("parsing parent from actual name %q: %w", a.id, err)
-	}
-	if parentIdentity.ProjectID != "" {
-		obj.Spec.ProjectRef = &refv1beta1.ProjectRef{
-			External: parentIdentity.String(),
-		}
-	} else if parentIdentity.FolderID != "" {
-		obj.Spec.FolderRef = &refv1beta1.FolderRef{
-			External: parentIdentity.String(),
-		}
-	} else if parentIdentity.OrganizationID != "" {
-		obj.Spec.OrganizationRef = &refv1beta1.OrganizationRef{
-			External: parentIdentity.String(),
-		}
-	} else {
-		return nil, fmt.Errorf("unknown parent type in name %q", a.actual.Name)
-	}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(resourceID)
-	u.SetGroupVersionKind(krm.EssentialContactsContactGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.EssentialContactsContactGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *contactAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ContactAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting essential contact", "name", a.id)
+	log.V(2).Info("deleting Contact", "name", a.id)
 
-	req := &pb.DeleteContactRequest{Name: a.id.String()}
+	req := &pb.DeleteContactRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteContact(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent essential contact, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting essential contact %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting Contact %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted essential contact", "name", a.id)
-
+	log.V(2).Info("successfully deleted Contact", "name", a.id)
 	return true, nil
 }

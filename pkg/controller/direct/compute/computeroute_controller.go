@@ -12,28 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.compute.v1.Routes
-// proto.message: google.cloud.compute.v1.Route
-// crd.type: ComputeRoute
-// crd.version: v1beta1
-
 package compute
 
 import (
 	"context"
 	"fmt"
-
-	compute "cloud.google.com/go/compute/apiv1"
-	computepb "cloud.google.com/go/compute/apiv1/computepb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -42,104 +25,107 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	computepb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.ComputeRouteGVK, NewRouteModel)
+	registry.RegisterModel(krm.ComputeRouteGVK, NewComputeRouteModel)
 }
 
-func NewRouteModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &routeModel{config: config}, nil
+func NewComputeRouteModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelComputeRoute{config: *config}, nil
 }
 
-var _ directbase.Model = &routeModel{}
+var _ directbase.Model = &modelComputeRoute{}
+var _ = strings.TrimPrefix
 
-type routeModel struct {
-	config *config.ControllerConfig
+type modelComputeRoute struct {
+	config config.ControllerConfig
 }
 
-func (m *routeModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeRoute) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeRoute{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	routesClient, err := gcpClient.newRoutesClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+	id := i.(*krm.ComputeRouteIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desired := obj.DeepCopy()
-	resource := ComputeRouteSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
-
-	return &RouteAdapter{
-		gcpClient: routesClient,
-		id:        id.(*krm.ComputeRouteIdentity),
-		desired:   resource,
-		reader:    reader,
+	return &ComputeRouteAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *routeModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeRoute) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.ComputeRouteIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := newGCPClient(m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
+		return nil, err
 	}
-	routesClient, err := gcpClient.newRoutesClient(ctx)
+	return &ComputeRouteAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelComputeRoute) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	return &RouteAdapter{
-		gcpClient: routesClient,
-		id:        id,
-	}, nil
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeRoute client: %w", err)
+	}
+	return gcpClient, err
 }
 
-type RouteAdapter struct {
-	gcpClient *compute.RoutesClient
+type ComputeRouteAdapter struct {
 	id        *krm.ComputeRouteIdentity
-	desired   *computepb.Route
-	actual    *computepb.Route
-	reader    client.Reader
+	gcpClient *gcp.Client
+	desired   *krm.ComputeRoute
+	actual    *computepb.ComputeRoute
 }
 
-var _ directbase.Adapter = &RouteAdapter{}
+var _ directbase.Adapter = &ComputeRouteAdapter{}
 
-func (a *RouteAdapter) Find(ctx context.Context) (bool, error) {
+func (a *ComputeRouteAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeRoute", "name", a.id)
 
-	req := &computepb.GetRouteRequest{
-		Project: a.id.Project,
-		Route:   a.id.Route,
+	req := &computepb.GetComputeRouteRequest{
+		Name: a.id.String(),
 	}
-	actual, err := a.gcpClient.Get(ctx, req)
+	resp, err := a.gcpClient.GetComputeRoute(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -147,85 +133,80 @@ func (a *RouteAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting ComputeRoute %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *RouteAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ComputeRouteAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ComputeRoute", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	a.desired.Name = proto.String(a.id.Route)
-
-	req := &computepb.InsertRouteRequest{
-		Project:       a.id.Project,
-		RouteResource: a.desired,
+	desired := a.desired.DeepCopy()
+	resource := ComputeRouteSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	op, err := a.gcpClient.Insert(ctx, req)
+
+	req := &computepb.CreateComputeRouteRequest{
+		Parent:         a.id.ParentString(),
+		ComputeRouteId: a.id.Route,
+		ComputeRoute:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeRoute(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating ComputeRoute %s: %w", a.id, err)
 	}
-
-	err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("compute ComputeRoute %s waiting creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create ComputeRoute %s: %w", a.id, err)
 	}
-	log.Info("successfully created compute ComputeRoute in gcp", "name", a.id)
+	log.V(2).Info("successfully created ComputeRoute", "name", a.id)
 
-	created, err := a.get(ctx)
-	if err != nil {
-		return fmt.Errorf("getting ComputeRoute %s: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ComputeRouteStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *RouteAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ComputeRouteAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeRoute", "name", a.id)
 
-	diffs, _, err := compareComputeRoute(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := ComputeRouteSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareComputeRoute(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("ComputeRoute resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	return fmt.Errorf("ComputeRoute is immutable and cannot be updated")
+	status := &krm.ComputeRouteStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *RouteAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeRoute", "name", a.id)
-
-	req := &computepb.DeleteRouteRequest{
-		Project: a.id.Project,
-		Route:   a.id.Route,
-	}
-	op, err := a.gcpClient.Delete(ctx, req)
+func compareComputeRoute(ctx context.Context, actual, desired *computepb.ComputeRoute) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeRouteSpec_v1beta1_FromProto, ComputeRouteSpec_v1beta1_ToProto)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("deleting ComputeRoute %s: %w", a.id, err)
+		return nil, nil, err
 	}
-
-	err = op.Wait(ctx)
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
-		return false, fmt.Errorf("waiting ComputeRoute %s delete failed: %w", a.id, err)
+		return nil, nil, err
 	}
-
-	log.V(2).Info("successfully deleted ComputeRoute", "name", a.id)
-	return true, nil
+	return diffs, updateMask, nil
 }
 
-func (a *RouteAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ComputeRouteAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -237,7 +218,6 @@ func (a *RouteAdapter) Export(ctx context.Context) (*unstructured.Unstructured, 
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.Route)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
@@ -246,49 +226,13 @@ func (a *RouteAdapter) Export(ctx context.Context) (*unstructured.Unstructured, 
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.GetName())
+	u.SetName(a.id.Route)
 	u.SetGroupVersionKind(krm.ComputeRouteGVK)
 	return u, nil
 }
 
-func (a *RouteAdapter) get(ctx context.Context) (*computepb.Route, error) {
-	req := &computepb.GetRouteRequest{
-		Project: a.id.Project,
-		Route:   a.id.Route,
-	}
-	return a.gcpClient.Get(ctx, req)
-}
-
-func (a *RouteAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *computepb.Route) error {
-	mapCtx := &direct.MapContext{}
-	status := ComputeRouteStatus_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareComputeRoute(ctx context.Context, actual, desired *computepb.Route) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, ComputeRouteSpec_v1beta1_FromProto, ComputeRouteSpec_v1beta1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *computepb.Route) {
-		if obj.Priority == nil {
-			obj.Priority = direct.PtrTo[uint32](1000)
-		}
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
+func (a *ComputeRouteAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deletion not supported for ComputeRoute, removing finalizer without deleting GCP resource", "name", a.id)
+	return true, nil
 }

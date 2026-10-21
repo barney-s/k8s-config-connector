@@ -17,6 +17,14 @@ package muteconfig
 import (
 	"context"
 	"fmt"
+	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/securitycenter/v1alpha1"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
 	"strings"
 
 	gcp "cloud.google.com/go/securitycenter/apiv1"
@@ -24,245 +32,221 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
-	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
-	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/securitycenter/v1alpha1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/securitycenter"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
-
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.SecurityCenterMuteConfigGVK, NewModel)
+	registry.RegisterModel(krm.SecurityCenterMuteConfigGVK, NewMuteConfigModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewMuteConfigModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelMuteConfig{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelMuteConfig{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelMuteConfig struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building SecurityCenter MuteConfig client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelMuteConfig) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.SecurityCenterMuteConfig{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	identity, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
+	id := i.(*krm.SecurityCenterMuteConfigIdentity)
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &securityCenterMuteConfigAdapter{
-		id:        identity.(*krm.SecurityCenterMuteConfigIdentity),
+	return &MuteConfigAdapter{
+		id:        id,
 		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	if !strings.HasPrefix(url, "//securitycenter.googleapis.com/") {
+func (m *modelMuteConfig) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.SecurityCenterMuteConfigIdentity{}
+	if err := id.FromExternal(url); err != nil {
 		return nil, nil
 	}
-
-	parsed := &krm.SecurityCenterMuteConfigIdentity{}
-	if err := parsed.FromExternal(strings.TrimPrefix(url, "//")); err != nil {
-		return nil, nil
-	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &securityCenterMuteConfigAdapter{
-		id:        parsed,
+	return &MuteConfigAdapter{
+		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type securityCenterMuteConfigAdapter struct {
+func (m *modelMuteConfig) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building MuteConfig client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type MuteConfigAdapter struct {
 	id        *krm.SecurityCenterMuteConfigIdentity
 	gcpClient *gcp.Client
 	desired   *krm.SecurityCenterMuteConfig
 	actual    *securitycenterpb.MuteConfig
 }
 
-var _ directbase.Adapter = &securityCenterMuteConfigAdapter{}
+var _ directbase.Adapter = &MuteConfigAdapter{}
 
-func (a *securityCenterMuteConfigAdapter) Find(ctx context.Context) (bool, error) {
+func (a *MuteConfigAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting SecurityCenterMuteConfig", "name", a.id.String())
+	log.V(2).Info("getting MuteConfig", "name", a.id)
 
 	req := &securitycenterpb.GetMuteConfigRequest{
 		Name: a.id.String(),
 	}
-	muteConfig, err := a.gcpClient.GetMuteConfig(ctx, req)
+	resp, err := a.gcpClient.GetMuteConfig(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("SecurityCenterMuteConfig not found", "name", a.id.String())
 			return false, nil
 		}
-		return false, fmt.Errorf("getting SecurityCenterMuteConfig %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting MuteConfig %q: %w", a.id, err)
 	}
 
-	a.actual = muteConfig
+	a.actual = resp
 	return true, nil
 }
 
-func (a *securityCenterMuteConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *MuteConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating SecurityCenterMuteConfig", "name", a.id.String())
-
+	log.V(2).Info("creating MuteConfig", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	muteConfig := securitycenter.SecurityCenterMuteConfigSpec_ToProto(mapCtx, &a.desired.Spec)
+
+	desired := a.desired.DeepCopy()
+	resource := SecurityCenterMuteConfigSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
 	req := &securitycenterpb.CreateMuteConfigRequest{
-		Parent:       fmt.Sprintf("organizations/%s", a.id.Organization),
-		MuteConfigId: a.id.MuteConfig,
-		MuteConfig:   muteConfig,
+		Parent:       a.id.ParentString(),
+		MuteConfigId: a.id.Organization,
+		MuteConfig:   resource,
 	}
-
 	created, err := a.gcpClient.CreateMuteConfig(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating SecurityCenterMuteConfig %q: %w", a.id.String(), err)
+		return fmt.Errorf("creating MuteConfig %s: %w", a.id, err)
 	}
-
-	log.V(2).Info("successfully created SecurityCenterMuteConfig", "name", a.id.String())
+	log.V(2).Info("successfully created MuteConfig", "name", a.id)
 
 	status := &krm.SecurityCenterMuteConfigStatus{}
-	status.ObservedState = securitycenter.SecurityCenterMuteConfigObservedState_FromProto(mapCtx, created)
+	status.ObservedState = SecurityCenterMuteConfigObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *securityCenterMuteConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *MuteConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating SecurityCenterMuteConfig", "name", a.id.String())
+	log.V(2).Info("updating MuteConfig", "name", a.id)
 
 	mapCtx := &direct.MapContext{}
-	desiredProto := securitycenter.SecurityCenterMuteConfigSpec_ToProto(mapCtx, &a.desired.Spec)
+	desired := SecurityCenterMuteConfigSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	desiredProto.Name = a.id.String()
 
-	if a.desired.Spec.Type != nil {
-		desiredType := direct.Enum_ToProto[securitycenterpb.MuteConfig_MuteConfigType](mapCtx, a.desired.Spec.Type)
-		if desiredType != a.actual.Type {
-			return fmt.Errorf("type is immutable and cannot be updated from %s to %s", a.actual.Type, desiredType)
-		}
-	} else {
-		desiredProto.Type = a.actual.Type
-	}
-
-	paths, report, err := common.CompareProtoMessageStructuredDiff(desiredProto, a.actual, common.BasicDiff)
+	diffs, updateMask, err := compareMuteConfig(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id.String())
+		desired.Name = a.id.String()
+
+		req := &securitycenterpb.UpdateMuteConfigRequest{
+			MuteConfig: desired,
+			UpdateMask: updateMask,
+		}
+		updated, err := a.gcpClient.UpdateMuteConfig(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating MuteConfig %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated MuteConfig", "name", a.id)
+
 		status := &krm.SecurityCenterMuteConfigStatus{}
-		status.ObservedState = securitycenter.SecurityCenterMuteConfigObservedState_FromProto(mapCtx, a.actual)
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = SecurityCenterMuteConfigObservedState_FromProto(mapCtx, updated)
 		if mapCtx.Err() != nil {
 			return mapCtx.Err()
 		}
-		status.ExternalRef = direct.PtrTo(a.id.String())
+		status.ExternalRef = direct.LazyPtr(a.id.String())
 		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	report.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, report)
-
-	req := &securitycenterpb.UpdateMuteConfigRequest{
-		MuteConfig: desiredProto,
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: sets.List(paths)},
-	}
-
-	updated, err := a.gcpClient.UpdateMuteConfig(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating SecurityCenterMuteConfig %q: %w", a.id.String(), err)
-	}
-
-	status := &krm.SecurityCenterMuteConfigStatus{}
-	status.ObservedState = securitycenter.SecurityCenterMuteConfigObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-func (a *securityCenterMuteConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareMuteConfig(ctx context.Context, actual, desired *securitycenterpb.MuteConfig) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, SecurityCenterMuteConfigSpec_FromProto, SecurityCenterMuteConfigSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
+func (a *MuteConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
 	u := &unstructured.Unstructured{}
 
+	obj := &krm.SecurityCenterMuteConfig{}
 	mapCtx := &direct.MapContext{}
-	spec := securitycenter.SecurityCenterMuteConfigSpec_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(SecurityCenterMuteConfigSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
-	}
-
-	obj := &krm.SecurityCenterMuteConfig{}
-	obj.Spec = *spec
-	obj.Spec.OrganizationRef = &refs.OrganizationRef{
-		External: a.id.Organization,
 	}
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
-	u.SetName(a.id.MuteConfig)
-	u.SetGroupVersionKind(krm.SecurityCenterMuteConfigGVK)
+
 	u.Object = uObj
+	u.SetName(a.id.Organization)
+	u.SetGroupVersionKind(krm.SecurityCenterMuteConfigGVK)
 	return u, nil
 }
 
-func (a *securityCenterMuteConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *MuteConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting SecurityCenterMuteConfig", "name", a.id.String())
+	log.V(2).Info("deleting MuteConfig", "name", a.id)
 
 	req := &securitycenterpb.DeleteMuteConfigRequest{
 		Name: a.id.String(),
@@ -272,8 +256,8 @@ func (a *securityCenterMuteConfigAdapter) Delete(ctx context.Context, deleteOp *
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("deleting SecurityCenterMuteConfig %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting MuteConfig %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted SecurityCenterMuteConfig", "name", a.id.String())
+	log.V(2).Info("successfully deleted MuteConfig", "name", a.id)
 	return true, nil
 }

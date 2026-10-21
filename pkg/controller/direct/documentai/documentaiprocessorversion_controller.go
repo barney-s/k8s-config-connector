@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,25 +17,28 @@ package documentai
 import (
 	"context"
 	"fmt"
-	"time"
-
-	gcp "cloud.google.com/go/documentai/apiv1"
-	documentaipb "cloud.google.com/go/documentai/apiv1/documentaipb"
-	krmv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/documentai/v1beta1"
+	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/documentai/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/documentai/apiv1"
+	documentaipb "cloud.google.com/go/documentai/apiv1/documentaipb"
 	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krmv1beta1.DocumentAIProcessorVersionGVK, NewProcessorVersionModel)
+	registry.RegisterModel(krm.DocumentaiprocessorversionGVK, NewProcessorVersionModel)
 }
 
 func NewProcessorVersionModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
@@ -43,42 +46,25 @@ func NewProcessorVersionModel(ctx context.Context, config *config.ControllerConf
 }
 
 var _ directbase.Model = &modelProcessorVersion{}
+var _ = strings.TrimPrefix
 
 type modelProcessorVersion struct {
 	config config.ControllerConfig
 }
 
-func (m *modelProcessorVersion) client(ctx context.Context) (*gcp.DocumentProcessorClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewDocumentProcessorRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building ProcessorVersion client: %w", err)
-	}
-	return gcpClient, err
-}
-
 func (m *modelProcessorVersion) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
-	obj := &krmv1beta1.DocumentAIProcessorVersion{}
+	_ = reader
+	obj := &krm.Documentaiprocessorversion{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	id := &krmv1beta1.ProcessorVersionIdentity{}
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	id, err := krmv1beta1.NewProcessorVersionIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get documentai GCP client
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
@@ -95,32 +81,37 @@ func (m *modelProcessorVersion) AdapterForURL(ctx context.Context, url string) (
 	return nil, nil
 }
 
+func (m *modelProcessorVersion) client(ctx context.Context) (*gcp.DocumentProcessorClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewDocumentProcessorRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ProcessorVersion client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type ProcessorVersionAdapter struct {
 	id        *krmv1beta1.ProcessorVersionIdentity
 	gcpClient *gcp.DocumentProcessorClient
-	desired   *krmv1beta1.DocumentAIProcessorVersion
+	desired   *krm.Documentaiprocessorversion
 	actual    *documentaipb.ProcessorVersion
 }
 
 var _ directbase.Adapter = &ProcessorVersionAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *ProcessorVersionAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ProcessorVersion", "name", a.id)
 
-	// Check whether Config Connector knows the resource identity.
-	// If not, Config Connector saves one GCP GET call, and starts the CREATE call directly.
-	// This is mostly for GCP services that do not allow user to specify ID, but assign an ID when creating the object.
-	if a.id.ID() == "" {
-		return false, nil
+	req := &documentaipb.GetProcessorVersionRequest{
+		Name: a.id.String(),
 	}
-
-	req := &documentaipb.GetProcessorVersionRequest{Name: a.id.String()}
-	processorversionpb, err := a.gcpClient.GetProcessorVersion(ctx, req)
+	resp, err := a.gcpClient.GetProcessorVersion(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -128,151 +119,132 @@ func (a *ProcessorVersionAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting ProcessorVersion %q: %w", a.id, err)
 	}
 
-	a.actual = processorversionpb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *ProcessorVersionAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ProcessorVersion", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
-	resource := DocumentAIProcessorVersionSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	resource := DocumentaiprocessorversionSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	req := &documentaipb.TrainProcessorVersionRequest{
-		Parent:           a.id.Parent().String(),
-		ProcessorVersion: resource,
+	req := &documentaipb.CreateProcessorVersionRequest{
+		Parent:             a.id.Parent().String(),
+		ProcessorVersionId: a.id.ID(),
+		ProcessorVersion:   resource,
 	}
-	op, err := a.gcpClient.TrainProcessorVersion(ctx, req)
+	op, err := a.gcpClient.CreateProcessorVersion(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating ProcessorVersion %s: %w", a.id, err)
 	}
-
-	//Get server generated version id from metadata
-	metadata, err := op.Metadata()
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting create Version %s: %w", a.id, err)
-	}
-
-	// op.wait() returns once the version resource exists, but the version's state can still be "creating."
-	// It takes a few seconds to reach a stable state like "failed" or "undeployed."
-	// Retrieve the resource and check its state to determine if the operation has finished.
-	getReq := &documentaipb.GetProcessorVersionRequest{Name: metadata.GetCommonMetadata().GetResource()}
-	created, err := a.getCreatedResource(ctx, 5*time.Second, 5*time.Minute, getReq)
-	if err != nil {
-		return fmt.Errorf("waiting create Version %s: %w", a.id, err)
+		return fmt.Errorf("waiting create ProcessorVersion %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created ProcessorVersion", "name", a.id)
 
-	status := &krmv1beta1.DocumentAIProcessorVersionStatus{}
-	status.ObservedState = DocumentAIProcessorVersionObservedState_v1beta1_FromProto(mapCtx, created)
+	status := &krm.DocumentaiprocessorversionStatus{}
+	status.ObservedState = DocumentaiprocessorversionObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	externalRef := created.GetName()
-	status.ExternalRef = direct.LazyPtr(externalRef)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *ProcessorVersionAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	// no-op, just update obj status
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating ProcessorVersion", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-	updated := a.actual
-	status := &krmv1beta1.DocumentAIProcessorVersionStatus{}
-	status.ObservedState = DocumentAIProcessorVersionObservedState_v1beta1_FromProto(mapCtx, updated)
+	desired := DocumentaiprocessorversionSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	externalRef := updated.GetName()
-	status.ExternalRef = direct.LazyPtr(externalRef)
+
+	diffs, updateMask, err := compareProcessorVersion(ctx, a.actual, desired)
+	if err != nil {
+		return err
+	}
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("Documentaiprocessorversion resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.DocumentaiprocessorversionStatus{}
+	mapCtx = &direct.MapContext{}
+	status.ObservedState = DocumentaiprocessorversionObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func compareProcessorVersion(ctx context.Context, actual, desired *documentaipb.ProcessorVersion) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, DocumentaiprocessorversionSpec_FromProto, DocumentaiprocessorversionSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
 func (a *ProcessorVersionAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
 	u := &unstructured.Unstructured{}
 
-	obj := &krmv1beta1.DocumentAIProcessorVersion{}
+	obj := &krm.Documentaiprocessorversion{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(DocumentAIProcessorVersionSpec_v1beta1_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(DocumentaiprocessorversionSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.actual.Name)
-	u.SetGroupVersionKind(krmv1beta1.DocumentAIProcessorVersionGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.DocumentaiprocessorversionGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *ProcessorVersionAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting ProcessorVersion", "name", a.id)
-	req := &documentaipb.DeleteProcessorVersionRequest{Name: a.id.String()}
+
+	req := &documentaipb.DeleteProcessorVersionRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteProcessorVersion(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent ProcessorVersion, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting ProcessorVersion %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted ProcessorVersion", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		// todo (b/368419476): similarly, DocumentAI service does not provide a valid response on success.
-		if err.Error() != "unsupported result type <nil>: <nil>" {
-			return false, fmt.Errorf("waiting delete Version %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete ProcessorVersion %s: %w", a.id, err)
 		}
 	}
 	return true, nil
-}
-
-// Get created resource by making sure its state is a stable state such as FAILED or DEPLOYED or UNDEPLOYED.
-// Set a poll interval and a timeout to avoid potential quota issue and excessive GET calls.
-// If it still hasn't reached a stable state after a certain time, we'll consider it a "fail".
-func (a *ProcessorVersionAdapter) getCreatedResource(ctx context.Context, pollInterval, timeout time.Duration, getReq *documentaipb.GetProcessorVersionRequest) (*documentaipb.ProcessorVersion, error) {
-	var createdVersion *documentaipb.ProcessorVersion
-	err := wait.PollImmediateWithContext(ctx, pollInterval, timeout, func(ctx context.Context) (bool, error) {
-		created, err := a.gcpClient.GetProcessorVersion(ctx, getReq)
-		if err != nil {
-			return false, fmt.Errorf("getting created version %q: %w", a.id, err)
-		}
-		switch created.State {
-		// Currently we expect resource state to be FAILED after creation as there's no training data
-		case documentaipb.ProcessorVersion_FAILED,
-			documentaipb.ProcessorVersion_DEPLOYED,
-			documentaipb.ProcessorVersion_UNDEPLOYED:
-			createdVersion = created
-			return true, nil
-		// Keep polling if state is CREATING
-		case documentaipb.ProcessorVersion_CREATING:
-			return false, nil
-		// todo: Handle other states, i.e. STATE_UNSPECIFIED, DEPLOYING, etc
-		default:
-			return false, nil
-		}
-	})
-
-	if err != nil {
-		return nil, err
-	}
-	return createdVersion, nil
 }

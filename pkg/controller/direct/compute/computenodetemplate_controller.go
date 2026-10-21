@@ -12,28 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.compute.v1.NodeTemplates
-// proto.message: google.cloud.compute.v1.NodeTemplate
-// crd.type: ComputeNodeTemplate
-// crd.version: v1beta1
-
 package compute
 
 import (
 	"context"
 	"fmt"
-
-	"google.golang.org/protobuf/proto"
-
-	gcp "cloud.google.com/go/compute/apiv1"
-	computepb "cloud.google.com/go/compute/apiv1/computepb"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/compute/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -42,6 +25,16 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/compute/apiv1"
+	computepb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -49,66 +42,68 @@ func init() {
 }
 
 func NewComputeNodeTemplateModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &computeNodeTemplateModel{config: config}, nil
+	return &modelComputeNodeTemplate{config: *config}, nil
 }
 
-var _ directbase.Model = &computeNodeTemplateModel{}
+var _ directbase.Model = &modelComputeNodeTemplate{}
+var _ = strings.TrimPrefix
 
-type computeNodeTemplateModel struct {
-	config *config.ControllerConfig
+type modelComputeNodeTemplate struct {
+	config config.ControllerConfig
 }
 
-func (m *computeNodeTemplateModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelComputeNodeTemplate) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ComputeNodeTemplate{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	gcpClient, err := newGCPClient(m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	nodeTemplatesClient, err := gcpClient.newNodeTemplatesClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+	id := i.(*krm.ComputeNodeTemplateIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	mapCtx := &direct.MapContext{}
-	desired := ComputeNodeTemplateSpec_v1beta1_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
 	}
-	desired.Name = direct.LazyPtr(id.(*krm.ComputeNodeTemplateIdentity).NodeTemplate)
-
 	return &ComputeNodeTemplateAdapter{
-		gcpClient: nodeTemplatesClient,
-		id:        id.(*krm.ComputeNodeTemplateIdentity),
-		desired:   desired,
-		reader:    reader,
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *computeNodeTemplateModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelComputeNodeTemplate) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
+func (m *modelComputeNodeTemplate) client(ctx context.Context) (*gcp.NodeTemplatesClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ComputeNodeTemplate client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type ComputeNodeTemplateAdapter struct {
-	gcpClient *gcp.NodeTemplatesClient
 	id        *krm.ComputeNodeTemplateIdentity
-	desired   *computepb.NodeTemplate
-	actual    *computepb.NodeTemplate
-	reader    client.Reader
+	gcpClient *gcp.NodeTemplatesClient
+	desired   *krm.ComputeNodeTemplate
+	actual    *computepb.ComputeNodeTemplate
 }
 
 var _ directbase.Adapter = &ComputeNodeTemplateAdapter{}
@@ -117,12 +112,10 @@ func (a *ComputeNodeTemplateAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ComputeNodeTemplate", "name", a.id)
 
-	req := &computepb.GetNodeTemplateRequest{
-		Project:      a.id.Project,
-		Region:       a.id.Region,
-		NodeTemplate: a.id.NodeTemplate,
+	req := &computepb.GetComputeNodeTemplateRequest{
+		Name: a.id.String(),
 	}
-	actual, err := a.gcpClient.Get(ctx, req)
+	resp, err := a.gcpClient.GetComputeNodeTemplate(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -130,59 +123,77 @@ func (a *ComputeNodeTemplateAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting ComputeNodeTemplate %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
 func (a *ComputeNodeTemplateAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ComputeNodeTemplate", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	req := &computepb.InsertNodeTemplateRequest{
-		Project:              a.id.Project,
-		Region:               a.id.Region,
-		NodeTemplateResource: a.desired,
+	desired := a.desired.DeepCopy()
+	resource := ComputeNodeTemplateSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-	op, err := a.gcpClient.Insert(ctx, req)
+
+	req := &computepb.CreateComputeNodeTemplateRequest{
+		Parent:                a.id.ParentString(),
+		ComputeNodeTemplateId: a.id.Region,
+		ComputeNodeTemplate:   resource,
+	}
+	op, err := a.gcpClient.CreateComputeNodeTemplate(ctx, req)
 	if err != nil {
 		return fmt.Errorf("creating ComputeNodeTemplate %s: %w", a.id, err)
 	}
-
-	err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("compute ComputeNodeTemplate %s waiting creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create ComputeNodeTemplate %s: %w", a.id, err)
 	}
-	log.Info("successfully created ComputeNodeTemplate in gcp", "name", a.id)
+	log.V(2).Info("successfully created ComputeNodeTemplate", "name", a.id)
 
-	created, err := a.gcpClient.Get(ctx, &computepb.GetNodeTemplateRequest{
-		Project:      a.id.Project,
-		Region:       a.id.Region,
-		NodeTemplate: a.id.NodeTemplate,
-	})
-	if err != nil {
-		return fmt.Errorf("getting ComputeNodeTemplate after creation %s: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ComputeNodeTemplateStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
 func (a *ComputeNodeTemplateAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ComputeNodeTemplate", "name", a.id)
 
-	diffs, err := compareComputeNodeTemplate(ctx, a.actual, a.desired)
+	mapCtx := &direct.MapContext{}
+	desired := ComputeNodeTemplateSpec_v1beta1_ToProto(mapCtx, &a.desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+
+	diffs, updateMask, err := compareComputeNodeTemplate(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
-
+	_ = updateMask
 	if diffs.HasDiff() {
-		// SURGERY / Immuted resources constraint check: Surfacing error/diff to resource status if a diff in spec fields is detected.
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
-		return fmt.Errorf("ComputeNodeTemplate is immutable and cannot be updated")
+		return fmt.Errorf("ComputeNodeTemplate resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	return a.updateStatus(ctx, updateOp, a.actual)
+	status := &krm.ComputeNodeTemplateStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
+
+func compareComputeNodeTemplate(ctx context.Context, actual, desired *computepb.ComputeNodeTemplate) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ComputeNodeTemplateSpec_v1beta1_FromProto, ComputeNodeTemplateSpec_v1beta1_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
 func (a *ComputeNodeTemplateAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -197,81 +208,20 @@ func (a *ComputeNodeTemplateAdapter) Export(ctx context.Context) (*unstructured.
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
 	u.Object = uObj
-	u.SetName(a.id.String())
+	u.SetName(a.id.Region)
 	u.SetGroupVersionKind(krm.ComputeNodeTemplateGVK)
-
 	return u, nil
 }
 
 func (a *ComputeNodeTemplateAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting ComputeNodeTemplate", "name", a.id)
-
-	req := &computepb.DeleteNodeTemplateRequest{
-		Project:      a.id.Project,
-		Region:       a.id.Region,
-		NodeTemplate: a.id.NodeTemplate,
-	}
-	op, err := a.gcpClient.Delete(ctx, req)
-	if err != nil {
-		return false, fmt.Errorf("deleting ComputeNodeTemplate %s: %w", a.id.String(), err)
-	}
-	log.Info("successfully deleted ComputeNodeTemplate", "name", a.id)
-
-	if !op.Done() {
-		err = op.Wait(ctx)
-		if err != nil {
-			return false, fmt.Errorf("waiting for deletion of ComputeNodeTemplate %s: %w", a.id.String(), err)
-		}
-	}
-
+	log.V(2).Info("deletion not supported for ComputeNodeTemplate, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
-}
-
-func (a *ComputeNodeTemplateAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *computepb.NodeTemplate) error {
-	mapCtx := &direct.MapContext{}
-	status := ComputeNodeTemplateStatus_v1beta1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func compareComputeNodeTemplate(ctx context.Context, actual, desired *computepb.NodeTemplate) (*structuredreporting.Diff, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, ComputeNodeTemplateSpec_v1beta1_FromProto, ComputeNodeTemplateSpec_v1beta1_ToProto)
-	if err != nil {
-		return nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *computepb.NodeTemplate) {
-		if obj.ServerBinding == nil {
-			obj.ServerBinding = &computepb.ServerBinding{
-				Type: direct.PtrTo("RESTART_NODE_ON_ANY_SERVER"),
-			}
-		}
-		if obj.CpuOvercommitType == nil {
-			obj.CpuOvercommitType = direct.PtrTo("NONE")
-		}
-		if obj.Region != nil {
-			*obj.Region = lastComponent(*obj.Region)
-		}
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, _, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, err
-	}
-	return diffs, nil
 }

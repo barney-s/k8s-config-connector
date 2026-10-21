@@ -17,20 +17,21 @@ package apihubexternalapi
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/apihub/apiv1"
-	pb "cloud.google.com/go/apihub/apiv1/apihubpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/apihub/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/apihub"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/apihub/apiv1"
+	pb "cloud.google.com/go/apihub/apiv1/apihubpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,174 +39,182 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.APIHubExternalAPIGVK, NewModel)
+	registry.RegisterModel(krm.APIHubExternalAPIGVK, NewExternalApiModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewExternalApiModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelExternalApi{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelExternalApi{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelExternalApi struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building APIHubExternalAPI client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelExternalApi) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.APIHubExternalAPI{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	idBase, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idBase.(*krm.APIHubExternalAPIIdentity)
-
-	mapCtx := &direct.MapContext{}
-	desired := apihub.APIHubExternalAPISpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	id := i.(*krm.APIHubExternalAPIIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
-	desired.Name = id.String()
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{
+	return &ExternalApiAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelExternalApi) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
+func (m *modelExternalApi) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ExternalApi client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ExternalApiAdapter struct {
 	id        *krm.APIHubExternalAPIIdentity
 	gcpClient *gcp.Client
-	desired   *pb.ExternalApi
+	desired   *krm.APIHubExternalAPI
 	actual    *pb.ExternalApi
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &ExternalApiAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *ExternalApiAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting APIHubExternalAPI", "name", a.id.String())
+	log.V(2).Info("getting ExternalApi", "name", a.id)
 
-	req := &pb.GetExternalApiRequest{Name: a.id.String()}
-	pbObj, err := a.gcpClient.GetExternalApi(ctx, req)
+	req := &pb.GetExternalApiRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetExternalApi(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting APIHubExternalAPI %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting ExternalApi %q: %w", a.id, err)
 	}
 
-	a.actual = pbObj
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ExternalApiAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating APIHubExternalAPI")
+	log.V(2).Info("creating ExternalApi", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := APIHubExternalAPISpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateExternalApiRequest{
 		Parent:        a.id.ParentString(),
-		ExternalApiId: a.id.External_api,
-		ExternalApi:   a.desired,
+		ExternalApiId: a.id.External,
+		ExternalApi:   resource,
 	}
-
 	created, err := a.gcpClient.CreateExternalApi(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating APIHubExternalAPI %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating ExternalApi %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created APIHubExternalAPI", "name", a.id.String())
+	log.V(2).Info("successfully created ExternalApi", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.APIHubExternalAPIStatus{}
+	status.ObservedState = APIHubExternalAPIObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ExternalApiAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating APIHubExternalAPI", "name", a.id.String())
+	log.V(2).Info("updating ExternalApi", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-
-	// Mask actual to only contain spec fields for correct diffing
-	maskedActualSpec := apihub.APIHubExternalAPISpec_FromProto(mapCtx, a.actual)
+	desired := APIHubExternalAPISpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	maskedActual := apihub.APIHubExternalAPISpec_ToProto(mapCtx, maskedActualSpec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	maskedActual.Name = a.id.String()
 
-	clonedDesired := proto.Clone(a.desired).(*pb.ExternalApi)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
+	diffs, updateMask, err := compareExternalApi(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
+		desired.Name = a.id.String()
+
+		req := &pb.UpdateExternalApiRequest{
+			ExternalApi: desired,
+			UpdateMask:  updateMask,
+		}
+		updated, err := a.gcpClient.UpdateExternalApi(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating ExternalApi %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated ExternalApi", "name", a.id)
+
+		status := &krm.APIHubExternalAPIStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = APIHubExternalAPIObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
+	return nil
+}
 
-	req := &pb.UpdateExternalApiRequest{
-		ExternalApi: a.desired,
-		UpdateMask:  updateMask,
-	}
-
-	updated, err := a.gcpClient.UpdateExternalApi(ctx, req)
+func compareExternalApi(ctx context.Context, actual, desired *pb.ExternalApi) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, APIHubExternalAPISpec_FromProto, APIHubExternalAPISpec_ToProto)
 	if err != nil {
-		return fmt.Errorf("updating APIHubExternalAPI %s: %w", a.id.String(), err)
+		return nil, nil, err
 	}
-
-	return a.updateStatus(ctx, updateOp, updated)
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
 }
 
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.ExternalApi) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.APIHubExternalAPIStatus{}
-	status.ObservedState = apihub.APIHubExternalAPIObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	externalRef := latest.Name
-	status.ExternalRef = &externalRef
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ExternalApiAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -213,33 +222,38 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 
 	obj := &krm.APIHubExternalAPI{}
 	mapCtx := &direct.MapContext{}
-	obj.Spec = direct.ValueOf(apihub.APIHubExternalAPISpec_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(APIHubExternalAPISpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.Location = &a.id.Location
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: fmt.Sprintf("projects/%s", a.id.Project)}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
+	u.SetName(a.id.External)
+	u.SetGroupVersionKind(krm.APIHubExternalAPIGVK)
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ExternalApiAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting APIHubExternalAPI", "name", a.id.String())
+	log.V(2).Info("deleting ExternalApi", "name", a.id)
 
-	req := &pb.DeleteExternalApiRequest{Name: a.id.String()}
+	req := &pb.DeleteExternalApiRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteExternalApi(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting APIHubExternalAPI %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting ExternalApi %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully deleted ExternalApi", "name", a.id)
 	return true, nil
 }
