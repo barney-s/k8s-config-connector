@@ -17,13 +17,15 @@ package parametermanager
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/parametermanager/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/parametermanager/apiv1"
 	parametermanagerpb "cloud.google.com/go/parametermanager/apiv1/parametermanagerpb"
@@ -32,7 +34,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
 
@@ -45,63 +46,64 @@ func NewParameterVersionModel(ctx context.Context, config *config.ControllerConf
 }
 
 var _ directbase.Model = &modelParameterVersion{}
+var _ = strings.TrimPrefix
 
 type modelParameterVersion struct {
 	config config.ControllerConfig
 }
 
-func (m *modelParameterVersion) client(ctx context.Context, location string) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-
-	// Add regional endpoint if region is specified
-	if location != "" && location != "global" {
-		endpoint := fmt.Sprintf("parametermanager.%s.rep.googleapis.com:443", location)
-		opts = append(opts, option.WithEndpoint(endpoint))
-	}
-
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building Parameter Version client: %w", err)
-	}
-	return gcpClient, nil
-}
-
 func (m *modelParameterVersion) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ParameterManagerParameterVersion{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
+	id := i.(*krm.ParameterVersionIdentity)
 
-	parameter := id.(*krm.ParameterVersionIdentity).Parent()
-
-	location := parameter.Parent().Location
-
-	// Get parmetermanager GCP client
-	gcpClient, err := m.client(ctx, location)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &ParameterVersionAdapter{
-		id:        id.(*krm.ParameterVersionIdentity),
+		id:        id,
 		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
 func (m *modelParameterVersion) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	// TODO: Support URLs
-	return nil, nil
+	id := &krm.ParameterVersionIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ParameterVersionAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelParameterVersion) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ParameterVersion client: %w", err)
+	}
+	return gcpClient, err
 }
 
 type ParameterVersionAdapter struct {
@@ -113,31 +115,28 @@ type ParameterVersionAdapter struct {
 
 var _ directbase.Adapter = &ParameterVersionAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *ParameterVersionAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting Parameter Version", "name", a.id.String())
+	log.V(2).Info("getting ParameterVersion", "name", a.id)
 
-	req := &parametermanagerpb.GetParameterVersionRequest{Name: a.id.String()}
-	parameterVersionPb, err := a.gcpClient.GetParameterVersion(ctx, req)
+	req := &parametermanagerpb.GetParameterVersionRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetParameterVersion(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting Parameter Version %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting ParameterVersion %q: %w", a.id, err)
 	}
 
-	a.actual = parameterVersionPb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and updates the Config Connector object `status` based on the GCP response.
 func (a *ParameterVersionAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating Parameter Version", "name", a.id.String())
+	log.V(2).Info("creating ParameterVersion", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
 	desired := a.desired.DeepCopy()
@@ -148,14 +147,14 @@ func (a *ParameterVersionAdapter) Create(ctx context.Context, createOp *directba
 
 	req := &parametermanagerpb.CreateParameterVersionRequest{
 		Parent:             a.id.Parent().String(),
-		ParameterVersion:   resource,
 		ParameterVersionId: a.id.ID(),
+		ParameterVersion:   resource,
 	}
 	created, err := a.gcpClient.CreateParameterVersion(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating Parameter Version %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating ParameterVersion %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created Parameter Version", "name", a.id.String())
+	log.V(2).Info("successfully created ParameterVersion", "name", a.id)
 
 	status := &krm.ParameterManagerParameterVersionStatus{}
 	status.ObservedState = ParameterManagerParameterVersionObservedState_FromProto(mapCtx, created)
@@ -166,70 +165,61 @@ func (a *ParameterVersionAdapter) Create(ctx context.Context, createOp *directba
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and updates the Config Connector object `status` based on the GCP response.
 func (a *ParameterVersionAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating Parameter Version", "name", a.id.String())
+	log.V(2).Info("updating ParameterVersion", "name", a.id)
+
 	mapCtx := &direct.MapContext{}
-	desired := a.desired.DeepCopy()
-	resource := ParameterManagerParameterVersionSpec_ToProto(mapCtx, &desired.Spec)
+	desired := ParameterManagerParameterVersionSpec_ToProto(mapCtx, &a.desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	resource.Name = a.id.String()
-
-	paths, err := common.CompareProtoMessage(resource, a.actual, common.BasicDiff)
+	diffs, updateMask, err := compareParameterVersion(ctx, a.actual, desired)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	// If parameterversion is disabled, payload is not available for retrieval leading to mismatch
-	// For disabled parameterversion, ignore difference in payload
-	if a.actual.GetDisabled() {
-		paths = paths.Delete("payload.data")
-	}
+		desired.Name = a.id.String()
 
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		if a.desired.Status.ExternalRef == nil {
-			status := &krm.ParameterManagerParameterVersionStatus{}
-			status.ObservedState = ParameterManagerParameterVersionObservedState_FromProto(mapCtx, a.actual)
-			if mapCtx.Err() != nil {
-				return mapCtx.Err()
-			}
-			status.ExternalRef = direct.LazyPtr(a.id.String())
-			return updateOp.UpdateStatus(ctx, status, nil)
+		req := &parametermanagerpb.UpdateParameterVersionRequest{
+			ParameterVersion: desired,
+			UpdateMask:       updateMask,
 		}
-		return nil
-	}
-	updateMask := &fieldmaskpb.FieldMask{
-		Paths: sets.List(paths),
-	}
+		updated, err := a.gcpClient.UpdateParameterVersion(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating ParameterVersion %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated ParameterVersion", "name", a.id)
 
-	req := &parametermanagerpb.UpdateParameterVersionRequest{
-		UpdateMask:       updateMask,
-		ParameterVersion: resource,
-	}
-	updated, err := a.gcpClient.UpdateParameterVersion(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating Parameter Version %s: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully updated Parameter Version", "name", a.id.String())
-
-	status := &krm.ParameterManagerParameterVersionStatus{}
-	status.ObservedState = ParameterManagerParameterVersionObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	if a.desired.Status.ExternalRef == nil {
+		status := &krm.ParameterManagerParameterVersionStatus{}
+		mapCtx = &direct.MapContext{}
+		status.ObservedState = ParameterManagerParameterVersionObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
 		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
-	return updateOp.UpdateStatus(ctx, status, nil)
+
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func compareParameterVersion(ctx context.Context, actual, desired *parametermanagerpb.ParameterVersion) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	maskedActual, err := mappers.OnlySpecFields(actual, ParameterManagerParameterVersionSpec_FromProto, ParameterManagerParameterVersionSpec_ToProto)
+	if err != nil {
+		return nil, nil, err
+	}
+	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
+	if err != nil {
+		return nil, nil, err
+	}
+	return diffs, updateMask, nil
+}
+
 func (a *ParameterVersionAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -242,42 +232,33 @@ func (a *ParameterVersionAdapter) Export(ctx context.Context) (*unstructured.Uns
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	externalRef := a.actual.GetName()
-	var id *krm.ParameterVersionIdentity
-	if err := id.FromExternal(externalRef); err != nil {
-		return nil, fmt.Errorf("parsing external ref %q: %w", externalRef, err)
-	}
-
-	obj.Spec.ParameterRef = &krm.ParameterRef{External: id.Parent().String()}
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.ID())
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.ParameterManagerParameterVersionGVK)
-
-	u.Object = uObj
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *ParameterVersionAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting Parameter Version", "name", a.id.String())
+	log.V(2).Info("deleting ParameterVersion", "name", a.id)
 
-	req := &parametermanagerpb.DeleteParameterVersionRequest{Name: a.id.String()}
+	req := &parametermanagerpb.DeleteParameterVersionRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteParameterVersion(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent Parameter Version, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting Parameter Version %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting ParameterVersion %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted Parameter Version", "name", a.id.String())
-
+	log.V(2).Info("successfully deleted ParameterVersion", "name", a.id)
 	return true, nil
 }
