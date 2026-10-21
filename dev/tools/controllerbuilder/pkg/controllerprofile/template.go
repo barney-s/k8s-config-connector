@@ -53,6 +53,7 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 {{- if .Transport.HasLabels }}
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 {{- end }}
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
@@ -76,6 +77,7 @@ func New{{.ProtoResource}}Model(ctx context.Context, config *config.ControllerCo
 }
 
 var _ directbase.Model = &model{{.ProtoResource}}{}
+var _ = strings.TrimPrefix
 
 type model{{.ProtoResource}} struct {
 	config config.ControllerConfig
@@ -84,6 +86,7 @@ type model{{.ProtoResource}} struct {
 func (m *model{{.ProtoResource}}) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.{{.Kind}}{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
@@ -216,6 +219,10 @@ func (a *{{.ProtoResource}}Adapter) Create(ctx context.Context, createOp *direct
 		return mapCtx.Err()
 	}
 
+{{- if .Transport.HasLabels }}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+{{- end }}
+
 {{- if eq .Identity.Strategy "client_body" }}
 	resource.{{.Identity.NameField}} = a.id.String()
 {{- end }}
@@ -284,6 +291,10 @@ func (a *{{.ProtoResource}}Adapter) Update(ctx context.Context, updateOp *direct
 		return mapCtx.Err()
 	}
 
+{{- if .Transport.HasLabels }}
+	desired.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
+{{- end }}
+
 	diffs, updateMask, err := compare{{.ProtoResource}}(ctx, a.actual, desired)
 	if err != nil {
 		return err
@@ -311,6 +322,8 @@ func (a *{{.ProtoResource}}Adapter) Update(ctx context.Context, updateOp *direct
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
+
+		desired.{{.Identity.NameField}} = a.id.String()
 
 		req := &{{.Transport.PBPackageAlias}}.{{.Lifecycle.UpdateRequestType}}{
 {{- if .Lifecycle.UpdateHasTopLevelName }}
@@ -372,6 +385,9 @@ func compare{{.ProtoResource}}(ctx context.Context, actual, desired *{{.Transpor
 	if err != nil {
 		return nil, nil, err
 	}
+{{- if .Transport.HasLabels }}
+	maskedActual.Labels = actual.Labels
+{{- end }}
 	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
 	if err != nil {
 		return nil, nil, err
