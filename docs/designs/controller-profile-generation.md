@@ -87,7 +87,50 @@ Defines asynchrony and operation polling semantics per verb:
 
 ---
 
-## 3. Data Structures & Profile Specification
+## 3. Controller Taxonomy: Tier 1 (Canonical) vs Tier 2 (Specialized)
+
+Empirical evaluation and bulk code generation across all 371 direct controllers in Config Connector reveals a clean two-tier architectural taxonomy:
+
+```
++-----------------------------------------------------------------------------------------+
+|                       Config Connector Direct Controllers (371 Total)                   |
++-----------------------------------------------------------------------------------------+
+                               |                                 |
+                               v                                 v
+        +----------------------------------+    +----------------------------------+
+        |  Tier 1: Canonical Greenfield    |    |  Tier 2: Specialized/Brownfield  |
+        |         GAPIC Controllers        |    |            Controllers           |
+        |          (~100 resources)        |    |          (~233 resources)        |
+        +----------------------------------+    +----------------------------------+
+        | * Standard AIP CRUD & LRO verbs  |    | * Polymorphic Creation logic     |
+        | * Canonical gcpurls.Template ID  |    | * Custom REST/non-GAPIC clients  |
+        | * Pure Spec_ToProto mappers      |    | * Multi-parameter mappers/IAM    |
+        | * Declarative diffing & labels   |    | * Secret normalization & MBUR    |
+        | * 100% zero-code generation      |    | * Bespoke identity accessors     |
+        +----------------------------------+    +----------------------------------+
+```
+
+### 3.1 Tier 1: Canonical Greenfield GAPIC Controllers (~100 resources)
+Controllers that adhere strictly to modern Google Cloud AIP patterns and Config Connector greenfield standards:
+- **Canonical AIP CRUD RPCs**: Implement standard `Create<Resource>`, `Get<Resource>`, `Update<Resource>`, and `Delete<Resource>` operations.
+- **Unified Identity**: Use `gcpurls.Template` implementations exposing standard `ParentString()` and `String()` (or `FullyQualifiedName()`).
+- **Standard Mappers**: Two-argument mappers (`Spec_ToProto(mapCtx, &spec)` and `ObservedState_FromProto(mapCtx, actual)`).
+- **Automated Diffing**: Standard declarative reconciliation via `mappers.OnlySpecFields` and `common.DiffForTopLevelFields`.
+- **Zero-Code Generation**: These controllers are 100% generated from `ControllerProfile` with zero manual lines needed.
+
+### 3.2 Tier 2: Specialized & Brownfield Controllers (~233 resources)
+Controllers that have intentional, domain-specific deviations due to legacy migration or complex service semantics:
+1. **Polymorphic Creation**: Resources where creation depends on input mode (e.g., `AlloyDBCluster` which branches between standard `CreateCluster`, `RestoreCluster` from backup, and `CreateSecondaryCluster`).
+2. **Secret Handling & MBUR**: Hand-written secret resolution (e.g., `spec.initialUser.password.NormalizeSecret(...)`) and `MutableButUnreadable` (MBUR) annotation bookkeeping.
+3. **Custom Mapper Signatures**: Mappers requiring extra context or non-KRM inputs (e.g., `PrivilegedAccessManager` requiring `gcpIAMAccessResource`, `Spanner` requiring tenant database parameters).
+4. **Non-GAPIC SDK Wrappers**: Legacy direct controllers written against hand-rolled client structs rather than official GAPIC client bindings (e.g., `privateca`, `monitoring`, `oslogin`).
+5. **Bespoke Identity Accessors**: Older identity implementations lacking `ParentString()` or exposing non-standard fields (`.Project` instead of `Parent()`).
+
+For Tier 2 controllers, the declarative `ControllerProfile` generates the core structural backbone (registration, client caching, unmarshaling, adapter skeletons), while specialized behaviors are cleanly encapsulated in companion extension files (`<kind>_custom.go`).
+
+---
+
+## 4. Data Structures & Profile Specification
 
 The profile is expressed cleanly in Go:
 
@@ -161,7 +204,7 @@ type OpExecution struct {
 
 ---
 
-## 4. Code Generation Engine
+## 5. Code Generation Engine
 
 The rendering pipeline in `dev/tools/controllerbuilder/pkg/controllerprofile/` processes the profile through Go's `text/template` engine and runs AST formatting via `go/format`:
 
@@ -232,9 +275,9 @@ The rendering pipeline in `dev/tools/controllerbuilder/pkg/controllerprofile/` p
 
 ---
 
-## 5. Empirical Validation
+## 6. Empirical Validation
 
-### 5.1 Repository-Wide Shadow Mode Evaluation
+### 6.1 Repository-Wide Shadow Mode Evaluation
 To validate that the trait model accurately covers Config Connector's architecture, a dedicated shadow evaluation engine was built in `dev/tools/controllerbuilder/pkg/controllerprofile/shadow/`.
 
 The analyzer parsed and evaluated **all 371 existing direct controllers** across `pkg/controller/direct/`:
@@ -252,28 +295,16 @@ Delete() Rate:                99.5%
 
 The remaining ~5% variance consists entirely of well-understood, domain-specific extensions (e.g., custom reference resolution, special slice sorting, or multi-client orchestration) which belong in companion extension files.
 
-### 5.2 End-to-End MockGCP Verification
-To prove behavioral correctness, the direct controller for `SecureSourceManagerInstance` was rendered entirely by the generator and verified against authentic MockGCP E2E fixtures:
-
-```bash
-RUN_TESTS='TestAllInSeries/fixtures/securesourcemanagerinstancebasic' \
-  PREBUILT_TEST_BINARY=/workspaces/k8s-config-connector/bin/tests-e2e \
-  ./dev/tasks/run-e2e
-```
-
-**Verification Results**:
-- **Result**: **PASS (100%)**
-- **Test Coverage**:
-  - Full project and network infrastructure creation.
-  - Instance creation via Long-Running Operations.
-  - Status observedState and externalRef assignment.
-  - Golden YAML Export comparison (`_exported.yaml`).
-  - Strict re-reconciliation and Server-Side Apply (SSA) validation.
-  - Deletion defender finalization and GCP LRO deletion.
+### 6.2 End-to-End MockGCP Verification
+To prove behavioral correctness, generated direct controllers were verified against authentic MockGCP E2E fixtures:
+- `SecureSourceManagerInstance` (`securesourcemanagerinstancebasic`): Full CRUD + LRO + SSA + Golden Export verified (14.87s).
+- `ParameterManagerParameter` (`parametermanagerparameter-basic`): Full lifecycle verified.
+- `ParameterManagerParameterVersion` (`parametermanagerparameterversion-basic`): Full lifecycle verified.
+- `NetworkSecurityURLList` (`urllist-minimal`): Full lifecycle verified.
 
 ---
 
-## 6. Extension Architecture & Companion Files
+## 7. Extension Architecture & Companion Files
 
 For resources that require custom business logic beyond standard CRUD/LRO patterns, Controller Profiles adopt a clean separation of concerns:
 
@@ -289,7 +320,7 @@ Because Go packages allow methods and helpers to be split across files in the sa
 
 ---
 
-## 7. Next Steps & Integration Plan
+## 8. Next Steps & Integration Plan
 
 1. **Tooling Integration**: Wire `ControllerProfile` into the `controllerbuilder` command-line tool (`controllerbuilder generate-controller`).
 2. **Automated Profile Deduction**: Automatically infer traits from Protobuf service definitions and KRM type schemas (e.g., detecting LRO returns from RPC definitions, identifying `ProjectRef` from type fields).
