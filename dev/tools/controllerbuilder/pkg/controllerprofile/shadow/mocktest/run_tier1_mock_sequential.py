@@ -87,6 +87,7 @@ def main():
     parser.add_argument('--limit', type=int, default=30, help='Max fixtures to run in this invocation')
     parser.add_argument('--max-seconds', type=int, default=420, help='Max seconds to run before cleanly stopping')
     parser.add_argument('--reset', action='store_true', help='Reset results file')
+    parser.add_argument('--rerun-failed', action='store_true', help='Rerun fixtures that previously failed')
     args = parser.parse_args()
 
     with open(SELECTED_FIXTURES_FILE) as f:
@@ -108,7 +109,10 @@ def main():
         except Exception as e:
             print(f"Warning: could not read existing results: {e}")
 
-    remaining = [fx for fx in fixtures if fx['kind'] not in results_map]
+    if args.rerun_failed:
+        remaining = [fx for fx in fixtures if results_map.get(fx['kind'], {}).get('status') in ('FAIL', 'TIMEOUT', 'ERROR')]
+    else:
+        remaining = [fx for fx in fixtures if fx['kind'] not in results_map]
     total_tested = len(fixtures)
     already_done = len(results_map)
     print(f"MockGCP Sequential Runner")

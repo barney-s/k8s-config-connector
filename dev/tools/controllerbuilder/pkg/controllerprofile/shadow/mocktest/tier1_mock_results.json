@@ -21,16 +21,16 @@
       "service": "aiplatform",
       "fixture": "aiplatformreasoningengine-minimal",
       "status": "FAIL",
-      "duration": 28.3,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T19:53:05.184Z\",\"msg\":\"resource is not ready\",\"kind\":\"AIPlatformReasoningEngine\",\"name\":\"aiplatformreasoningengine-vpgsjkpq5bs6pxi\",\"conditions\":[{\"lastTransitionTime\":\"2026-10-22T19:52:49Z\",\"message\":\"Update call failed: cannot change AIPlatformReasoningEng"
+      "duration": 28.29,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-23T22:37:20.274Z\",\"msg\":\"resource is not ready\",\"kind\":\"AIPlatformReasoningEngine\",\"name\":\"aiplatformreasoningengine-vaaua7dfwspnswq\",\"conditions\":[{\"lastTransitionTime\":\"2026-10-23T22:37:04Z\",\"message\":\"Update call failed: cannot change AIPlatformReasoningEng"
     },
     {
       "kind": "AIPlatformSpecialistPool",
       "service": "aiplatform",
       "fixture": "aiplatformspecialistpool-minimal",
       "status": "FAIL",
-      "duration": 28.26,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T19:53:33.607Z\",\"msg\":\"resource is not ready\",\"kind\":\"AIPlatformSpecialistPool\",\"name\":\"aiplatformspecialistpool-3d6d7kfa7oqdfvy\",\"conditions\":[{\"lastTransitionTime\":\"2026-10-22T19:53:17Z\",\"message\":\"Update call failed: cannot change AIPlatformSpecialistPool"
+      "duration": 28.21,
+      "error": "{\"severity\":\"error\",\"timestamp\":\"2026-10-23T22:37:48.534Z\",\"msg\":\"Reconciler error\",\"controller\":\"aiplatformspecialistpool-parent-controller\",\"controllerGroup\":\"aiplatform.cnrm.cloud.google.com\",\"controllerKind\":\"AIPlatformSpecialistPool\",\"AIPlatformSpecialistPool\":{\"name\":\"aiplatformspecialistpool-"
     },
     {
       "kind": "AlloyDBInstance",
@@ -76,25 +76,25 @@
       "kind": "BackupDRBackupPlan",
       "service": "backupdr",
       "fixture": "backupdrbackupplan-minimal",
-      "status": "FAIL",
-      "duration": 13.41,
-      "error": "--- FAIL: TestAllInSeries/fixtures (13.18s) | --- FAIL: TestAllInSeries/fixtures/backupdrbackupplan-minimal (12.89s) | FAIL"
+      "status": "PASS",
+      "duration": 12.82,
+      "error": ""
     },
     {
       "kind": "BackupDRBackupPlanAssociation",
       "service": "backupdr",
       "fixture": "backupdrbackupplanassociation-minimal",
-      "status": "FAIL",
-      "duration": 13.27,
-      "error": "--- FAIL: TestAllInSeries/fixtures (13.04s) | --- FAIL: TestAllInSeries/fixtures/backupdrbackupplanassociation-minimal (12.75s) | FAIL"
+      "status": "PASS",
+      "duration": 13.07,
+      "error": ""
     },
     {
       "kind": "BackupDRBackupVault",
       "service": "backupdr",
       "fixture": "backupdrbackupvault-minimal",
-      "status": "FAIL",
-      "duration": 13.98,
-      "error": "--- FAIL: TestAllInSeries/fixtures (13.74s) | --- FAIL: TestAllInSeries/fixtures/backupdrbackupvault-minimal (13.45s) | FAIL"
+      "status": "PASS",
+      "duration": 14.34,
+      "error": ""
     },
     {
       "kind": "BigQueryReservationReservation",
@@ -108,9 +108,9 @@
       "kind": "CloudBuildConnection",
       "service": "cloudbuild",
       "fixture": "cloudbuildconnection-minimal",
-      "status": "FAIL",
-      "duration": 28.27,
-      "error": "{\"severity\":\"error\",\"timestamp\":\"2026-10-22T19:56:07.473Z\",\"msg\":\"Observed a panic\",\"controller\":\"secretmanagersecret-parent-controller\",\"controllerGroup\":\"secretmanager.cnrm.cloud.google.com\",\"controllerKind\":\"SecretManagerSecret\",\"SecretManagerSecret\":{\"name\":\"secretmanagersecret-6kd3vjzjufh6iqa\","
+      "status": "PASS",
+      "duration": 27.01,
+      "error": ""
     },
     {
       "kind": "CloudDeployAutomation",
@@ -132,9 +132,9 @@
       "kind": "APIQuotaPreference",
       "service": "cloudquota",
       "fixture": "apiquotapreference-minimal",
-      "status": "FAIL",
-      "duration": 28.25,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T19:57:10.029Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"apiquotapreference-parent-controller\",\"controllerGroup\":\"cloudquota.cnrm.cloud.google.com\",\"controllerKind\":\"APIQuotaPreference\",\"APIQuotaPreference\":{\"name\":\"qpref-minimal-dro2glmdqhqp"
+      "status": "PASS",
+      "duration": 13.58,
+      "error": ""
     },
     {
       "kind": "ConfigDeliveryResourceBundle",
@@ -157,24 +157,24 @@
       "service": "datacatalog",
       "fixture": "datacatalogentry-minimal",
       "status": "FAIL",
-      "duration": 28.25,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T19:58:10.803Z\",\"msg\":\"structuredreporting OnError\",\"controller\":\"datacatalogentrygroup-parent-controller\",\"controllerGroup\":\"datacatalog.cnrm.cloud.google.com\",\"controllerKind\":\"DataCatalogEntryGroup\",\"DataCatalogEntryGroup\":{\"name\":\"datacatalogentrygroup-m"
+      "duration": 12.59,
+      "error": "--- FAIL: TestAllInSeries/fixtures (12.41s) | --- FAIL: TestAllInSeries/fixtures/datacatalogentry-minimal (12.13s) | FAIL"
     },
     {
       "kind": "DataCatalogEntryGroup",
       "service": "datacatalog",
       "fixture": "datacatalogentrygroup-minimal",
       "status": "FAIL",
-      "duration": 13.96,
-      "error": "--- FAIL: TestAllInSeries/fixtures (13.75s) | --- FAIL: TestAllInSeries/fixtures/datacatalogentrygroup-minimal (13.45s) | FAIL"
+      "duration": 12.86,
+      "error": "--- FAIL: TestAllInSeries/fixtures (12.69s) | --- FAIL: TestAllInSeries/fixtures/datacatalogentrygroup-minimal (12.42s) | FAIL"
     },
     {
       "kind": "DataCatalogTagTemplate",
       "service": "datacatalog",
       "fixture": "datacatalogtagtemplate-minimal",
       "status": "FAIL",
-      "duration": 13.47,
-      "error": "--- FAIL: TestAllInSeries/fixtures (13.24s) | --- FAIL: TestAllInSeries/fixtures/datacatalogtagtemplate-minimal (12.94s) | FAIL"
+      "duration": 13.03,
+      "error": "--- FAIL: TestAllInSeries/fixtures (12.85s) | --- FAIL: TestAllInSeries/fixtures/datacatalogtagtemplate-minimal (12.56s) | FAIL"
     },
     {
       "kind": "DataplexAspectType",
@@ -205,8 +205,8 @@
       "service": "dataplex",
       "fixture": "dataplexmetadatafeed-minimal",
       "status": "FAIL",
-      "duration": 23.12,
-      "error": "--- FAIL: TestAllInSeries/fixtures (22.89s) | --- FAIL: TestAllInSeries/fixtures/dataplexmetadatafeed-minimal (22.59s) | FAIL"
+      "duration": 21.73,
+      "error": "--- FAIL: TestAllInSeries/fixtures (21.55s) | --- FAIL: TestAllInSeries/fixtures/dataplexmetadatafeed-minimal (21.18s) | FAIL"
     },
     {
       "kind": "DataplexMetadataJob",
@@ -236,9 +236,9 @@
       "kind": "DatastreamRoute",
       "service": "datastream",
       "fixture": "datastreamroute-minimal",
-      "status": "FAIL",
-      "duration": 28.3,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:01:19.540Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"datastreamroute-parent-controller\",\"controllerGroup\":\"datastream.cnrm.cloud.google.com\",\"controllerKind\":\"DatastreamRoute\",\"DatastreamRoute\":{\"name\":\"datastreamroute-minimal-4qpg5shoxrq"
+      "status": "PASS",
+      "duration": 12.6,
+      "error": ""
     },
     {
       "kind": "DevConnectAccountConnector",
@@ -333,8 +333,8 @@
       "service": "gkebackup",
       "fixture": "gkebackuprestore-minimal",
       "status": "FAIL",
-      "duration": 16.51,
-      "error": "--- FAIL: TestAllInSeries/fixtures (16.30s) | --- FAIL: TestAllInSeries/fixtures/gkebackuprestore-minimal (15.98s) | FAIL"
+      "duration": 13.95,
+      "error": "--- FAIL: TestAllInSeries/fixtures (13.77s) | --- FAIL: TestAllInSeries/fixtures/gkebackuprestore-minimal (13.48s) | FAIL"
     },
     {
       "kind": "GKEBackupRestorePlan",
@@ -389,8 +389,8 @@
       "service": "livestream",
       "fixture": "livestreamchannel-minimal",
       "status": "FAIL",
-      "duration": 17.44,
-      "error": "--- FAIL: TestAllInSeries/fixtures (17.24s) | --- FAIL: TestAllInSeries/fixtures/livestreamchannel-minimal (16.95s) | FAIL"
+      "duration": 15.58,
+      "error": "--- FAIL: TestAllInSeries/fixtures (15.40s) | --- FAIL: TestAllInSeries/fixtures/livestreamchannel-minimal (15.13s) | FAIL"
     },
     {
       "kind": "LiveStreamInput",
@@ -413,8 +413,8 @@
       "service": "managedkafka",
       "fixture": "managedkafkacluster-basic",
       "status": "FAIL",
-      "duration": 15.22,
-      "error": "--- FAIL: TestAllInSeries/fixtures (15.01s) | --- FAIL: TestAllInSeries/fixtures/managedkafkacluster-basic (14.73s) | FAIL"
+      "duration": 14.22,
+      "error": "--- FAIL: TestAllInSeries/fixtures (14.03s) | --- FAIL: TestAllInSeries/fixtures/managedkafkacluster-basic (13.75s) | FAIL"
     },
     {
       "kind": "ManagedKafkaConnectCluster",
@@ -485,8 +485,8 @@
       "service": "netapp",
       "fixture": "netappactivedirectory-minimal",
       "status": "FAIL",
-      "duration": 16.85,
-      "error": "--- FAIL: TestAllInSeries/fixtures (16.66s) | --- FAIL: TestAllInSeries/fixtures/netappactivedirectory-minimal (16.36s) | FAIL"
+      "duration": 16.38,
+      "error": "--- FAIL: TestAllInSeries/fixtures (16.19s) | --- FAIL: TestAllInSeries/fixtures/netappactivedirectory-minimal (15.90s) | FAIL"
     },
     {
       "kind": "NetAppBackupPolicy",
@@ -572,17 +572,17 @@
       "kind": "NetworkServicesAuthzExtension",
       "service": "networkservices",
       "fixture": "networkservicesauthzextension-minimal",
-      "status": "FAIL",
-      "duration": 28.3,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:12:13.115Z\",\"msg\":\"resource is not ready\",\"kind\":\"NetworkServicesAuthzExtension\",\"name\":\"authzext-min-ov3ajfirot2x6aa\",\"conditions\":[{\"lastTransitionTime\":\"2026-10-22T20:11:57Z\",\"message\":\"Update call failed: getting AuthzExtension \\\"projects//locations/"
+      "status": "PASS",
+      "duration": 14.72,
+      "error": ""
     },
     {
       "kind": "NetworkServicesLBTrafficExtension",
       "service": "networkservices",
       "fixture": "networkserviceslbtrafficextension-minimal",
-      "status": "FAIL",
-      "duration": 28.3,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:12:41.635Z\",\"msg\":\"resource is not ready\",\"kind\":\"NetworkServicesLBTrafficExtension\",\"name\":\"lbtrafficextension-4oivd57ueaxgvzi\",\"conditions\":[{\"lastTransitionTime\":\"2026-10-22T20:12:25Z\",\"message\":\"Update call failed: getting LbTrafficExtension \\\"projec"
+      "status": "PASS",
+      "duration": 16.81,
+      "error": ""
     },
     {
       "kind": "NetworkServicesServiceBinding",
@@ -597,16 +597,16 @@
       "service": "networkservices",
       "fixture": "wasmplugin-basic",
       "status": "FAIL",
-      "duration": 28.25,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:13:23.065Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"networkserviceswasmplugin-parent-controller\",\"controllerGroup\":\"networkservices.cnrm.cloud.google.com\",\"controllerKind\":\"NetworkServicesWasmPlugin\",\"NetworkServicesWasmPlugin\":{\"name\":\""
+      "duration": 16.26,
+      "error": "--- FAIL: TestAllInSeries/fixtures (16.10s) | --- FAIL: TestAllInSeries/fixtures/wasmplugin-basic (15.82s) | FAIL"
     },
     {
       "kind": "NotebooksEnvironment",
       "service": "notebooks",
       "fixture": "notebooksenvironment-containerimage",
-      "status": "FAIL",
-      "duration": 12.63,
-      "error": "--- FAIL: TestAllInSeries/fixtures (12.42s) | --- FAIL: TestAllInSeries/fixtures/notebooksenvironment-containerimage (12.09s) | FAIL"
+      "status": "PASS",
+      "duration": 13.19,
+      "error": ""
     },
     {
       "kind": "NotebooksExecution",
@@ -660,9 +660,9 @@
       "kind": "SecretManagerSecret",
       "service": "secretmanager",
       "fixture": "basicsecretmanagersecret",
-      "status": "FAIL",
-      "duration": 28.23,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:15:29.276Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"secretmanagersecret-parent-controller\",\"controllerGroup\":\"secretmanager.cnrm.cloud.google.com\",\"controllerKind\":\"SecretManagerSecret\",\"SecretManagerSecret\":{\"name\":\"secretmanagersecret-"
+      "status": "PASS",
+      "duration": 25.39,
+      "error": ""
     },
     {
       "kind": "SecureSourceManagerInstance",
@@ -676,17 +676,17 @@
       "kind": "SpannerBackupSchedule",
       "service": "spanner",
       "fixture": "spannerbackupschedules-basic",
-      "status": "FAIL",
-      "duration": 28.29,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:16:12.522Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"spannerbackupschedule-parent-controller\",\"controllerGroup\":\"spanner.cnrm.cloud.google.com\",\"controllerKind\":\"SpannerBackupSchedule\",\"SpannerBackupSchedule\":{\"name\":\"spannerbackupschedul"
+      "status": "PASS",
+      "duration": 22.07,
+      "error": ""
     },
     {
       "kind": "StorageAnywhereCache",
       "service": "storage",
       "fixture": "storageanywherecache-base",
       "status": "FAIL",
-      "duration": 28.24,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:16:41.957Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"storageanywherecache-parent-controller\",\"controllerGroup\":\"storage.cnrm.cloud.google.com\",\"controllerKind\":\"StorageAnywhereCache\",\"StorageAnywhereCache\":{\"name\":\"storageanywherecache-sa"
+      "duration": 28.21,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-23T22:43:38.473Z\",\"msg\":\"resource is not ready\",\"kind\":\"StorageAnywhereCache\",\"name\":\"storageanywherecache-sample-et7rrryo6fycmhi\",\"conditions\":[{\"lastTransitionTime\":\"2026-10-23T22:43:22Z\",\"message\":\"Update call failed: error creating: creating AnywhereCache "
     },
     {
       "kind": "StorageInsightsDatasetConfig",
@@ -717,16 +717,16 @@
       "service": "vertexai",
       "fixture": "featurestore-basic",
       "status": "FAIL",
-      "duration": 14.15,
-      "error": "--- FAIL: TestAllInSeries/fixtures (13.95s) | --- FAIL: TestAllInSeries/fixtures/featurestore-basic (13.63s) | FAIL"
+      "duration": 13.37,
+      "error": "--- FAIL: TestAllInSeries/fixtures (13.20s) | --- FAIL: TestAllInSeries/fixtures/featurestore-basic (12.92s) | FAIL"
     },
     {
       "kind": "VertexAIMetadataStore",
       "service": "vertexai",
       "fixture": "metadatastorebasic",
       "status": "FAIL",
-      "duration": 13.09,
-      "error": "--- FAIL: TestAllInSeries/fixtures (12.86s) | --- FAIL: TestAllInSeries/fixtures/metadatastorebasic (12.54s) | FAIL"
+      "duration": 12.12,
+      "error": "--- FAIL: TestAllInSeries/fixtures (11.94s) | --- FAIL: TestAllInSeries/fixtures/metadatastorebasic (11.65s) | FAIL"
     },
     {
       "kind": "VideoStitcherCDNKey",
@@ -765,16 +765,16 @@
       "service": "vmwareengine",
       "fixture": "vmwareengineexternalaccessrule-minimal",
       "status": "FAIL",
-      "duration": 28.28,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:18:56.442Z\",\"msg\":\"structuredreporting OnError\",\"controller\":\"vmwareenginenetworkpolicy-parent-controller\",\"controllerGroup\":\"vmwareengine.cnrm.cloud.google.com\",\"controllerKind\":\"VMwareEngineNetworkPolicy\",\"VMwareEngineNetworkPolicy\":{\"name\":\"vmwareengi"
+      "duration": 28.24,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-23T22:44:30.634Z\",\"msg\":\"structuredreporting OnError\",\"controller\":\"vmwareenginenetworkpolicy-parent-controller\",\"controllerGroup\":\"vmwareengine.cnrm.cloud.google.com\",\"controllerKind\":\"VMwareEngineNetworkPolicy\",\"VMwareEngineNetworkPolicy\":{\"name\":\"vmwareengi"
     },
     {
       "kind": "VMwareEngineExternalAddress",
       "service": "vmwareengine",
       "fixture": "vmwareengineexternaladdress-minimal",
       "status": "FAIL",
-      "duration": 28.25,
-      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:19:25.081Z\",\"msg\":\"structuredreporting OnError\",\"controller\":\"vmwareenginenetworkpolicy-parent-controller\",\"controllerGroup\":\"vmwareengine.cnrm.cloud.google.com\",\"controllerKind\":\"VMwareEngineNetworkPolicy\",\"VMwareEngineNetworkPolicy\":{\"name\":\"vmwareengi"
+      "duration": 14.24,
+      "error": "--- FAIL: TestAllInSeries/fixtures (14.07s) | --- FAIL: TestAllInSeries/fixtures/vmwareengineexternaladdress-minimal (13.78s) | FAIL"
     },
     {
       "kind": "VMwareEngineNetwork",
@@ -797,8 +797,8 @@
       "service": "vmwareengine",
       "fixture": "vmwareenginenetworkpolicy-minimal",
       "status": "FAIL",
-      "duration": 14.58,
-      "error": "--- FAIL: TestAllInSeries/fixtures (14.37s) | --- FAIL: TestAllInSeries/fixtures/vmwareenginenetworkpolicy-minimal (14.04s) | FAIL"
+      "duration": 13.84,
+      "error": "--- FAIL: TestAllInSeries/fixtures (13.67s) | --- FAIL: TestAllInSeries/fixtures/vmwareenginenetworkpolicy-minimal (13.37s) | FAIL"
     },
     {
       "kind": "VMwareEnginePrivateConnection",
@@ -905,8 +905,8 @@
       "error": "No test fixture found in config/tests/samples/create/"
     }
   ],
-  "passed": 75,
-  "failed": 28,
+  "passed": 86,
+  "failed": 17,
   "total_tier1": 113,
   "total_fixtures": 103
 }
