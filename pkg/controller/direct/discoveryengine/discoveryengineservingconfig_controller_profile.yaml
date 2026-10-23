@@ -1,0 +1,69 @@
+package: discoveryengine
+kccservice: discoveryengine
+kccversion: v1alpha1
+kind: DiscoveryEngineServingConfig
+protoresource: ServingConfig
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.DiscoveryEngineServingConfigIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: ServingConfig
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: a.id.Location
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetServingConfig
+    getrequesttype: GetServingConfigRequest
+    getnamefield: Name
+    createmethodname: CreateServingConfig
+    createrequesttype: CreateServingConfigRequest
+    createparentfield: Parent
+    createbodyfield: ServingConfig
+    createidfield: ServingConfigId
+    updatemethodname: UpdateServingConfig
+    updaterequesttype: UpdateServingConfigRequest
+    updatebodyfield: ServingConfig
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteServingConfig
+    deleterequesttype: DeleteServingConfigRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/discoveryengine/apiv1beta
+    gcpclienttype: '*gcp.ServingConfigClient'
+    gcpclientconstructor: gcp.NewServingConfigRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/discoveryengine/apiv1beta/discoveryenginepb
+    pbpackagealias: discoveryenginepb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: _v1alpha1

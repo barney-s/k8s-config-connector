@@ -1,0 +1,69 @@
+package: modelarmor
+kccservice: modelarmor
+kccversion: v1alpha1
+kind: ModelArmorTemplate
+protoresource: Template
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.ModelArmorTemplateIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Template
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{Name: a.id.Project}'
+    locationexpr: direct.PtrTo(a.id.Location)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetTemplate
+    getrequesttype: GetTemplateRequest
+    getnamefield: Name
+    createmethodname: CreateTemplate
+    createrequesttype: CreateTemplateRequest
+    createparentfield: Parent
+    createbodyfield: Template
+    createidfield: TemplateId
+    updatemethodname: UpdateTemplate
+    updaterequesttype: UpdateTemplateRequest
+    updatebodyfield: Template
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteTemplate
+    deleterequesttype: DeleteTemplateRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/modelarmor/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewClient
+    usegrpcclient: true
+    pbimportpath: cloud.google.com/go/modelarmor/apiv1/modelarmorpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

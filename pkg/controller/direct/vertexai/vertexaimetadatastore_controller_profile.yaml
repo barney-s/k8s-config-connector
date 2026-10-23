@@ -1,0 +1,69 @@
+package: vertexai
+kccservice: vertexai
+kccversion: v1beta1
+kind: VertexAIMetadataStore
+protoresource: MetadataStore
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.MetadataStoreIdentity
+    usegetidentity: false
+    constructorname: NewMetadataStoreIdentity
+    parentstringexpr: Parent().String()
+    idexpr: ID()
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: false
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Parent().ProjectID}'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: unsupported
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetMetadataStore
+    getrequesttype: GetMetadataStoreRequest
+    getnamefield: Name
+    createmethodname: CreateMetadataStore
+    createrequesttype: CreateMetadataStoreRequest
+    createparentfield: Parent
+    createbodyfield: MetadataStore
+    createidfield: MetadataStoreId
+    updatemethodname: ""
+    updaterequesttype: ""
+    updatebodyfield: ""
+    updatemaskfield: ""
+    updatehastoplevelname: false
+    deletemethodname: DeleteMetadataStore
+    deleterequesttype: DeleteMetadataStoreRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/aiplatform/apiv1beta1
+    gcpclienttype: '*gcp.MetadataClient'
+    gcpclientconstructor: gcp.NewMetadataRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/aiplatform/apiv1beta1/aiplatformpb
+    pbpackagealias: vertexaipb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

@@ -17,26 +17,24 @@ package networksecurity
 import (
 	"context"
 	"fmt"
-
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/networksecurity/v1alpha1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
-	networksecurity "cloud.google.com/go/networksecurity/apiv1"
+	gcp "cloud.google.com/go/networksecurity/apiv1"
 	pb "cloud.google.com/go/networksecurity/apiv1/networksecuritypb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -44,183 +42,192 @@ func init() {
 }
 
 func NewInterceptDeploymentModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &interceptDeploymentModel{config: *config}, nil
+	return &modelInterceptDeployment{config: *config}, nil
 }
 
-var _ directbase.Model = &interceptDeploymentModel{}
+var _ directbase.Model = &modelInterceptDeployment{}
+var _ = strings.TrimPrefix
 
-type interceptDeploymentModel struct {
+type modelInterceptDeployment struct {
 	config config.ControllerConfig
 }
 
-func (m *interceptDeploymentModel) client(ctx context.Context) (*networksecurity.InterceptClient, error) {
+func (m *modelInterceptDeployment) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.NetworkSecurityInterceptDeployment{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.NetworkSecurityInterceptDeploymentIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &InterceptDeploymentAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelInterceptDeployment) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.NetworkSecurityInterceptDeploymentIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &InterceptDeploymentAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelInterceptDeployment) client(ctx context.Context) (*gcp.InterceptClient, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
-	gcpClient, err := networksecurity.NewInterceptRESTClient(ctx, opts...)
+
+	gcpClient, err := gcp.NewInterceptRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building networksecurity Intercept REST client: %w", err)
+		return nil, fmt.Errorf("building InterceptDeployment client: %w", err)
 	}
-	return gcpClient, nil
+	return gcpClient, err
 }
 
-func (m *interceptDeploymentModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.NetworkSecurityInterceptDeployment{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := NetworkSecurityInterceptDeploymentSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if err := mapCtx.Err(); err != nil {
-		return nil, err
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &interceptDeploymentAdapter{
-		gcpClient: gcpClient,
-		id:        id.(*krm.NetworkSecurityInterceptDeploymentIdentity),
-		desired:   desired,
-	}, nil
-}
-
-func (m *interceptDeploymentModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.NetworkSecurityInterceptDeploymentIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		// Not recognized
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &interceptDeploymentAdapter{
-		gcpClient: gcpClient,
-		id:        id,
-	}, nil
-}
-
-type interceptDeploymentAdapter struct {
-	gcpClient *networksecurity.InterceptClient
+type InterceptDeploymentAdapter struct {
 	id        *krm.NetworkSecurityInterceptDeploymentIdentity
-	desired   *pb.InterceptDeployment
+	gcpClient *gcp.InterceptClient
+	desired   *krm.NetworkSecurityInterceptDeployment
 	actual    *pb.InterceptDeployment
 }
 
-var _ directbase.Adapter = &interceptDeploymentAdapter{}
+var _ directbase.Adapter = &InterceptDeploymentAdapter{}
 
-func (a *interceptDeploymentAdapter) Find(ctx context.Context) (bool, error) {
+func (a *InterceptDeploymentAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("finding NetworkSecurityInterceptDeployment", "name", a.id)
+	log.V(2).Info("getting InterceptDeployment", "name", a.id)
 
-	req := &pb.GetInterceptDeploymentRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetInterceptDeployment(ctx, req)
+	req := &pb.GetInterceptDeploymentRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetInterceptDeployment(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting NetworkSecurityInterceptDeployment %s: %w", a.id, err)
+		return false, fmt.Errorf("getting InterceptDeployment %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *interceptDeploymentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *InterceptDeploymentAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating NetworkSecurityInterceptDeployment", "name", a.id)
+	log.V(2).Info("creating InterceptDeployment", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := NetworkSecurityInterceptDeploymentSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateInterceptDeploymentRequest{
 		Parent:                a.id.ParentString(),
 		InterceptDeploymentId: a.id.InterceptDeployment,
-		InterceptDeployment:   a.desired,
+		InterceptDeployment:   resource,
 	}
-
 	op, err := a.gcpClient.CreateInterceptDeployment(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating NetworkSecurityInterceptDeployment %s: %w", a.id, err)
+		return fmt.Errorf("creating InterceptDeployment %s: %w", a.id, err)
 	}
-
-	actual, err := op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("NetworkSecurityInterceptDeployment %s waiting for creation: %w", a.id, err)
+		return fmt.Errorf("waiting create InterceptDeployment %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created InterceptDeployment", "name", a.id)
 
-	log.V(2).Info("successfully created NetworkSecurityInterceptDeployment", "name", a.id)
-
-	return a.updateStatus(ctx, createOp, actual)
+	status := &krm.NetworkSecurityInterceptDeploymentStatus{}
+	status.ObservedState = NetworkSecurityInterceptDeploymentObservedState_v1alpha1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *interceptDeploymentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *InterceptDeploymentAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating NetworkSecurityInterceptDeployment", "name", a.id)
+	log.V(2).Info("updating InterceptDeployment", "name", a.id)
 
-	diffs, updateMask, err := compareInterceptDeployment(ctx, a.actual, a.desired)
+	desired, diffs, updateMask, err := compareInterceptDeployment(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desired := proto.Clone(a.desired).(*pb.InterceptDeployment)
-		desired.Name = a.id.String()
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
 
 		req := &pb.UpdateInterceptDeploymentRequest{
 			InterceptDeployment: desired,
 			UpdateMask:          updateMask,
 		}
-
 		op, err := a.gcpClient.UpdateInterceptDeployment(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating NetworkSecurityInterceptDeployment %s: %w", a.id, err)
+			return fmt.Errorf("updating InterceptDeployment %s: %w", a.id, err)
 		}
-
-		latest, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("NetworkSecurityInterceptDeployment %s waiting for update: %w", a.id, err)
+			return fmt.Errorf("waiting update InterceptDeployment %s: %w", a.id, err)
 		}
+		log.V(2).Info("successfully updated InterceptDeployment", "name", a.id)
+
+		status := &krm.NetworkSecurityInterceptDeploymentStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = NetworkSecurityInterceptDeploymentObservedState_v1alpha1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *interceptDeploymentAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.InterceptDeployment) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.NetworkSecurityInterceptDeploymentStatus{}
-	status.ObservedState = NetworkSecurityInterceptDeploymentObservedState_v1alpha1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
-
-	return op.UpdateStatus(ctx, status, nil)
+func compareInterceptDeployment(ctx context.Context, u *unstructured.Unstructured, actual *pb.InterceptDeployment, desiredSpec *krm.NetworkSecurityInterceptDeploymentSpec) (*pb.InterceptDeployment, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		NetworkSecurityInterceptDeploymentSpec_v1alpha1_FromProto,
+		NetworkSecurityInterceptDeploymentSpec_v1alpha1_ToProto,
+		nil,
+	)
 }
 
-func (a *interceptDeploymentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *InterceptDeploymentAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -228,15 +235,11 @@ func (a *interceptDeploymentAdapter) Export(ctx context.Context) (*unstructured.
 
 	obj := &krm.NetworkSecurityInterceptDeployment{}
 	mapCtx := &direct.MapContext{}
-	spec := NetworkSecurityInterceptDeploymentSpec_v1alpha1_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(NetworkSecurityInterceptDeploymentSpec_v1alpha1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	if spec != nil {
-		obj.Spec = *spec
-	}
-
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{External: a.id.Project}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = &a.id.Location
 	obj.Spec.ResourceID = &a.id.InterceptDeployment
 
@@ -251,36 +254,26 @@ func (a *interceptDeploymentAdapter) Export(ctx context.Context) (*unstructured.
 	return u, nil
 }
 
-func (a *interceptDeploymentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *InterceptDeploymentAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting NetworkSecurityInterceptDeployment", "name", a.id)
+	log.V(2).Info("deleting InterceptDeployment", "name", a.id)
 
-	req := &pb.DeleteInterceptDeploymentRequest{Name: a.id.String()}
+	req := &pb.DeleteInterceptDeploymentRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteInterceptDeployment(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting NetworkSecurityInterceptDeployment %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting InterceptDeployment %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted InterceptDeployment", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("NetworkSecurityInterceptDeployment %s waiting for deletion: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete InterceptDeployment %s: %w", a.id, err)
+		}
 	}
-
 	return true, nil
-}
-
-// compareInterceptDeployment compares the actual and desired InterceptDeployment state, returning the diff and update field mask.
-func compareInterceptDeployment(ctx context.Context, actual, desired *pb.InterceptDeployment) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, NetworkSecurityInterceptDeploymentSpec_v1alpha1_FromProto, NetworkSecurityInterceptDeploymentSpec_v1alpha1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

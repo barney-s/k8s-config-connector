@@ -12,29 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.storageinsights.v1.StorageInsights
-// proto.message: google.cloud.storageinsights.v1.ReportConfig
-// crd.type: StorageInsightsReportConfig
-// crd.version: v1alpha1
-
 package storageinsights
 
 import (
 	"context"
 	"fmt"
-	"slices"
-
-	api "cloud.google.com/go/storageinsights/apiv1"
-	pb "cloud.google.com/go/storageinsights/apiv1/storageinsightspb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/storageinsights/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -43,186 +26,210 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/storageinsights/apiv1"
+	pb "cloud.google.com/go/storageinsights/apiv1/storageinsightspb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.StorageInsightsReportConfigGVK, NewStorageInsightsReportConfigModel)
+	registry.RegisterModel(krm.StorageInsightsReportConfigGVK, NewReportConfigModel)
 }
 
-func NewStorageInsightsReportConfigModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &storageInsightsReportConfigModel{config: *config}, nil
+func NewReportConfigModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelReportConfig{config: *config}, nil
 }
 
-var _ directbase.Model = &storageInsightsReportConfigModel{}
+var _ directbase.Model = &modelReportConfig{}
+var _ = strings.TrimPrefix
 
-type storageInsightsReportConfigModel struct {
+type modelReportConfig struct {
 	config config.ControllerConfig
 }
 
-func (m *storageInsightsReportConfigModel) client(ctx context.Context) (*api.Client, error) {
-	gcpClient, err := newGCPClient(ctx, &m.config)
-	if err != nil {
-		return nil, err
-	}
-	return gcpClient.newStorageInsightsClient(ctx)
-}
-
-func (m *storageInsightsReportConfigModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelReportConfig) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.StorageInsightsReportConfig{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.StorageInsightsReportConfigIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	idRaw, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-	id := idRaw.(*krm.StorageInsightsReportConfigIdentity)
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := StorageInsightsReportConfigSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Labels = label.GCPLabels(obj)
-	for k, v := range obj.Spec.Labels {
-		if desired.Labels == nil {
-			desired.Labels = make(map[string]string)
-		}
-		desired.Labels[k] = v
-	}
-
-	return &storageInsightsReportConfigAdapter{
-		gcpClient: gcpClient,
+	return &ReportConfigAdapter{
 		id:        id,
-		desired:   desired,
-		reader:    reader,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *storageInsightsReportConfigModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelReportConfig) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.StorageInsightsReportConfigIdentity{}
 	if err := id.FromExternal(url); err != nil {
 		return nil, nil
 	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &storageInsightsReportConfigAdapter{
-		gcpClient: gcpClient,
+	return &ReportConfigAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 	}, nil
 }
 
-type storageInsightsReportConfigAdapter struct {
-	gcpClient *api.Client
-	id        *krm.StorageInsightsReportConfigIdentity
-	desired   *pb.ReportConfig
-	actual    *pb.ReportConfig
-	reader    client.Reader
+func (m *modelReportConfig) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ReportConfig client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &storageInsightsReportConfigAdapter{}
+type ReportConfigAdapter struct {
+	id        *krm.StorageInsightsReportConfigIdentity
+	gcpClient *gcp.Client
+	desired   *krm.StorageInsightsReportConfig
+	actual    *pb.ReportConfig
+}
 
-func (a *storageInsightsReportConfigAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &ReportConfigAdapter{}
+
+func (a *ReportConfigAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting StorageInsightsReportConfig", "name", a.id)
-
+	log.V(2).Info("getting ReportConfig", "name", a.id)
 	if a.id.ReportConfig == "" {
 		return false, nil
 	}
 
-	req := &pb.GetReportConfigRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetReportConfig(ctx, req)
+	req := &pb.GetReportConfigRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetReportConfig(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting StorageInsightsReportConfig %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting ReportConfig %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *storageInsightsReportConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ReportConfigAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating StorageInsightsReportConfig", "name", a.id)
+	log.V(2).Info("creating ReportConfig", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := StorageInsightsReportConfigSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateReportConfigRequest{
 		Parent:       a.id.ParentString(),
-		ReportConfig: a.desired,
+		ReportConfig: resource,
 	}
 	created, err := a.gcpClient.CreateReportConfig(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating StorageInsightsReportConfig %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating ReportConfig %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created ReportConfig", "name", a.id)
 
-	log.V(2).Info("successfully created StorageInsightsReportConfig in gcp", "name", created.GetName())
-
-	if a.id.ReportConfig == "" {
-		if err := a.id.FromExternal(created.GetName()); err != nil {
-			return fmt.Errorf("parsing created StorageInsightsReportConfig name %q: %w", created.GetName(), err)
-		}
+	status := &krm.StorageInsightsReportConfigStatus{}
+	status.ObservedState = StorageInsightsReportConfigObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	return a.updateStatus(ctx, createOp, created)
+	status.ExternalRef = direct.LazyPtr(created.GetName())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *storageInsightsReportConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ReportConfigAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating StorageInsightsReportConfig", "name", a.id)
+	log.V(2).Info("updating ReportConfig", "name", a.id)
 
-	a.desired.Name = a.id.String()
-
-	diffs, updateMask, err := compareReportConfig(ctx, a.actual, a.desired)
+	desired, diffs, updateMask, err := compareReportConfig(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no diff detected for StorageInsightsReportConfig", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
+
+		req := &pb.UpdateReportConfigRequest{
+			ReportConfig: desired,
+			UpdateMask:   updateMask,
+		}
+		updated, err := a.gcpClient.UpdateReportConfig(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating ReportConfig %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated ReportConfig", "name", a.id)
+
+		status := &krm.StorageInsightsReportConfigStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = StorageInsightsReportConfigObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateReportConfigRequest{
-		ReportConfig: a.desired,
-		UpdateMask:   updateMask,
-	}
-
-	updated, err := a.gcpClient.UpdateReportConfig(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating StorageInsightsReportConfig %s: %w", a.id, err)
-	}
-
-	log.V(2).Info("successfully updated StorageInsightsReportConfig", "name", a.id)
-
-	return a.updateStatus(ctx, updateOp, updated)
+	return nil
 }
 
-func (a *storageInsightsReportConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareReportConfig(ctx context.Context, u *unstructured.Unstructured, actual *pb.ReportConfig, desiredSpec *krm.StorageInsightsReportConfigSpec) (*pb.ReportConfig, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	return common.CompareGreenfieldSpecAndLabels(
+		ctx,
+		u,
+		desiredSpec,
+		actual,
+		"labels",
+		StorageInsightsReportConfigSpec_FromProto,
+		StorageInsightsReportConfigSpec_ToProto,
+		nil,
+	)
+}
+
+func (a *ReportConfigAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
 	obj := &krm.StorageInsightsReportConfig{}
 	mapCtx := &direct.MapContext{}
@@ -230,8 +237,7 @@ func (a *storageInsightsReportConfigAdapter) Export(ctx context.Context) (*unstr
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{External: a.id.Project}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = &a.id.Location
 	obj.Spec.ResourceID = direct.PtrTo(a.id.ReportConfig)
 
@@ -240,98 +246,27 @@ func (a *storageInsightsReportConfigAdapter) Export(ctx context.Context) (*unstr
 		return nil, err
 	}
 
-	u := &unstructured.Unstructured{Object: uObj}
+	u.Object = uObj
 	u.SetName(a.id.ReportConfig)
 	u.SetGroupVersionKind(krm.StorageInsightsReportConfigGVK)
-
-	export.SetProjectID(u, a.id.Project)
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
-func (a *storageInsightsReportConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ReportConfigAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.Info("deleting StorageInsightsReportConfig", "name", a.id)
+	log.V(2).Info("deleting ReportConfig", "name", a.id)
 
-	if a.id.ReportConfig == "" {
-		return true, nil
+	req := &pb.DeleteReportConfigRequest{
+		Name: a.id.String(),
 	}
-
-	req := &pb.DeleteReportConfigRequest{Name: a.id.String()}
 	err := a.gcpClient.DeleteReportConfig(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting StorageInsightsReportConfig %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting ReportConfig %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted ReportConfig", "name", a.id)
 	return true, nil
-}
-
-func compareReportConfig(ctx context.Context, actual, desired *pb.ReportConfig) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, StorageInsightsReportConfigSpec_FromProto, StorageInsightsReportConfigSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	maskedActual.Labels = actual.Labels
-
-	clonedDesired := proto.CloneOf(desired)
-	if desiredCsv := clonedDesired.GetCsvOptions(); desiredCsv != nil {
-		if actualCsv := maskedActual.GetCsvOptions(); actualCsv != nil {
-			if desiredCsv.GetRecordSeparator() == "" {
-				desiredCsv.RecordSeparator = actualCsv.GetRecordSeparator()
-			}
-			if desiredCsv.GetDelimiter() == "" {
-				desiredCsv.Delimiter = actualCsv.GetDelimiter()
-			}
-		}
-	}
-
-	diffs, topLevelUpdateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-
-	updateMask := &fieldmaskpb.FieldMask{}
-	for _, path := range topLevelUpdateMask.Paths {
-		if path == "object_metadata_report_options" {
-			desiredOpt := clonedDesired.GetObjectMetadataReportOptions()
-			actualOpt := maskedActual.GetObjectMetadataReportOptions()
-			if desiredOpt != nil && actualOpt != nil {
-				if !slices.Equal(desiredOpt.GetMetadataFields(), actualOpt.GetMetadataFields()) {
-					updateMask.Paths = append(updateMask.Paths, "object_metadata_report_options.metadata_fields")
-				}
-				if desiredOpt.GetStorageDestinationOptions().GetBucket() != actualOpt.GetStorageDestinationOptions().GetBucket() {
-					updateMask.Paths = append(updateMask.Paths, "object_metadata_report_options.storage_destination_options.bucket")
-				}
-				if desiredOpt.GetStorageDestinationOptions().GetDestinationPath() != actualOpt.GetStorageDestinationOptions().GetDestinationPath() {
-					updateMask.Paths = append(updateMask.Paths, "object_metadata_report_options.storage_destination_options.destination_path")
-				}
-				if desiredOpt.GetStorageFilters().GetBucket() != actualOpt.GetStorageFilters().GetBucket() {
-					return nil, nil, fmt.Errorf("objectMetadataReportOptions.storageFilters.bucket cannot be updated")
-				}
-			} else {
-				updateMask.Paths = append(updateMask.Paths, path)
-			}
-		} else {
-			updateMask.Paths = append(updateMask.Paths, path)
-		}
-	}
-
-	return diffs, updateMask, nil
-}
-
-func (a *storageInsightsReportConfigAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.ReportConfig) error {
-	mapCtx := &direct.MapContext{}
-	observedState := StorageInsightsReportConfigObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status := &krm.StorageInsightsReportConfigStatus{}
-	status.ObservedState = observedState
-	status.ExternalRef = direct.PtrTo(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
 }

@@ -17,10 +17,6 @@ package livestream
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/video/livestream/apiv1"
-	pb "cloud.google.com/go/video/livestream/apiv1/livestreampb"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/common/projects"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/livestream/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -28,13 +24,14 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/video/livestream/apiv1"
+	pb "cloud.google.com/go/video/livestream/apiv1/livestreampb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -45,42 +42,29 @@ func init() {
 }
 
 func NewChannelModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &channelModel{config: *config}, nil
+	return &modelChannel{config: *config}, nil
 }
 
-var _ directbase.Model = &channelModel{}
+var _ directbase.Model = &modelChannel{}
+var _ = strings.TrimPrefix
 
-type channelModel struct {
+type modelChannel struct {
 	config config.ControllerConfig
 }
 
-func (m *channelModel) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building livestream client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *channelModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelChannel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.LiveStreamChannel{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	idBase, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idBase.(*krm.LiveStreamChannelIdentity)
-
+	id := i.(*krm.LiveStreamChannelIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
@@ -89,23 +73,14 @@ func (m *channelModel) AdapterForObject(ctx context.Context, op *directbase.Adap
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := LiveStreamChannelSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &channelAdapter{
-		id:            id,
-		gcpClient:     gcpClient,
-		desired:       desired,
-		projectMapper: m.config.ProjectMapper,
-		model:         m,
+	return &ChannelAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *channelModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelChannel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.LiveStreamChannelIdentity{}
 	if err := id.FromExternal(url); err != nil {
 		return nil, nil
@@ -114,241 +89,145 @@ func (m *channelModel) AdapterForURL(ctx context.Context, url string) (directbas
 	if err != nil {
 		return nil, err
 	}
-	return &channelAdapter{
-		id:            id,
-		gcpClient:     gcpClient,
-		projectMapper: m.config.ProjectMapper,
-		model:         m,
+	return &ChannelAdapter{
+		id:        id,
+		gcpClient: gcpClient,
 	}, nil
 }
 
-type channelAdapter struct {
-	id            *krm.LiveStreamChannelIdentity
-	gcpClient     *gcp.Client
-	desired       *pb.Channel
-	actual        *pb.Channel
-	projectMapper *projects.ProjectMapper
-	model         *channelModel
+func (m *modelChannel) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Channel client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &channelAdapter{}
+type ChannelAdapter struct {
+	id        *krm.LiveStreamChannelIdentity
+	gcpClient *gcp.Client
+	desired   *krm.LiveStreamChannel
+	actual    *pb.Channel
+}
 
-func (a *channelAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &ChannelAdapter{}
+
+func (a *ChannelAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("finding LiveStreamChannel", "id", a.id)
+	log.V(2).Info("getting Channel", "name", a.id)
 
 	req := &pb.GetChannelRequest{
 		Name: a.id.String(),
 	}
-	channel, err := a.gcpClient.GetChannel(ctx, req)
+	resp, err := a.gcpClient.GetChannel(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting LiveStreamChannel %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Channel %q: %w", a.id, err)
 	}
 
-	a.actual = channel
+	a.actual = resp
 	return true, nil
 }
 
-func (a *channelAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ChannelAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating LiveStreamChannel", "id", a.id)
-
-	req := &pb.CreateChannelRequest{
-		Parent:    a.id.ParentString(),
-		ChannelId: a.id.Channel,
-		Channel:   a.desired,
-	}
-	op, err := a.gcpClient.CreateChannel(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating LiveStreamChannel %s: %w", a.id.String(), err)
-	}
-
-	created, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for LiveStreamChannel %s creation: %w", a.id.String(), err)
-	}
-
-	// Fetch fully-populated resource after creation
-	refetched, err := a.gcpClient.GetChannel(ctx, &pb.GetChannelRequest{Name: a.id.String()})
-	if err != nil {
-		refetched = created
-	}
-	a.actual = refetched
-
-	return a.updateStatus(ctx, createOp, refetched)
-}
-
-func (a *channelAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating LiveStreamChannel", "id", a.id)
-
-	diffs, updateMask, err := a.compareChannel(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	latest := a.actual
-	if diffs.HasDiff() {
-		diffs.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diffs)
-
-		desiredCopy := proto.Clone(a.desired).(*pb.Channel)
-		desiredCopy.Name = a.id.String()
-
-		req := &pb.UpdateChannelRequest{
-			Channel:    desiredCopy,
-			UpdateMask: updateMask,
-		}
-
-		op, err := a.gcpClient.UpdateChannel(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating LiveStreamChannel %s: %w", a.id.String(), err)
-		}
-		latest, err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting LiveStreamChannel %s update: %w", a.id.String(), err)
-		}
-
-		// Fetch fully-populated resource after update
-		refetched, err := a.gcpClient.GetChannel(ctx, &pb.GetChannelRequest{Name: a.id.String()})
-		if err != nil {
-			refetched = latest
-		}
-		latest = refetched
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func (a *channelAdapter) compareChannel(ctx context.Context, actual, desired *pb.Channel) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, LiveStreamChannelSpec_FromProto, LiveStreamChannelSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.Clone(desired).(*pb.Channel)
-
-	// Normalize project number to project ID in input attachments and static overlays
-	if a.projectMapper != nil {
-		for _, attachment := range maskedActual.InputAttachments {
-			if attachment.Input != "" {
-				if normalized, err := a.projectMapper.ReplaceProjectNumberWithIDInLink(ctx, attachment.Input); err == nil {
-					attachment.Input = normalized
-				}
-			}
-		}
-		for _, attachment := range clonedDesired.InputAttachments {
-			if attachment.Input != "" {
-				if normalized, err := a.projectMapper.ReplaceProjectNumberWithIDInLink(ctx, attachment.Input); err == nil {
-					attachment.Input = normalized
-				}
-			}
-		}
-		for _, overlay := range maskedActual.StaticOverlays {
-			if overlay.Asset != "" {
-				if normalized, err := a.projectMapper.ReplaceProjectNumberWithIDInLink(ctx, overlay.Asset); err == nil {
-					overlay.Asset = normalized
-				}
-			}
-		}
-		for _, overlay := range clonedDesired.StaticOverlays {
-			if overlay.Asset != "" {
-				if normalized, err := a.projectMapper.ReplaceProjectNumberWithIDInLink(ctx, overlay.Asset); err == nil {
-					overlay.Asset = normalized
-				}
-			}
-		}
-	}
-
-	populateDefaults := func(obj *pb.Channel) {
-		if obj.InputConfig == nil {
-			obj.InputConfig = &pb.InputConfig{
-				InputSwitchMode: pb.InputConfig_FAILOVER_PREFER_PRIMARY,
-			}
-		} else if obj.InputConfig.InputSwitchMode == pb.InputConfig_INPUT_SWITCH_MODE_UNSPECIFIED {
-			obj.InputConfig.InputSwitchMode = pb.InputConfig_FAILOVER_PREFER_PRIMARY
-		}
-		if obj.LogConfig == nil {
-			obj.LogConfig = &pb.LogConfig{
-				LogSeverity: pb.LogConfig_OFF,
-			}
-		} else if obj.LogConfig.LogSeverity == pb.LogConfig_LOG_SEVERITY_UNSPECIFIED {
-			obj.LogConfig.LogSeverity = pb.LogConfig_OFF
-		}
-		if obj.TimecodeConfig == nil {
-			obj.TimecodeConfig = &pb.TimecodeConfig{
-				Source: pb.TimecodeConfig_MEDIA_TIMESTAMP,
-			}
-		} else if obj.TimecodeConfig.Source == pb.TimecodeConfig_TIMECODE_SOURCE_UNSPECIFIED {
-			obj.TimecodeConfig.Source = pb.TimecodeConfig_MEDIA_TIMESTAMP
-		}
-		if obj.RetentionConfig != nil && obj.RetentionConfig.RetentionWindowDuration == nil {
-			obj.RetentionConfig = nil
-		}
-		for _, manifest := range obj.Manifests {
-			if manifest.MaxSegmentCount == 0 {
-				manifest.MaxSegmentCount = 5
-			}
-			if manifest.SegmentKeepDuration == nil {
-				manifest.SegmentKeepDuration = &durationpb.Duration{Seconds: 60}
-			}
-		}
-		for _, stream := range obj.ElementaryStreams {
-			if vs := stream.GetVideoStream(); vs != nil && vs.GetH264() != nil {
-				h264 := vs.GetH264()
-				if h264.EntropyCoder == "" {
-					h264.EntropyCoder = "cabac"
-				}
-				if h264.GopMode == nil {
-					h264.GopMode = &pb.VideoStream_H264CodecSettings_GopDuration{
-						GopDuration: &durationpb.Duration{Seconds: 2},
-					}
-				}
-				if h264.Profile == "" {
-					h264.Profile = "main"
-				}
-				if h264.VbvSizeBits == 0 && h264.BitrateBps > 0 {
-					h264.VbvSizeBits = h264.BitrateBps
-				}
-				if h264.VbvFullnessBits == 0 && h264.BitrateBps > 0 {
-					h264.VbvFullnessBits = int32(float64(h264.BitrateBps) * 0.9)
-				}
-			}
-			if as := stream.GetAudioStream(); as != nil {
-				if as.SampleRateHertz == 0 {
-					as.SampleRateHertz = 48000
-				}
-			}
-		}
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func (a *channelAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Channel) error {
+	log.V(2).Info("creating Channel", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	status := krm.LiveStreamChannelStatus{}
-	status.ObservedState = LiveStreamChannelObservedState_FromProto(mapCtx, latest)
+
+	desired := a.desired.DeepCopy()
+	resource := LiveStreamChannelSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
-	return op.UpdateStatus(ctx, &status, nil)
+	req := &pb.CreateChannelRequest{
+		Parent:    a.id.ParentString(),
+		ChannelId: a.id.Channel,
+		Channel:   resource,
+	}
+	op, err := a.gcpClient.CreateChannel(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating Channel %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create Channel %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created Channel", "name", a.id)
+
+	status := &krm.LiveStreamChannelStatus{}
+	status.ObservedState = LiveStreamChannelObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *channelAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ChannelAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating Channel", "name", a.id)
+
+	desired, diffs, updateMask, err := compareChannel(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
+
+		req := &pb.UpdateChannelRequest{
+			Channel:    desired,
+			UpdateMask: updateMask,
+		}
+		op, err := a.gcpClient.UpdateChannel(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Channel %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Channel %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Channel", "name", a.id)
+
+		status := &krm.LiveStreamChannelStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = LiveStreamChannelObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareChannel(ctx context.Context, u *unstructured.Unstructured, actual *pb.Channel, desiredSpec *krm.LiveStreamChannelSpec) (*pb.Channel, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		LiveStreamChannelSpec_FromProto,
+		LiveStreamChannelSpec_ToProto,
+		nil,
+	)
+}
+
+func (a *ChannelAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -360,10 +239,9 @@ func (a *channelAdapter) Export(ctx context.Context) (*unstructured.Unstructured
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Channel)
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = direct.LazyPtr(a.id.Location)
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Channel)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -373,30 +251,29 @@ func (a *channelAdapter) Export(ctx context.Context) (*unstructured.Unstructured
 	u.Object = uObj
 	u.SetName(a.id.Channel)
 	u.SetGroupVersionKind(krm.LiveStreamChannelGVK)
-
 	return u, nil
 }
 
-func (a *channelAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ChannelAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting LiveStreamChannel", "id", a.id)
+	log.V(2).Info("deleting Channel", "name", a.id)
 
 	req := &pb.DeleteChannelRequest{
-		Name:  a.id.String(),
-		Force: true,
+		Name: a.id.String(),
 	}
 	op, err := a.gcpClient.DeleteChannel(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent LiveStreamChannel, assuming it was already deleted", "id", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting LiveStreamChannel %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Channel %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted Channel", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete LiveStreamChannel %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Channel %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

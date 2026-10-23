@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,17 +17,22 @@ package networkservices
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/networkservices/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/networkservices/apiv1"
 	networkservicespb "cloud.google.com/go/networkservices/apiv1/networkservicespb"
 	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -43,38 +48,25 @@ func NewServiceBindingModel(ctx context.Context, config *config.ControllerConfig
 }
 
 var _ directbase.Model = &modelServiceBinding{}
+var _ = strings.TrimPrefix
 
 type modelServiceBinding struct {
 	config config.ControllerConfig
 }
 
-func (m *modelServiceBinding) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building ServiceBinding client: %w", err)
-	}
-	return gcpClient, err
-}
-
 func (m *modelServiceBinding) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.NetworkServicesServiceBinding{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
 	id, err := krm.NewServiceBindingIdentity(ctx, reader, obj)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get networkservices GCP client
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
@@ -91,6 +83,20 @@ func (m *modelServiceBinding) AdapterForURL(ctx context.Context, url string) (di
 	return nil, nil
 }
 
+func (m *modelServiceBinding) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ServiceBinding client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type ServiceBindingAdapter struct {
 	id        *krm.ServiceBindingIdentity
 	gcpClient *gcp.Client
@@ -100,16 +106,14 @@ type ServiceBindingAdapter struct {
 
 var _ directbase.Adapter = &ServiceBindingAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *ServiceBindingAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting ServiceBinding", "name", a.id)
 
-	req := &networkservicespb.GetServiceBindingRequest{Name: a.id.String()}
-	servicebindingpb, err := a.gcpClient.GetServiceBinding(ctx, req)
+	req := &networkservicespb.GetServiceBindingRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetServiceBinding(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -117,11 +121,10 @@ func (a *ServiceBindingAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting ServiceBinding %q: %w", a.id, err)
 	}
 
-	a.actual = servicebindingpb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *ServiceBindingAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating ServiceBinding", "name", a.id)
@@ -132,12 +135,7 @@ func (a *ServiceBindingAdapter) Create(ctx context.Context, createOp *directbase
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	resource.Name = a.id.String()
-	resource.Labels = make(map[string]string)
-	for k, v := range a.desired.GetObjectMeta().GetLabels() {
-		resource.Labels[k] = v
-	}
-	resource.Labels["managed-by-cnrm"] = "true"
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &networkservicespb.CreateServiceBindingRequest{
 		Parent:           a.id.Parent().String(),
@@ -150,7 +148,7 @@ func (a *ServiceBindingAdapter) Create(ctx context.Context, createOp *directbase
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("ServiceBinding %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create ServiceBinding %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created ServiceBinding", "name", a.id)
 
@@ -163,16 +161,45 @@ func (a *ServiceBindingAdapter) Create(ctx context.Context, createOp *directbase
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *ServiceBindingAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating ServiceBinding", "name", a.id)
 
+	desired, diffs, updateMask, err := compareServiceBinding(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
+	if err != nil {
+		return err
+	}
+	_ = desired
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("NetworkServicesServiceBinding resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
 	status := &krm.NetworkServicesServiceBindingStatus{}
+	mapCtx := &direct.MapContext{}
+	status.ObservedState = NetworkServicesServiceBindingObservedState_v1alpha1_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func compareServiceBinding(ctx context.Context, u *unstructured.Unstructured, actual *networkservicespb.ServiceBinding, desiredSpec *krm.NetworkServicesServiceBindingSpec) (*networkservicespb.ServiceBinding, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	return common.CompareGreenfieldSpecAndLabels(
+		ctx,
+		u,
+		desiredSpec,
+		actual,
+		"labels",
+		NetworkServicesServiceBindingSpec_v1alpha1_FromProto,
+		NetworkServicesServiceBindingSpec_v1alpha1_ToProto,
+		nil,
+	)
+}
+
 func (a *ServiceBindingAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -187,38 +214,39 @@ func (a *ServiceBindingAdapter) Export(ctx context.Context) (*unstructured.Unstr
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
 	obj.Spec.Location = a.id.Parent().Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.id.String())
-	u.SetGroupVersionKind(krm.NetworkServicesServiceBindingGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.NetworkServicesServiceBindingGVK)
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *ServiceBindingAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting ServiceBinding", "name", a.id)
 
-	req := &networkservicespb.DeleteServiceBindingRequest{Name: a.id.String()}
+	req := &networkservicespb.DeleteServiceBindingRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteServiceBinding(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent ServiceBinding, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting ServiceBinding %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted ServiceBinding", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete ServiceBinding %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete ServiceBinding %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

@@ -1,0 +1,70 @@
+package: developerconnect
+kccservice: developerconnect
+kccversion: v1alpha1
+kind: DevConnectAccountConnector
+protoresource: AccountConnector
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.DevConnectAccountConnectorIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: ID()
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: direct.LazyPtr(a.id.Account_connector)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetAccountConnector
+    getrequesttype: GetAccountConnectorRequest
+    getnamefield: Name
+    createmethodname: CreateAccountConnector
+    createrequesttype: CreateAccountConnectorRequest
+    createparentfield: Parent
+    createbodyfield: AccountConnector
+    createidfield: AccountConnectorId
+    updatemethodname: UpdateAccountConnector
+    updaterequesttype: UpdateAccountConnectorRequest
+    updatebodyfield: AccountConnector
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteAccountConnector
+    deleterequesttype: DeleteAccountConnectorRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/developerconnect/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/developerconnect/apiv1/developerconnectpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

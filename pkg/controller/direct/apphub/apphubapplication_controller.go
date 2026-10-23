@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,27 +17,23 @@ package apphub
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/apphub/v1beta1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/apis/k8s/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/k8s"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/apphub/apiv1"
 	apphubpb "cloud.google.com/go/apphub/apiv1/apphubpb"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
 
@@ -50,38 +46,25 @@ func NewApplicationModel(ctx context.Context, config *config.ControllerConfig) (
 }
 
 var _ directbase.Model = &modelApplication{}
+var _ = strings.TrimPrefix
 
 type modelApplication struct {
 	config config.ControllerConfig
 }
 
-func (m *modelApplication) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building Application client: %w", err)
-	}
-	return gcpClient, err
-}
-
 func (m *modelApplication) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.AppHubApplication{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
 	id, err := krm.NewApplicationIdentity(ctx, reader, obj)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get apphub GCP client
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
@@ -98,6 +81,20 @@ func (m *modelApplication) AdapterForURL(ctx context.Context, url string) (direc
 	return nil, nil
 }
 
+func (m *modelApplication) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Application client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type ApplicationAdapter struct {
 	id        *krm.ApplicationIdentity
 	gcpClient *gcp.Client
@@ -107,16 +104,14 @@ type ApplicationAdapter struct {
 
 var _ directbase.Adapter = &ApplicationAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *ApplicationAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting Application", "name", a.id)
 
-	req := &apphubpb.GetApplicationRequest{Name: a.id.String()}
-	applicationpb, err := a.gcpClient.GetApplication(ctx, req)
+	req := &apphubpb.GetApplicationRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetApplication(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -124,11 +119,10 @@ func (a *ApplicationAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting Application %q: %w", a.id, err)
 	}
 
-	a.actual = applicationpb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *ApplicationAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating Application", "name", a.id)
@@ -139,7 +133,7 @@ func (a *ApplicationAdapter) Create(ctx context.Context, createOp *directbase.Cr
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	resource.Name = a.id.ID()
+
 	req := &apphubpb.CreateApplicationRequest{
 		Parent:        a.id.Parent().String(),
 		ApplicationId: a.id.ID(),
@@ -151,7 +145,7 @@ func (a *ApplicationAdapter) Create(ctx context.Context, createOp *directbase.Cr
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("application %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create Application %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created Application", "name", a.id)
 
@@ -164,76 +158,61 @@ func (a *ApplicationAdapter) Create(ctx context.Context, createOp *directbase.Cr
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *ApplicationAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating Application", "name", a.id)
-	mapCtx := &direct.MapContext{}
 
-	desiredPb := AppHubApplicationSpec_ToProto(mapCtx, &a.desired.DeepCopy().Spec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	paths := make(sets.Set[string])
-	var err error
-	paths, err = common.CompareProtoMessage(desiredPb, a.actual, common.BasicDiff)
+	desired, diffs, updateMask, err := compareApplication(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	// remove name from update paths
-	paths = paths.Delete("name")
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
 
-	if len(paths) == 0 {
-		// TODO: This is a bit of a hack, we should have a better way to handle this
+		req := &apphubpb.UpdateApplicationRequest{
+			Application: desired,
+			UpdateMask:  updateMask,
+		}
+		op, err := a.gcpClient.UpdateApplication(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Application %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update Application %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Application", "name", a.id)
+
 		status := &krm.AppHubApplicationStatus{}
-		status.ObservedState = AppHubApplicationObservedState_FromProto(mapCtx, a.actual)
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = AppHubApplicationObservedState_FromProto(mapCtx, updated)
 		if mapCtx.Err() != nil {
 			return mapCtx.Err()
 		}
-		condition := &v1alpha1.Condition{
-			Type:    v1alpha1.ReadyConditionType,
-			Status:  v1.ConditionTrue,
-			Reason:  k8s.UpToDate,
-			Message: "Application is up to date",
-		}
-		return updateOp.UpdateStatus(ctx, status, condition)
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-	for path := range paths {
-		report.AddField(path, nil, nil)
-	}
-	structuredreporting.ReportDiff(ctx, report)
-
-	updateMask := &fieldmaskpb.FieldMask{
-		Paths: sets.List(paths),
-	}
-	desiredPb.Name = a.id.String()
-	req := &apphubpb.UpdateApplicationRequest{
-		UpdateMask:  updateMask,
-		Application: desiredPb,
-	}
-	op, err := a.gcpClient.UpdateApplication(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating Application %s: %w", a.id, err)
-	}
-	updated, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("Application %s waiting update: %w", a.id, err)
-	}
-	log.V(2).Info("successfully updated Application", "name", a.id)
-
-	status := &krm.AppHubApplicationStatus{}
-	status.ObservedState = AppHubApplicationObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func compareApplication(ctx context.Context, u *unstructured.Unstructured, actual *apphubpb.Application, desiredSpec *krm.AppHubApplicationSpec) (*apphubpb.Application, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		AppHubApplicationSpec_FromProto,
+		AppHubApplicationSpec_ToProto,
+		nil,
+	)
+}
+
 func (a *ApplicationAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -248,38 +227,38 @@ func (a *ApplicationAdapter) Export(ctx context.Context) (*unstructured.Unstruct
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
 	obj.Spec.Location = a.id.Parent().Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.id.String())
-	u.SetGroupVersionKind(krm.AppHubApplicationGVK)
-
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.AppHubApplicationGVK)
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *ApplicationAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting Application", "name", a.id)
 
-	req := &apphubpb.DeleteApplicationRequest{Name: a.id.String()}
+	req := &apphubpb.DeleteApplicationRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteApplication(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent Application, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting Application %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted Application", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete Application %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Application %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

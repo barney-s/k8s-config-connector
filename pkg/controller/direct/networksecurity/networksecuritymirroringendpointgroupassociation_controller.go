@@ -17,26 +17,24 @@ package networksecurity
 import (
 	"context"
 	"fmt"
-
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/networksecurity/v1alpha1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
-	networksecurity "cloud.google.com/go/networksecurity/apiv1"
+	gcp "cloud.google.com/go/networksecurity/apiv1"
 	pb "cloud.google.com/go/networksecurity/apiv1/networksecuritypb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -44,192 +42,192 @@ func init() {
 }
 
 func NewMirroringEndpointGroupAssociationModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &mirroringEndpointGroupAssociationModel{config: *config}, nil
+	return &modelMirroringEndpointGroupAssociation{config: *config}, nil
 }
 
-var _ directbase.Model = &mirroringEndpointGroupAssociationModel{}
+var _ directbase.Model = &modelMirroringEndpointGroupAssociation{}
+var _ = strings.TrimPrefix
 
-type mirroringEndpointGroupAssociationModel struct {
+type modelMirroringEndpointGroupAssociation struct {
 	config config.ControllerConfig
 }
 
-func (m *mirroringEndpointGroupAssociationModel) client(ctx context.Context) (*networksecurity.MirroringClient, error) {
+func (m *modelMirroringEndpointGroupAssociation) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.NetworkSecurityMirroringEndpointGroupAssociation{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.NetworkSecurityMirroringEndpointGroupAssociationIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &MirroringEndpointGroupAssociationAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelMirroringEndpointGroupAssociation) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.NetworkSecurityMirroringEndpointGroupAssociationIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &MirroringEndpointGroupAssociationAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelMirroringEndpointGroupAssociation) client(ctx context.Context) (*gcp.MirroringClient, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
-	gcpClient, err := networksecurity.NewMirroringRESTClient(ctx, opts...)
+
+	gcpClient, err := gcp.NewMirroringRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building networksecurity Mirroring REST client: %w", err)
+		return nil, fmt.Errorf("building MirroringEndpointGroupAssociation client: %w", err)
 	}
-	return gcpClient, nil
+	return gcpClient, err
 }
 
-func (m *mirroringEndpointGroupAssociationModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.NetworkSecurityMirroringEndpointGroupAssociation{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := NetworkSecurityMirroringEndpointGroupAssociationSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if err := mapCtx.Err(); err != nil {
-		return nil, err
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &mirroringEndpointGroupAssociationAdapter{
-		gcpClient: gcpClient,
-		id:        id.(*krm.NetworkSecurityMirroringEndpointGroupAssociationIdentity),
-		desired:   desired,
-	}, nil
-}
-
-func (m *mirroringEndpointGroupAssociationModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.NetworkSecurityMirroringEndpointGroupAssociationIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		// Not recognized
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &mirroringEndpointGroupAssociationAdapter{
-		gcpClient: gcpClient,
-		id:        id,
-	}, nil
-}
-
-type mirroringEndpointGroupAssociationAdapter struct {
-	gcpClient *networksecurity.MirroringClient
+type MirroringEndpointGroupAssociationAdapter struct {
 	id        *krm.NetworkSecurityMirroringEndpointGroupAssociationIdentity
-	desired   *pb.MirroringEndpointGroupAssociation
+	gcpClient *gcp.MirroringClient
+	desired   *krm.NetworkSecurityMirroringEndpointGroupAssociation
 	actual    *pb.MirroringEndpointGroupAssociation
 }
 
-var _ directbase.Adapter = &mirroringEndpointGroupAssociationAdapter{}
+var _ directbase.Adapter = &MirroringEndpointGroupAssociationAdapter{}
 
-func (a *mirroringEndpointGroupAssociationAdapter) Find(ctx context.Context) (bool, error) {
+func (a *MirroringEndpointGroupAssociationAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("finding NetworkSecurityMirroringEndpointGroupAssociation", "name", a.id)
+	log.V(2).Info("getting MirroringEndpointGroupAssociation", "name", a.id)
 
-	req := &pb.GetMirroringEndpointGroupAssociationRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetMirroringEndpointGroupAssociation(ctx, req)
+	req := &pb.GetMirroringEndpointGroupAssociationRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetMirroringEndpointGroupAssociation(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting NetworkSecurityMirroringEndpointGroupAssociation %s: %w", a.id, err)
+		return false, fmt.Errorf("getting MirroringEndpointGroupAssociation %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *mirroringEndpointGroupAssociationAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *MirroringEndpointGroupAssociationAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating NetworkSecurityMirroringEndpointGroupAssociation", "name", a.id)
+	log.V(2).Info("creating MirroringEndpointGroupAssociation", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := NetworkSecurityMirroringEndpointGroupAssociationSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateMirroringEndpointGroupAssociationRequest{
 		Parent:                              a.id.ParentString(),
 		MirroringEndpointGroupAssociationId: a.id.MirroringEndpointGroupAssociation,
-		MirroringEndpointGroupAssociation:   a.desired,
+		MirroringEndpointGroupAssociation:   resource,
 	}
-
 	op, err := a.gcpClient.CreateMirroringEndpointGroupAssociation(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating NetworkSecurityMirroringEndpointGroupAssociation %s: %w", a.id, err)
+		return fmt.Errorf("creating MirroringEndpointGroupAssociation %s: %w", a.id, err)
 	}
-
-	_, err = op.Wait(ctx)
+	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("NetworkSecurityMirroringEndpointGroupAssociation %s waiting for creation: %w", a.id, err)
+		return fmt.Errorf("waiting create MirroringEndpointGroupAssociation %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created MirroringEndpointGroupAssociation", "name", a.id)
 
-	actual, err := a.gcpClient.GetMirroringEndpointGroupAssociation(ctx, &pb.GetMirroringEndpointGroupAssociationRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting NetworkSecurityMirroringEndpointGroupAssociation %s after creation: %w", a.id, err)
+	status := &krm.NetworkSecurityMirroringEndpointGroupAssociationStatus{}
+	status.ObservedState = NetworkSecurityMirroringEndpointGroupAssociationObservedState_v1alpha1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	log.V(2).Info("successfully created NetworkSecurityMirroringEndpointGroupAssociation", "name", a.id)
-
-	return a.updateStatus(ctx, createOp, actual)
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *mirroringEndpointGroupAssociationAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *MirroringEndpointGroupAssociationAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating NetworkSecurityMirroringEndpointGroupAssociation", "name", a.id)
+	log.V(2).Info("updating MirroringEndpointGroupAssociation", "name", a.id)
 
-	diffs, updateMask, err := compareMirroringEndpointGroupAssociation(ctx, a.actual, a.desired)
+	desired, diffs, updateMask, err := compareMirroringEndpointGroupAssociation(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
-
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desired := proto.Clone(a.desired).(*pb.MirroringEndpointGroupAssociation)
-		desired.Name = a.id.String()
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
 
 		req := &pb.UpdateMirroringEndpointGroupAssociationRequest{
 			MirroringEndpointGroupAssociation: desired,
 			UpdateMask:                        updateMask,
 		}
-
 		op, err := a.gcpClient.UpdateMirroringEndpointGroupAssociation(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating NetworkSecurityMirroringEndpointGroupAssociation %s: %w", a.id, err)
+			return fmt.Errorf("updating MirroringEndpointGroupAssociation %s: %w", a.id, err)
 		}
-
-		_, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("NetworkSecurityMirroringEndpointGroupAssociation %s waiting for update: %w", a.id, err)
+			return fmt.Errorf("waiting update MirroringEndpointGroupAssociation %s: %w", a.id, err)
 		}
+		log.V(2).Info("successfully updated MirroringEndpointGroupAssociation", "name", a.id)
+
+		status := &krm.NetworkSecurityMirroringEndpointGroupAssociationStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = NetworkSecurityMirroringEndpointGroupAssociationObservedState_v1alpha1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	latest, err := a.gcpClient.GetMirroringEndpointGroupAssociation(ctx, &pb.GetMirroringEndpointGroupAssociationRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting NetworkSecurityMirroringEndpointGroupAssociation %s after update: %w", a.id, err)
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *mirroringEndpointGroupAssociationAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.MirroringEndpointGroupAssociation) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.NetworkSecurityMirroringEndpointGroupAssociationStatus{}
-	status.ObservedState = NetworkSecurityMirroringEndpointGroupAssociationObservedState_v1alpha1_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
-
-	return op.UpdateStatus(ctx, status, nil)
+func compareMirroringEndpointGroupAssociation(ctx context.Context, u *unstructured.Unstructured, actual *pb.MirroringEndpointGroupAssociation, desiredSpec *krm.NetworkSecurityMirroringEndpointGroupAssociationSpec) (*pb.MirroringEndpointGroupAssociation, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		NetworkSecurityMirroringEndpointGroupAssociationSpec_v1alpha1_FromProto,
+		NetworkSecurityMirroringEndpointGroupAssociationSpec_v1alpha1_ToProto,
+		nil,
+	)
 }
 
-func (a *mirroringEndpointGroupAssociationAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *MirroringEndpointGroupAssociationAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -237,15 +235,11 @@ func (a *mirroringEndpointGroupAssociationAdapter) Export(ctx context.Context) (
 
 	obj := &krm.NetworkSecurityMirroringEndpointGroupAssociation{}
 	mapCtx := &direct.MapContext{}
-	spec := NetworkSecurityMirroringEndpointGroupAssociationSpec_v1alpha1_FromProto(mapCtx, a.actual)
+	obj.Spec = direct.ValueOf(NetworkSecurityMirroringEndpointGroupAssociationSpec_v1alpha1_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	if spec != nil {
-		obj.Spec = *spec
-	}
-
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{External: a.id.Project}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = &a.id.Location
 	obj.Spec.ResourceID = &a.id.MirroringEndpointGroupAssociation
 
@@ -260,39 +254,26 @@ func (a *mirroringEndpointGroupAssociationAdapter) Export(ctx context.Context) (
 	return u, nil
 }
 
-func (a *mirroringEndpointGroupAssociationAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *MirroringEndpointGroupAssociationAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting NetworkSecurityMirroringEndpointGroupAssociation", "name", a.id)
+	log.V(2).Info("deleting MirroringEndpointGroupAssociation", "name", a.id)
 
-	req := &pb.DeleteMirroringEndpointGroupAssociationRequest{Name: a.id.String()}
+	req := &pb.DeleteMirroringEndpointGroupAssociationRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteMirroringEndpointGroupAssociation(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting NetworkSecurityMirroringEndpointGroupAssociation %s: %w", a.id, err)
+		return false, fmt.Errorf("deleting MirroringEndpointGroupAssociation %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted MirroringEndpointGroupAssociation", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete MirroringEndpointGroupAssociation %s: %w", a.id, err)
 		}
-		return false, fmt.Errorf("NetworkSecurityMirroringEndpointGroupAssociation %s waiting for deletion: %w", a.id, err)
 	}
-
 	return true, nil
-}
-
-// compareMirroringEndpointGroupAssociation compares the actual and desired MirroringEndpointGroupAssociation state, returning the diff and update field mask.
-func compareMirroringEndpointGroupAssociation(ctx context.Context, actual, desired *pb.MirroringEndpointGroupAssociation) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, NetworkSecurityMirroringEndpointGroupAssociationSpec_v1alpha1_FromProto, NetworkSecurityMirroringEndpointGroupAssociationSpec_v1alpha1_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

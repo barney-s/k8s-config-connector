@@ -1,0 +1,67 @@
+package: networksecurity
+kccservice: networksecurity
+kccversion: v1alpha1
+kind: NetworkSecurityAddressGroup
+protoresource: AddressGroup
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.NetworkSecurityAddressGroupIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Addressgroup
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: false
+    haslocation: false
+    hasresourceid: false
+    createhasidfield: true
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetAddressGroup
+    getrequesttype: GetAddressGroupRequest
+    getnamefield: Name
+    createmethodname: CreateAddressGroup
+    createrequesttype: CreateAddressGroupRequest
+    createparentfield: Parent
+    createbodyfield: AddressGroup
+    createidfield: AddressGroupId
+    updatemethodname: UpdateAddressGroup
+    updaterequesttype: UpdateAddressGroupRequest
+    updatebodyfield: AddressGroup
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteAddressGroup
+    deleterequesttype: DeleteAddressGroupRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/networksecurity/apiv1
+    gcpclienttype: '*gcp.AddressGroupClient'
+    gcpclientconstructor: gcp.NewAddressGroupRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/networksecurity/apiv1/networksecuritypb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: _v1alpha1

@@ -1,0 +1,70 @@
+package: vectorsearch
+kccservice: vectorsearch
+kccversion: v1alpha1
+kind: VectorSearchCollection
+protoresource: Collection
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.VectorSearchCollectionIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Collection
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: '&a.id.Collection'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetCollection
+    getrequesttype: GetCollectionRequest
+    getnamefield: Name
+    createmethodname: CreateCollection
+    createrequesttype: CreateCollectionRequest
+    createparentfield: Parent
+    createbodyfield: Collection
+    createidfield: CollectionId
+    updatemethodname: UpdateCollection
+    updaterequesttype: UpdateCollectionRequest
+    updatebodyfield: Collection
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteCollection
+    deleterequesttype: DeleteCollectionRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/vectorsearch/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/vectorsearch/apiv1/vectorsearchpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

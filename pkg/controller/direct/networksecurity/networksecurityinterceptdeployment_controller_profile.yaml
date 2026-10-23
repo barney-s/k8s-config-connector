@@ -1,0 +1,70 @@
+package: networksecurity
+kccservice: networksecurity
+kccversion: v1alpha1
+kind: NetworkSecurityInterceptDeployment
+protoresource: InterceptDeployment
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.NetworkSecurityInterceptDeploymentIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: InterceptDeployment
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: '&a.id.InterceptDeployment'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetInterceptDeployment
+    getrequesttype: GetInterceptDeploymentRequest
+    getnamefield: Name
+    createmethodname: CreateInterceptDeployment
+    createrequesttype: CreateInterceptDeploymentRequest
+    createparentfield: Parent
+    createbodyfield: InterceptDeployment
+    createidfield: InterceptDeploymentId
+    updatemethodname: UpdateInterceptDeployment
+    updaterequesttype: UpdateInterceptDeploymentRequest
+    updatebodyfield: InterceptDeployment
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteInterceptDeployment
+    deleterequesttype: DeleteInterceptDeploymentRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/networksecurity/apiv1
+    gcpclienttype: '*gcp.InterceptClient'
+    gcpclientconstructor: gcp.NewInterceptRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/networksecurity/apiv1/networksecuritypb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: _v1alpha1

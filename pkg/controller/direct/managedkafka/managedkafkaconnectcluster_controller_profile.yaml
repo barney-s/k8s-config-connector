@@ -1,0 +1,70 @@
+package: managedkafka
+kccservice: managedkafka
+kccversion: v1alpha1
+kind: ManagedKafkaConnectCluster
+protoresource: ConnectCluster
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.ManagedKafkaConnectClusterIdentity
+    usegetidentity: false
+    constructorname: NewConnectClusterIdentity
+    parentstringexpr: ParentString()
+    idexpr: ID()
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetConnectCluster
+    getrequesttype: GetConnectClusterRequest
+    getnamefield: Name
+    createmethodname: CreateConnectCluster
+    createrequesttype: CreateConnectClusterRequest
+    createparentfield: Parent
+    createbodyfield: ConnectCluster
+    createidfield: ConnectClusterId
+    updatemethodname: UpdateConnectCluster
+    updaterequesttype: UpdateConnectClusterRequest
+    updatebodyfield: ConnectCluster
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteConnectCluster
+    deleterequesttype: DeleteConnectClusterRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/managedkafka/apiv1
+    gcpclienttype: '*gcp.ManagedKafkaConnectClient'
+    gcpclientconstructor: gcp.NewManagedKafkaConnectRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/managedkafka/apiv1/managedkafkapb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: _v1alpha1

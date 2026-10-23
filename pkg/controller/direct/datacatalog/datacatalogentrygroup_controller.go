@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,35 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.datacatalog.v1.DataCatalog
-// proto.message: google.cloud.datacatalog.v1.EntryGroup
-// crd.type: DataCatalogEntryGroup
-// crd.version: v1alpha1
-
 package datacatalog
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	api "cloud.google.com/go/datacatalog/apiv1"
-	pb "cloud.google.com/go/datacatalog/apiv1/datacatalogpb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/datacatalog/v1alpha1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
+	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/datacatalog/apiv1"
+	pb "cloud.google.com/go/datacatalog/apiv1/datacatalogpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -48,106 +42,94 @@ func init() {
 }
 
 func NewEntryGroupModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &entryGroupModel{config: *config}, nil
+	return &modelEntryGroup{config: *config}, nil
 }
 
-var _ directbase.Model = &entryGroupModel{}
+var _ directbase.Model = &modelEntryGroup{}
+var _ = strings.TrimPrefix
 
-type entryGroupModel struct {
+type modelEntryGroup struct {
 	config config.ControllerConfig
 }
 
-func (m *entryGroupModel) client(ctx context.Context, projectID string) (*api.Client, error) {
-	var opts []option.ClientOption
-
-	config := m.config
-
-	// the service requires that a quota project be set
-	if !config.UserProjectOverride || config.BillingProject == "" {
-		config.UserProjectOverride = true
-		config.BillingProject = projectID
-	}
-
-	opts, err := config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-
-	gcpClient, err := api.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building datacatalog entrygroup client: %w", err)
-	}
-
-	return gcpClient, nil
-}
-
-func (m *entryGroupModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelEntryGroup) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DataCatalogEntryGroup{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
 	id, err := krm.NewEntryGroupIdentity(ctx, reader, obj)
 	if err != nil {
 		return nil, err
 	}
 
-	gcpClient, err := m.client(ctx, id.Parent().ProjectID)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &entryGroupAdapter{
-		gcpClient: gcpClient,
+	return &EntryGroupAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *entryGroupModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelEntryGroup) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type entryGroupAdapter struct {
-	gcpClient *api.Client
+func (m *modelEntryGroup) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building EntryGroup client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type EntryGroupAdapter struct {
 	id        *krm.EntryGroupIdentity
+	gcpClient *gcp.Client
 	desired   *krm.DataCatalogEntryGroup
 	actual    *pb.EntryGroup
 }
 
-var _ directbase.Adapter = &entryGroupAdapter{}
+var _ directbase.Adapter = &EntryGroupAdapter{}
 
-func (a *entryGroupAdapter) Find(ctx context.Context) (bool, error) {
+func (a *EntryGroupAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting datacatalog entrygroup", "name", a.id)
+	log.V(2).Info("getting EntryGroup", "name", a.id)
 
-	req := &pb.GetEntryGroupRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetEntryGroup(ctx, req)
+	req := &pb.GetEntryGroupRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetEntryGroup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		if direct.IsPermissionDenied(err) {
-			// Seeing DatacatalogEntryGroup returning 403 when the entrygroup is not found.
-			return false, nil
-		}
-
-		return false, fmt.Errorf("getting datacatalog entrygroup %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting EntryGroup %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *entryGroupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *EntryGroupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating datacatalog entrygroup", "name", a.id)
+	log.V(2).Info("creating EntryGroup", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
-	desired := DataCatalogEntryGroupSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
+	desired := a.desired.DeepCopy()
+	resource := DataCatalogEntryGroupSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
@@ -155,13 +137,13 @@ func (a *entryGroupAdapter) Create(ctx context.Context, createOp *directbase.Cre
 	req := &pb.CreateEntryGroupRequest{
 		Parent:       a.id.Parent().String(),
 		EntryGroupId: a.id.ID(),
-		EntryGroup:   desired,
+		EntryGroup:   resource,
 	}
 	created, err := a.gcpClient.CreateEntryGroup(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating datacatalog entrygroup %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating EntryGroup %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created datacatalog entrygroup in gcp", "name", a.id)
+	log.V(2).Info("successfully created EntryGroup", "name", a.id)
 
 	status := &krm.DataCatalogEntryGroupStatus{}
 	status.ObservedState = DataCatalogEntryGroupObservedState_v1alpha1_FromProto(mapCtx, created)
@@ -172,63 +154,58 @@ func (a *entryGroupAdapter) Create(ctx context.Context, createOp *directbase.Cre
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *entryGroupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *EntryGroupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating datacatalog entrygroup", "name", a.id)
-	mapCtx := &direct.MapContext{}
+	log.V(2).Info("updating EntryGroup", "name", a.id)
 
-	desired := DataCatalogEntryGroupSpec_v1alpha1_ToProto(mapCtx, &a.desired.Spec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	desired.Name = a.id.String()
-
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	_, err := common.CompareProtoMessage(desired, a.actual, common.BasicDiff)
+	desired, diffs, updateMask, err := compareEntryGroup(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	updateMask := &fieldmaskpb.FieldMask{}
-	// Only description and display_name are updatable.
-	// transferred_to_dataplex is immutable after being set to true.
-	if !reflect.DeepEqual(desired.Description, a.actual.Description) {
-		report.AddField("description", a.actual.Description, desired.Description)
-		updateMask.Paths = append(updateMask.Paths, "description")
-	}
-	if !reflect.DeepEqual(desired.DisplayName, a.actual.DisplayName) {
-		report.AddField("display_name", a.actual.DisplayName, desired.DisplayName)
-		updateMask.Paths = append(updateMask.Paths, "display_name")
-	}
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
 
-	var updated *pb.EntryGroup
-	if len(updateMask.Paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		// even though there is no update, we still want to update KRM status
-		updated = a.actual
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
 		req := &pb.UpdateEntryGroupRequest{
 			EntryGroup: desired,
 			UpdateMask: updateMask,
 		}
-		updated, err = a.gcpClient.UpdateEntryGroup(ctx, req)
+		updated, err := a.gcpClient.UpdateEntryGroup(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating datacatalog entrygroup %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating EntryGroup %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated datacatalog entrygroup in gcp", "name", a.id)
+		log.V(2).Info("successfully updated EntryGroup", "name", a.id)
+
+		status := &krm.DataCatalogEntryGroupStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = DataCatalogEntryGroupObservedState_v1alpha1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	status := &krm.DataCatalogEntryGroupStatus{}
-	status.ObservedState = DataCatalogEntryGroupObservedState_v1alpha1_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-func (a *entryGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareEntryGroup(ctx context.Context, u *unstructured.Unstructured, actual *pb.EntryGroup, desiredSpec *krm.DataCatalogEntryGroupSpec) (*pb.EntryGroup, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		DataCatalogEntryGroupSpec_v1alpha1_FromProto,
+		DataCatalogEntryGroupSpec_v1alpha1_ToProto,
+		nil,
+	)
+}
+
+func (a *EntryGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -240,35 +217,34 @@ func (a *entryGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructu
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.ProjectRef = &refsv1beta1.ProjectRef{External: a.id.Parent().ProjectID}
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
 	obj.Spec.Location = a.id.Parent().Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.DataCatalogEntryGroupGVK)
-
-	u.Object = uObj
 	return u, nil
 }
 
-func (a *entryGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *EntryGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting datacatalog entrygroup", "name", a.id)
+	log.V(2).Info("deleting EntryGroup", "name", a.id)
 
-	req := &pb.DeleteEntryGroupRequest{Name: a.id.String()}
+	req := &pb.DeleteEntryGroupRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteEntryGroup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent datacatalog entrygroup, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting datacatalog entrygroup %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting EntryGroup %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted datacatalog entrygroup", "name", a.id)
-
+	log.V(2).Info("successfully deleted EntryGroup", "name", a.id)
 	return true, nil
 }

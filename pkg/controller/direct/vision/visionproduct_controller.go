@@ -17,9 +17,6 @@ package vision
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/vision/v2/apiv1"
-	pb "cloud.google.com/go/vision/v2/apiv1/visionpb"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/vision/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -27,98 +24,95 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/vision/v2/apiv1"
+	pb "cloud.google.com/go/vision/v2/apiv1/visionpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.VisionProductGVK, NewModel)
+	registry.RegisterModel(krm.VisionProductGVK, NewProductModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewProductModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelProduct{config: *config}, nil
 }
 
-type model struct {
+var _ directbase.Model = &modelProduct{}
+var _ = strings.TrimPrefix
+
+type modelProduct struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.ProductSearchClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewProductSearchRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building ProductSearch client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelProduct) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.VisionProduct{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.VisionProductIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	identity, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := VisionProductSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
 	return &ProductAdapter{
-		id:        identity.(*krm.VisionProductIdentity),
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desiredPb,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelProduct) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.VisionProductIdentity{}
 	if err := id.FromExternal(url); err != nil {
 		return nil, nil
 	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	return &ProductAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
+func (m *modelProduct) client(ctx context.Context) (*gcp.ProductSearchClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewProductSearchRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Product client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type ProductAdapter struct {
 	id        *krm.VisionProductIdentity
 	gcpClient *gcp.ProductSearchClient
-	desired   *pb.Product
+	desired   *krm.VisionProduct
 	actual    *pb.Product
 }
 
@@ -126,83 +120,103 @@ var _ directbase.Adapter = &ProductAdapter{}
 
 func (a *ProductAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting VisionProduct", "name", a.id.String())
+	log.V(2).Info("getting Product", "name", a.id)
 
-	req := &pb.GetProductRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetProduct(ctx, req)
+	req := &pb.GetProductRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetProduct(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting VisionProduct %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting Product %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
 func (a *ProductAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("creating VisionProduct", "id", fqn)
-
-	req := &pb.CreateProductRequest{
-		Parent:    a.id.ParentString(),
-		Product:   a.desired,
-		ProductId: a.id.Product,
-	}
-	created, err := a.gcpClient.CreateProduct(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating VisionProduct %s: %w", a.id.String(), err)
-	}
-	log.V(2).Info("successfully created VisionProduct", "name", a.id.String())
-
-	return a.updateStatus(ctx, createOp, created)
-}
-
-func (a *ProductAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating VisionProduct", "name", a.id.String())
-
-	diffs, updateMask, err := compareProduct(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	latest := a.actual
-	if diffs.HasDiff() {
-		diffs.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diffs)
-
-		desiredCopy := proto.Clone(a.desired).(*pb.Product)
-		desiredCopy.Name = a.id.String()
-
-		req := &pb.UpdateProductRequest{
-			Product:    desiredCopy,
-			UpdateMask: updateMask,
-		}
-
-		latest, err = a.gcpClient.UpdateProduct(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating VisionProduct %s: %w", a.id.String(), err)
-		}
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func (a *ProductAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.Product) error {
+	log.V(2).Info("creating Product", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	status := &krm.VisionProductStatus{}
-	status.ObservedState = VisionProductObservedState_FromProto(mapCtx, latest)
+
+	desired := a.desired.DeepCopy()
+	resource := VisionProductSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	externalRef := latest.GetName()
-	status.ExternalRef = &externalRef
+	req := &pb.CreateProductRequest{
+		Parent:    a.id.ParentString(),
+		ProductId: a.id.Product,
+		Product:   resource,
+	}
+	created, err := a.gcpClient.CreateProduct(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating Product %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created Product", "name", a.id)
 
-	return op.UpdateStatus(ctx, status, nil)
+	status := &krm.VisionProductStatus{}
+	status.ObservedState = VisionProductObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
+}
+
+func (a *ProductAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating Product", "name", a.id)
+
+	desired, diffs, updateMask, err := compareProduct(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
+
+		req := &pb.UpdateProductRequest{
+			Product:    desired,
+			UpdateMask: updateMask,
+		}
+		updated, err := a.gcpClient.UpdateProduct(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating Product %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated Product", "name", a.id)
+
+		status := &krm.VisionProductStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = VisionProductObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareProduct(ctx context.Context, u *unstructured.Unstructured, actual *pb.Product, desiredSpec *krm.VisionProductSpec) (*pb.Product, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		VisionProductSpec_FromProto,
+		VisionProductSpec_ToProto,
+		nil,
+	)
 }
 
 func (a *ProductAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -217,10 +231,9 @@ func (a *ProductAdapter) Export(ctx context.Context) (*unstructured.Unstructured
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.Product)
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = direct.LazyPtr(a.id.Location)
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Product)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -230,37 +243,23 @@ func (a *ProductAdapter) Export(ctx context.Context) (*unstructured.Unstructured
 	u.Object = uObj
 	u.SetName(a.id.Product)
 	u.SetGroupVersionKind(krm.VisionProductGVK)
-
 	return u, nil
 }
 
 func (a *ProductAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting VisionProduct", "name", a.id.String())
+	log.V(2).Info("deleting Product", "name", a.id)
 
-	req := &pb.DeleteProductRequest{Name: a.id.String()}
+	req := &pb.DeleteProductRequest{
+		Name: a.id.String(),
+	}
 	err := a.gcpClient.DeleteProduct(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent VisionProduct, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting VisionProduct %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting Product %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted VisionProduct", "name", a.id.String())
-
+	log.V(2).Info("successfully deleted Product", "name", a.id)
 	return true, nil
-}
-
-func compareProduct(ctx context.Context, actual, desired *pb.Product) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, VisionProductSpec_FromProto, VisionProductSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

@@ -1,0 +1,71 @@
+package: aiplatform
+kccservice: aiplatform
+kccversion: v1alpha1
+kind: AIPlatformSpecialistPool
+protoresource: SpecialistPool
+protoversion: ""
+identity:
+    strategy: server_generated
+    typename: krm.AIPlatformSpecialistPoolIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: SpecialistPool
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    servergeneratedid: true
+    nameisoutputonly: true
+    projectrefexpr: '&refs.ProjectRef{Name: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: '&a.id.SpecialistPool'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetSpecialistPool
+    getrequesttype: GetSpecialistPoolRequest
+    getnamefield: Name
+    createmethodname: CreateSpecialistPool
+    createrequesttype: CreateSpecialistPoolRequest
+    createparentfield: Parent
+    createbodyfield: SpecialistPool
+    createidfield: ""
+    updatemethodname: UpdateSpecialistPool
+    updaterequesttype: UpdateSpecialistPoolRequest
+    updatebodyfield: SpecialistPool
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteSpecialistPool
+    deleterequesttype: DeleteSpecialistPoolRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/aiplatform/apiv1
+    gcpclienttype: '*gcp.SpecialistPoolClient'
+    gcpclientconstructor: gcp.NewSpecialistPoolClient
+    usegrpcclient: true
+    pbimportpath: cloud.google.com/go/aiplatform/apiv1/aiplatformpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

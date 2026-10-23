@@ -1,0 +1,70 @@
+package: vision
+kccservice: vision
+kccversion: v1alpha1
+kind: VisionProduct
+protoresource: Product
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.VisionProductIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Product
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: direct.LazyPtr(a.id.Location)
+    resourceidexpr: direct.LazyPtr(a.id.Product)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetProduct
+    getrequesttype: GetProductRequest
+    getnamefield: Name
+    createmethodname: CreateProduct
+    createrequesttype: CreateProductRequest
+    createparentfield: Parent
+    createbodyfield: Product
+    createidfield: ProductId
+    updatemethodname: UpdateProduct
+    updaterequesttype: UpdateProductRequest
+    updatebodyfield: Product
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteProduct
+    deleterequesttype: DeleteProductRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/vision/v2/apiv1
+    gcpclienttype: '*gcp.ProductSearchClient'
+    gcpclientconstructor: gcp.NewProductSearchRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/vision/v2/apiv1/visionpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

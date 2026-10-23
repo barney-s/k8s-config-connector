@@ -1,0 +1,70 @@
+package: vmmigration
+kccservice: vmmigration
+kccversion: v1alpha1
+kind: VMMigrationGroup
+protoresource: Group
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.VMMigrationGroupIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Group
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: '&a.id.Group'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetGroup
+    getrequesttype: GetGroupRequest
+    getnamefield: Name
+    createmethodname: CreateGroup
+    createrequesttype: CreateGroupRequest
+    createparentfield: Parent
+    createbodyfield: Group
+    createidfield: GroupId
+    updatemethodname: UpdateGroup
+    updaterequesttype: UpdateGroupRequest
+    updatebodyfield: Group
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteGroup
+    deleterequesttype: DeleteGroupRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/vmmigration/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/vmmigration/apiv1/vmmigrationpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: false
+    hasobservedstate: true
+    mapperversionsuffix: ""

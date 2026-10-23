@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,35 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.backupdr.v1.BackupDR
-// proto.message: google.cloud.backupdr.v1.BackupPlan
-// crd.type: BackupDRBackupPlan
-// crd.version: v1alpha1
-
 package backupdr
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/backupdr/v1beta1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/backupdr/apiv1"
 	pb "cloud.google.com/go/backupdr/apiv1/backupdrpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -52,6 +48,7 @@ func NewBackupPlanModel(ctx context.Context, config *config.ControllerConfig) (d
 }
 
 var _ directbase.Model = &modelBackupPlan{}
+var _ = strings.TrimPrefix
 
 type modelBackupPlan struct {
 	config config.ControllerConfig
@@ -60,91 +57,74 @@ type modelBackupPlan struct {
 func (m *modelBackupPlan) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.BackupDRBackupPlan{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	idRaw, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idRaw.(*krm.BackupPlanIdentity)
+	id := i.(*krm.BackupPlanIdentity)
 
-	// resolve required reference fields
-	if obj.Spec.BackupVaultRef != nil {
-		if _, err := obj.Spec.BackupVaultRef.NormalizedExternal(ctx, reader, obj.GetNamespace()); err != nil {
-			return nil, err
-		}
-	}
-
-	mapCtx := &direct.MapContext{}
-	copied := obj.DeepCopy()
-	desired := BackupDRBackupPlanSpec_v1beta1_ToProto(mapCtx, &copied.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
-	// Get backupdr GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
-	if err != nil {
-		return nil, err
-	}
-	backupDRClient, err := gcpClient.newBackupDRClient(ctx)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &BackupPlanAdapter{
 		id:        id,
-		gcpClient: backupDRClient,
-		desired:   desired,
-		reader:    reader,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
 func (m *modelBackupPlan) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.BackupPlanIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := newGCPClient(ctx, &m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	backupDRClient, err := gcpClient.newBackupDRClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	return &BackupPlanAdapter{
 		id:        id,
-		gcpClient: backupDRClient,
+		gcpClient: gcpClient,
 	}, nil
+}
+
+func (m *modelBackupPlan) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building BackupPlan client: %w", err)
+	}
+	return gcpClient, err
 }
 
 type BackupPlanAdapter struct {
 	id        *krm.BackupPlanIdentity
 	gcpClient *gcp.Client
-	desired   *pb.BackupPlan
+	desired   *krm.BackupDRBackupPlan
 	actual    *pb.BackupPlan
-	reader    client.Reader
 }
 
 var _ directbase.Adapter = &BackupPlanAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
 func (a *BackupPlanAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting BackupPlan", "name", a.id)
 
-	req := &pb.GetBackupPlanRequest{Name: a.id.String()}
-	backupplanpb, err := a.gcpClient.GetBackupPlan(ctx, req)
+	req := &pb.GetBackupPlanRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBackupPlan(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -152,19 +132,26 @@ func (a *BackupPlanAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting BackupPlan %q: %w", a.id, err)
 	}
 
-	a.actual = backupplanpb
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *BackupPlanAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("creating BackupPlan", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := BackupDRBackupPlanSpec_v1beta1_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateBackupPlanRequest{
 		Parent:       a.id.ParentString(),
 		BackupPlanId: a.id.BackupPlan,
-		BackupPlan:   a.desired,
+		BackupPlan:   resource,
 	}
 	op, err := a.gcpClient.CreateBackupPlan(ctx, req)
 	if err != nil {
@@ -172,11 +159,10 @@ func (a *BackupPlanAdapter) Create(ctx context.Context, createOp *directbase.Cre
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("BackupPlan %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create BackupPlan %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created BackupPlan", "name", a.id)
 
-	mapCtx := &direct.MapContext{}
 	status := &krm.BackupDRBackupPlanStatus{}
 	status.ObservedState = BackupDRBackupPlanObservedState_v1beta1_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
@@ -186,39 +172,24 @@ func (a *BackupPlanAdapter) Create(ctx context.Context, createOp *directbase.Cre
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
 func (a *BackupPlanAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating BackupPlan", "name", a.id)
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	paths := []string{}
-	if !reflect.DeepEqual(a.desired.Description, a.actual.Description) {
-		report.AddField("description", a.actual.Description, a.desired.Description)
-		paths = append(paths, "description")
+	desired, diffs, updateMask, err := compareBackupPlan(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
+	if err != nil {
+		return err
 	}
-	if !reflect.DeepEqual(a.desired.BackupRules, a.actual.BackupRules) {
-		report.AddField("backup_rules", a.actual.BackupRules, a.desired.BackupRules)
-		paths = append(paths, "backup_rules")
-	}
-	if !reflect.DeepEqual(a.desired.ResourceType, a.actual.ResourceType) {
-		report.AddField("resource_type", a.actual.ResourceType, a.desired.ResourceType)
-		paths = append(paths, "resource_type")
-	}
-	if !reflect.DeepEqual(a.desired.Labels, a.actual.Labels) {
-		report.AddField("labels", a.actual.Labels, a.desired.Labels)
-		paths = append(paths, "labels")
+	_ = desired
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("BackupDRBackupPlan resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	if len(paths) != 0 {
-		structuredreporting.ReportDiff(ctx, report)
-		return fmt.Errorf("updating BackupPlan is not supported, fields: %v", paths)
-	}
-
-	// still need to update status (in the event of acquiring an existing resource)
-	mapCtx := &direct.MapContext{}
 	status := &krm.BackupDRBackupPlanStatus{}
+	mapCtx := &direct.MapContext{}
 	status.ObservedState = BackupDRBackupPlanObservedState_v1beta1_FromProto(mapCtx, a.actual)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
@@ -227,7 +198,19 @@ func (a *BackupPlanAdapter) Update(ctx context.Context, updateOp *directbase.Upd
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export maps the GCP object to a Config Connector resource `spec`.
+func compareBackupPlan(ctx context.Context, u *unstructured.Unstructured, actual *pb.BackupPlan, desiredSpec *krm.BackupDRBackupPlanSpec) (*pb.BackupPlan, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	return common.CompareGreenfieldSpecAndLabels(
+		ctx,
+		u,
+		desiredSpec,
+		actual,
+		"labels",
+		BackupDRBackupPlanSpec_v1beta1_FromProto,
+		BackupDRBackupPlanSpec_v1beta1_ToProto,
+		nil,
+	)
+}
+
 func (a *BackupPlanAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
@@ -240,9 +223,8 @@ func (a *BackupPlanAdapter) Export(ctx context.Context) (*unstructured.Unstructu
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.BackupVaultRef = &krm.BackupVaultRef{External: a.actual.BackupVault}
-	obj.Spec.Location = a.id.Location
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
+	obj.Spec.Location = a.id.Location
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.BackupPlan)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
@@ -251,34 +233,32 @@ func (a *BackupPlanAdapter) Export(ctx context.Context) (*unstructured.Unstructu
 	}
 
 	u.Object = uObj
-	u.SetGroupVersionKind(krm.BackupDRBackupPlanGVK)
 	u.SetName(a.id.BackupPlan)
-
+	u.SetGroupVersionKind(krm.BackupDRBackupPlanGVK)
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
 func (a *BackupPlanAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting BackupPlan", "name", a.id)
 
-	req := &pb.DeleteBackupPlanRequest{Name: a.id.String()}
+	req := &pb.DeleteBackupPlanRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteBackupPlan(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			// Return success if not found (assume it was already deleted).
-			log.V(2).Info("skipping delete for non-existent BackupPlan, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting BackupPlan %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted BackupPlan", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete BackupPlan %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete BackupPlan %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

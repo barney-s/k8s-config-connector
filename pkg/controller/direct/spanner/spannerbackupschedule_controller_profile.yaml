@@ -1,0 +1,68 @@
+package: spanner
+kccservice: spanner
+kccversion: v1beta1
+kind: SpannerBackupSchedule
+protoresource: BackupSchedule
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.BackupScheduleIdentity
+    usegetidentity: false
+    constructorname: NewBackupScheduleIdentity
+    parentstringexpr: Parent().String()
+    idexpr: ID()
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: false
+    haslocation: false
+    hasresourceid: false
+    createhasidfield: true
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetBackupSchedule
+    getrequesttype: GetBackupScheduleRequest
+    getnamefield: Name
+    createmethodname: CreateBackupSchedule
+    createrequesttype: CreateBackupScheduleRequest
+    createparentfield: Parent
+    createbodyfield: BackupSchedule
+    createidfield: BackupScheduleId
+    updatemethodname: UpdateBackupSchedule
+    updaterequesttype: UpdateBackupScheduleRequest
+    updatebodyfield: BackupSchedule
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteBackupSchedule
+    deleterequesttype: DeleteBackupScheduleRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/spanner/admin/database/apiv1
+    gcpclienttype: '*gcp.DatabaseAdminClient'
+    gcpclientconstructor: gcp.NewDatabaseAdminRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/spanner/admin/database/apiv1/databasepb
+    pbpackagealias: spannerbackupschedulespb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

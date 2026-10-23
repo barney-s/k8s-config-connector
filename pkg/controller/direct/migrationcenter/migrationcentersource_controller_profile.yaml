@@ -1,0 +1,70 @@
+package: migrationcenter
+kccservice: migrationcenter
+kccversion: v1alpha1
+kind: MigrationCenterSource
+protoresource: Source
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.MigrationCenterSourceIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Source
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: '&a.id.Source'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetSource
+    getrequesttype: GetSourceRequest
+    getnamefield: Name
+    createmethodname: CreateSource
+    createrequesttype: CreateSourceRequest
+    createparentfield: Parent
+    createbodyfield: Source
+    createidfield: SourceId
+    updatemethodname: UpdateSource
+    updaterequesttype: UpdateSourceRequest
+    updatebodyfield: Source
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteSource
+    deleterequesttype: DeleteSourceRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/migrationcenter/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/migrationcenter/apiv1/migrationcenterpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

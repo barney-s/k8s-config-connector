@@ -17,9 +17,6 @@ package conversationdataset
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/dialogflow/apiv2"
-	pb "cloud.google.com/go/dialogflow/apiv2/dialogflowpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dialogflow/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -27,221 +24,195 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/dialogflow/apiv2"
+	pb "cloud.google.com/go/dialogflow/apiv2/dialogflowpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.DialogflowConversationDatasetGVK, NewModel)
+	registry.RegisterModel(krm.DialogflowConversationDatasetGVK, NewConversationDatasetModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewConversationDatasetModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelConversationDataset{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelConversationDataset{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelConversationDataset struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.ConversationDatasetsClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewConversationDatasetsRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building ConversationDatasets REST client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelConversationDataset) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DialogflowConversationDataset{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	identity, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := identity.(*krm.DialogflowConversationDatasetIdentity)
+	id := i.(*krm.DialogflowConversationDatasetIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &Adapter{
+	return &ConversationDatasetAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelConversationDataset) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.DialogflowConversationDatasetIdentity{}
 	if err := id.FromExternal(url); err != nil {
 		return nil, nil
 	}
-
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &Adapter{
+	return &ConversationDatasetAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type Adapter struct {
+func (m *modelConversationDataset) client(ctx context.Context) (*gcp.ConversationDatasetsClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewConversationDatasetsRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ConversationDataset client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ConversationDatasetAdapter struct {
 	id        *krm.DialogflowConversationDatasetIdentity
 	gcpClient *gcp.ConversationDatasetsClient
 	desired   *krm.DialogflowConversationDataset
 	actual    *pb.ConversationDataset
 }
 
-var _ directbase.Adapter = &Adapter{}
+var _ directbase.Adapter = &ConversationDatasetAdapter{}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+func (a *ConversationDatasetAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting DialogflowConversationDataset", "name", a.id.String())
-
+	log.V(2).Info("getting ConversationDataset", "name", a.id)
 	if a.id.ConversationDataset == "" {
 		return false, nil
 	}
 
-	req := &pb.GetConversationDatasetRequest{Name: a.id.String()}
-	dataset, err := a.gcpClient.GetConversationDataset(ctx, req)
+	req := &pb.GetConversationDatasetRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetConversationDataset(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting DialogflowConversationDataset %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting ConversationDataset %q: %w", a.id, err)
 	}
 
-	a.actual = dataset
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ConversationDatasetAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating DialogflowConversationDataset", "parent", a.id.ParentString())
-
+	log.V(2).Info("creating ConversationDataset", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	desiredProto := DialogflowConversationDatasetSpec_ToProto(mapCtx, &a.desired.Spec)
+
+	desired := a.desired.DeepCopy()
+	resource := DialogflowConversationDatasetSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	desiredProto.Name = ""
 
 	req := &pb.CreateConversationDatasetRequest{
 		Parent:              a.id.ParentString(),
-		ConversationDataset: desiredProto,
+		ConversationDataset: resource,
 	}
 	op, err := a.gcpClient.CreateConversationDataset(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating DialogflowConversationDataset %s: %w", a.id.ParentString(), err)
+		return fmt.Errorf("creating ConversationDataset %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for creation of DialogflowConversationDataset %s: %w", a.id.ParentString(), err)
+		return fmt.Errorf("waiting create ConversationDataset %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created ConversationDataset", "name", a.id)
 
-	if created != nil && created.GetName() != "" {
-		if err := a.id.FromExternal(created.GetName()); err != nil {
-			return fmt.Errorf("parsing created name %q: %w", created.GetName(), err)
-		}
-	}
-
-	log.V(2).Info("successfully created DialogflowConversationDataset", "name", a.id.String())
-
-	latest, err := a.gcpClient.GetConversationDataset(ctx, &pb.GetConversationDatasetRequest{Name: a.id.String()})
-	if err != nil {
-		return fmt.Errorf("getting created DialogflowConversationDataset %s: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, createOp, latest)
-}
-
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating DialogflowConversationDataset", "name", a.id.String())
-
-	mapCtx := &direct.MapContext{}
-	desiredProto := DialogflowConversationDatasetSpec_ToProto(mapCtx, &a.desired.Spec)
+	status := &krm.DialogflowConversationDatasetStatus{}
+	status.ObservedState = DialogflowConversationDatasetObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	desiredProto.Name = a.id.String()
+	status.ExternalRef = direct.LazyPtr(created.GetName())
+	return createOp.UpdateStatus(ctx, status, nil)
+}
 
-	diffs, _, err := compareConversationDataset(ctx, a.actual, desiredProto)
+func (a *ConversationDatasetAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating ConversationDataset", "name", a.id)
+
+	desired, diffs, updateMask, err := compareConversationDataset(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
+	_ = desired
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("DialogflowConversationDataset resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-	return fmt.Errorf("DialogflowConversationDataset is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
-}
-
-func compareConversationDataset(ctx context.Context, actual, desired *pb.ConversationDataset) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, DialogflowConversationDatasetSpec_FromProto, DialogflowConversationDatasetSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	populateDefaults := func(obj *pb.ConversationDataset) {
-		// Populate defaults if any
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.ConversationDataset) error {
-	mapCtx := &direct.MapContext{}
 	status := &krm.DialogflowConversationDatasetStatus{}
-	status.ObservedState = DialogflowConversationDatasetObservedState_FromProto(mapCtx, latest)
+	mapCtx := &direct.MapContext{}
+	status.ObservedState = DialogflowConversationDatasetObservedState_FromProto(mapCtx, a.actual)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareConversationDataset(ctx context.Context, u *unstructured.Unstructured, actual *pb.ConversationDataset, desiredSpec *krm.DialogflowConversationDatasetSpec) (*pb.ConversationDataset, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		DialogflowConversationDatasetSpec_FromProto,
+		DialogflowConversationDatasetSpec_ToProto,
+		nil,
+	)
+}
+
+func (a *ConversationDatasetAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -253,12 +224,9 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	if a.id.Location != "" {
-		obj.Spec.Location = &a.id.Location
-	}
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.ConversationDataset)
 	obj.Spec.ProjectRef = &refs.ProjectRef{Name: a.id.Project}
+	obj.Spec.Location = &a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.ConversationDataset)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -268,37 +236,29 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	u.Object = uObj
 	u.SetName(a.id.ConversationDataset)
 	u.SetGroupVersionKind(krm.DialogflowConversationDatasetGVK)
-
-	export.SetProjectID(u, a.id.Project)
-
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ConversationDatasetAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting DialogflowConversationDataset", "name", a.id.String())
+	log.V(2).Info("deleting ConversationDataset", "name", a.id)
 
-	if a.id.ConversationDataset == "" {
-		return true, nil
+	req := &pb.DeleteConversationDatasetRequest{
+		Name: a.id.String(),
 	}
-
-	req := &pb.DeleteConversationDatasetRequest{Name: a.id.String()}
 	op, err := a.gcpClient.DeleteConversationDataset(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting DialogflowConversationDataset %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting ConversationDataset %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully deleted ConversationDataset", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
-		}
-		if err.Error() != "unsupported result type <nil>: <nil>" {
-			return false, fmt.Errorf("waiting for deletion of DialogflowConversationDataset %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete ConversationDataset %s: %w", a.id, err)
 		}
 	}
-	log.V(2).Info("successfully deleted DialogflowConversationDataset", "name", a.id.String())
 	return true, nil
 }

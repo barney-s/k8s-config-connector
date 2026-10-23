@@ -1,0 +1,67 @@
+package: dataplex
+kccservice: dataplex
+kccversion: v1alpha1
+kind: DataplexDataTaxonomy
+protoresource: DataTaxonomy
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.DataTaxonomyIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: DataTaxonomy
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: false
+    haslocation: false
+    hasresourceid: false
+    createhasidfield: true
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetDataTaxonomy
+    getrequesttype: GetDataTaxonomyRequest
+    getnamefield: Name
+    createmethodname: CreateDataTaxonomy
+    createrequesttype: CreateDataTaxonomyRequest
+    createparentfield: Parent
+    createbodyfield: DataTaxonomy
+    createidfield: DataTaxonomyId
+    updatemethodname: UpdateDataTaxonomy
+    updaterequesttype: UpdateDataTaxonomyRequest
+    updatebodyfield: DataTaxonomy
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteDataTaxonomy
+    deleterequesttype: DeleteDataTaxonomyRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/dataplex/apiv1
+    gcpclienttype: '*gcp.DataTaxonomyClient'
+    gcpclientconstructor: gcp.NewDataTaxonomyRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/dataplex/apiv1/dataplexpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

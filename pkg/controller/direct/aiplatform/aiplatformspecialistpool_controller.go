@@ -17,9 +17,6 @@ package aiplatform
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/aiplatform/apiv1"
-	pb "cloud.google.com/go/aiplatform/apiv1/aiplatformpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/aiplatform/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -27,245 +24,212 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/aiplatform/apiv1"
+	pb "cloud.google.com/go/aiplatform/apiv1/aiplatformpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.AIPlatformSpecialistPoolGVK, NewAIPlatformSpecialistPoolModel)
+	registry.RegisterModel(krm.AIPlatformSpecialistPoolGVK, NewSpecialistPoolModel)
 }
 
-func NewAIPlatformSpecialistPoolModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &aiplatformSpecialistPoolModel{config: config}, nil
+func NewSpecialistPoolModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelSpecialistPool{config: *config}, nil
 }
 
-var _ directbase.Model = &aiplatformSpecialistPoolModel{}
+var _ directbase.Model = &modelSpecialistPool{}
+var _ = strings.TrimPrefix
 
-type aiplatformSpecialistPoolModel struct {
-	config *config.ControllerConfig
+type modelSpecialistPool struct {
+	config config.ControllerConfig
 }
 
-func (m *aiplatformSpecialistPoolModel) client(ctx context.Context, location string) (*gcp.SpecialistPoolClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	endpoint := fmt.Sprintf("%s-aiplatform.googleapis.com:443", location)
-	opts = append(opts, option.WithEndpoint(endpoint))
-	gcpClient, err := gcp.NewSpecialistPoolClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building SpecialistPoolClient client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *aiplatformSpecialistPoolModel) AdapterForObject(ctx context.Context, reader *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelSpecialistPool) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
 	obj := &krm.AIPlatformSpecialistPool{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(reader.Object.Object, &obj); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := obj.GetIdentity(ctx, reader.Reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-
-	// Always call common.NormalizeReferences to resolve any resource references
-	if err := common.NormalizeReferences(ctx, reader.Reader, obj, nil); err != nil {
+	id := i.(*krm.AIPlatformSpecialistPoolIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	typedID, ok := id.(*krm.AIPlatformSpecialistPoolIdentity)
-	if !ok {
-		return nil, fmt.Errorf("expected AIPlatformSpecialistPoolIdentity, got %T", id)
-	}
-
-	gcpClient, err := m.client(ctx, typedID.Location)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredpb := AIPlatformSpecialistPoolSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, fmt.Errorf("mapping spec to proto: %w", mapCtx.Err())
-	}
-
-	return &AIPlatformSpecialistPoolAdapter{
-		id:        typedID,
+	return &SpecialistPoolAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		desiredpb: desiredpb,
 		desired:   obj,
 	}, nil
 }
 
-func (m *aiplatformSpecialistPoolModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelSpecialistPool) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.AIPlatformSpecialistPoolIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := m.client(ctx, id.Location)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &AIPlatformSpecialistPoolAdapter{
+	return &SpecialistPoolAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type AIPlatformSpecialistPoolAdapter struct {
+func (m *modelSpecialistPool) client(ctx context.Context) (*gcp.SpecialistPoolClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewSpecialistPoolClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building SpecialistPool client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type SpecialistPoolAdapter struct {
 	id        *krm.AIPlatformSpecialistPoolIdentity
 	gcpClient *gcp.SpecialistPoolClient
-	desiredpb *pb.SpecialistPool
 	desired   *krm.AIPlatformSpecialistPool
 	actual    *pb.SpecialistPool
 }
 
-var _ directbase.Adapter = &AIPlatformSpecialistPoolAdapter{}
+var _ directbase.Adapter = &SpecialistPoolAdapter{}
 
-func (a *AIPlatformSpecialistPoolAdapter) Find(ctx context.Context) (bool, error) {
-	// Rule 2: Find() Pre-Check Guard for service-generated ID
+func (a *SpecialistPoolAdapter) Find(ctx context.Context) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("getting SpecialistPool", "name", a.id)
 	if a.id.SpecialistPool == "" {
 		return false, nil
 	}
 
-	log := klog.FromContext(ctx)
-	log.V(2).Info("getting AIPlatformSpecialistPool", "name", a.id.String())
-
 	req := &pb.GetSpecialistPoolRequest{
 		Name: a.id.String(),
 	}
-
-	specialistPoolpb, err := a.gcpClient.GetSpecialistPool(ctx, req)
+	resp, err := a.gcpClient.GetSpecialistPool(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting AIPlatformSpecialistPool %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting SpecialistPool %q: %w", a.id, err)
 	}
 
-	a.actual = specialistPoolpb
-
-	mapCtx := &direct.MapContext{}
-	observedState := AIPlatformSpecialistPoolObservedState_FromProto(mapCtx, specialistPoolpb)
-	if mapCtx.Err() != nil {
-		return false, fmt.Errorf("mapping from proto to observed state: %w", mapCtx.Err())
-	}
-
-	if a.desired != nil {
-		a.desired.Status.ObservedState = observedState
-		a.desired.Status.ExternalRef = direct.LazyPtr(a.id.String())
-	}
+	a.actual = resp
 	return true, nil
 }
 
-func (a *AIPlatformSpecialistPoolAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *SpecialistPoolAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating AIPlatformSpecialistPool", "parent", a.id.ParentString())
+	log.V(2).Info("creating SpecialistPool", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	// Rule 3: Do not set desiredpb.Name, let GCP generate the identifier.
-	a.desiredpb.Name = ""
+	desired := a.desired.DeepCopy()
+	resource := AIPlatformSpecialistPoolSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateSpecialistPoolRequest{
 		Parent:         a.id.ParentString(),
-		SpecialistPool: a.desiredpb,
+		SpecialistPool: resource,
 	}
-
 	op, err := a.gcpClient.CreateSpecialistPool(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating AIPlatformSpecialistPool in %q: %w", a.id.ParentString(), err)
+		return fmt.Errorf("creating SpecialistPool %s: %w", a.id, err)
 	}
-
-	log.V(2).Info("successfully started creation of AIPlatformSpecialistPool", "parent", a.id.ParentString())
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for AIPlatformSpecialistPool creation in %q: %w", a.id.ParentString(), err)
+		return fmt.Errorf("waiting create SpecialistPool %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created SpecialistPool", "name", a.id)
 
-	if created != nil && created.Name != "" {
-		tempID := &krm.AIPlatformSpecialistPoolIdentity{}
-		if err := tempID.FromExternal(created.Name); err != nil {
-			return fmt.Errorf("parsing created AIPlatformSpecialistPool name %q: %w", created.Name, err)
-		}
-		a.id.SpecialistPool = tempID.SpecialistPool
+	status := &krm.AIPlatformSpecialistPoolStatus{}
+	status.ObservedState = AIPlatformSpecialistPoolObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
 	}
-
-	log.V(2).Info("successfully completed creation of AIPlatformSpecialistPool", "name", a.id.String())
-
-	// Fetch fully-populated resource immediately after LRO success
-	getReq := &pb.GetSpecialistPoolRequest{
-		Name: a.id.String(),
-	}
-	latest, err := a.gcpClient.GetSpecialistPool(ctx, getReq)
-	if err != nil {
-		return fmt.Errorf("fetching newly created AIPlatformSpecialistPool %q: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, createOp, latest)
+	status.ExternalRef = direct.LazyPtr(created.GetName())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *AIPlatformSpecialistPoolAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *SpecialistPoolAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating AIPlatformSpecialistPool", "name", a.id.String())
+	log.V(2).Info("updating SpecialistPool", "name", a.id)
 
-	a.desiredpb.Name = a.id.String()
-
-	diffs, updateMask, err := compareSpecialistPool(ctx, a.actual, a.desiredpb)
+	desired, diffs, updateMask, err := compareSpecialistPool(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id.String())
-		return a.updateStatus(ctx, updateOp, a.actual)
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
+
+		req := &pb.UpdateSpecialistPoolRequest{
+			SpecialistPool: desired,
+			UpdateMask:     updateMask,
+		}
+		op, err := a.gcpClient.UpdateSpecialistPool(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating SpecialistPool %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update SpecialistPool %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated SpecialistPool", "name", a.id)
+
+		status := &krm.AIPlatformSpecialistPoolStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = AIPlatformSpecialistPoolObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	req := &pb.UpdateSpecialistPoolRequest{
-		SpecialistPool: a.desiredpb,
-		UpdateMask:     updateMask,
-	}
-
-	op, err := a.gcpClient.UpdateSpecialistPool(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating AIPlatformSpecialistPool %q: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully started update of AIPlatformSpecialistPool", "name", a.id.String())
-
-	_, err = op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for AIPlatformSpecialistPool %q update: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully completed update of AIPlatformSpecialistPool", "name", a.id.String())
-
-	getReq := &pb.GetSpecialistPoolRequest{
-		Name: a.id.String(),
-	}
-	latest, err := a.gcpClient.GetSpecialistPool(ctx, getReq)
-	if err != nil {
-		return fmt.Errorf("fetching updated AIPlatformSpecialistPool %q: %w", a.id.String(), err)
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *AIPlatformSpecialistPoolAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareSpecialistPool(ctx context.Context, u *unstructured.Unstructured, actual *pb.SpecialistPool, desiredSpec *krm.AIPlatformSpecialistPoolSpec) (*pb.SpecialistPool, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		AIPlatformSpecialistPoolSpec_FromProto,
+		AIPlatformSpecialistPoolSpec_ToProto,
+		nil,
+	)
+}
+
+func (a *SpecialistPoolAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -277,74 +241,41 @@ func (a *AIPlatformSpecialistPoolAdapter) Export(ctx context.Context) (*unstruct
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
 	obj.Spec.ProjectRef = &refs.ProjectRef{Name: a.id.Project}
 	obj.Spec.Location = &a.id.Location
 	obj.Spec.ResourceID = &a.id.SpecialistPool
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return nil, fmt.Errorf("converting to unstructured: %w", err)
+		return nil, err
 	}
 
 	u.Object = uObj
 	u.SetName(a.id.SpecialistPool)
 	u.SetGroupVersionKind(krm.AIPlatformSpecialistPoolGVK)
-
 	return u, nil
 }
 
-func (a *AIPlatformSpecialistPoolAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.SpecialistPool) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.AIPlatformSpecialistPoolStatus{}
-	status.ObservedState = AIPlatformSpecialistPoolObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return fmt.Errorf("mapping status: %w", mapCtx.Err())
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
-}
-
-func (a *AIPlatformSpecialistPoolAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *SpecialistPoolAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting AIPlatformSpecialistPool", "name", a.id.String())
+	log.V(2).Info("deleting SpecialistPool", "name", a.id)
 
 	req := &pb.DeleteSpecialistPoolRequest{
 		Name: a.id.String(),
 	}
-
 	op, err := a.gcpClient.DeleteSpecialistPool(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting AIPlatformSpecialistPool %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting SpecialistPool %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted SpecialistPool", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete SpecialistPool %s: %w", a.id, err)
 		}
-		return false, fmt.Errorf("waiting for deletion of AIPlatformSpecialistPool %q: %w", a.id.String(), err)
 	}
-
 	return true, nil
-}
-
-func compareSpecialistPool(ctx context.Context, actual, desired *pb.SpecialistPool) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, AIPlatformSpecialistPoolSpec_FromProto, AIPlatformSpecialistPoolSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	clonedDesired := proto.CloneOf(desired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return diffs, updateMask, nil
 }

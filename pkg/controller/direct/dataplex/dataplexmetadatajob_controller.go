@@ -12,188 +12,202 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.dataplex.v1.CatalogService
-// proto.message: google.cloud.dataplex.v1.MetadataJob
-// crd.type: DataplexMetadataJob
-// crd.version: v1alpha1
-
 package dataplex
 
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/dataplex/apiv1"
-	pb "cloud.google.com/go/dataplex/apiv1/dataplexpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/dataplex/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/dataplex/apiv1"
+	pb "cloud.google.com/go/dataplex/apiv1/dataplexpb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
-	registry.RegisterModel(krm.DataplexMetadataJobGVK, NewMetadataJobModel, registry.CannotBeDeleted())
+	registry.RegisterModel(krm.DataplexMetadataJobGVK, NewMetadataJobModel)
 }
 
 func NewMetadataJobModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &metadataJobModel{config: config}, nil
+	return &modelMetadataJob{config: *config}, nil
 }
 
-var _ directbase.Model = &metadataJobModel{}
+var _ directbase.Model = &modelMetadataJob{}
+var _ = strings.TrimPrefix
 
-type metadataJobModel struct {
-	config *config.ControllerConfig
+type modelMetadataJob struct {
+	config config.ControllerConfig
 }
 
-func (m *metadataJobModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelMetadataJob) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.DataplexMetadataJob{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.MetadataJobIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	copied := obj.DeepCopy()
-	mapCtx := &direct.MapContext{}
-	desired := DataplexMetadataJobSpec_ToProto(mapCtx, &copied.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
-	idI, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := idI.(*krm.MetadataJobIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type %T", idI)
-	}
-
-	adapter := &metadataJobAdapter{
-		id:      id,
-		desired: desired,
-		reader:  reader,
-	}
-
-	// Get GCP client
-	gcpClient, err := newGCPClient(ctx, m.config)
-	if err != nil {
-		return nil, fmt.Errorf("building gcp client: %w", err)
-	}
-	client, err := gcpClient.catalogClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	adapter.gcpClient = client
-
-	return adapter, nil
+	return &MetadataJobAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
 }
 
-func (m *metadataJobModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelMetadataJob) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type metadataJobAdapter struct {
-	gcpClient *gcp.CatalogClient
-	id        *krm.MetadataJobIdentity
-	desired   *pb.MetadataJob
-	actual    *pb.MetadataJob
-	reader    client.Reader
+func (m *modelMetadataJob) client(ctx context.Context) (*gcp.CatalogClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewCatalogRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building MetadataJob client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &metadataJobAdapter{}
+type MetadataJobAdapter struct {
+	id        *krm.MetadataJobIdentity
+	gcpClient *gcp.CatalogClient
+	desired   *krm.DataplexMetadataJob
+	actual    *pb.MetadataJob
+}
 
-func (a *metadataJobAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &MetadataJobAdapter{}
+
+func (a *MetadataJobAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting dataplex metadatajob", "name", a.id)
+	log.V(2).Info("getting MetadataJob", "name", a.id)
 
-	req := &pb.GetMetadataJobRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetMetadataJob(ctx, req)
+	req := &pb.GetMetadataJobRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetMetadataJob(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting dataplex metadatajob %q: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting MetadataJob %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *metadataJobAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *MetadataJobAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating dataplex metadatajob", "name", a.id)
+	log.V(2).Info("creating MetadataJob", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := DataplexMetadataJobSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateMetadataJobRequest{
 		Parent:        a.id.ParentString(),
-		MetadataJob:   a.desired,
 		MetadataJobId: a.id.MetadataJob,
+		MetadataJob:   resource,
 	}
 	op, err := a.gcpClient.CreateMetadataJob(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating dataplex metadatajob %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating MetadataJob %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting create dataplex metadatajob %s failed: %w", a.id, err)
+		return fmt.Errorf("waiting create MetadataJob %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created MetadataJob", "name", a.id)
 
-	log.V(2).Info("successfully created dataplex metadatajob in gcp", "name", a.id)
-
-	mapCtx := &direct.MapContext{}
 	status := &krm.DataplexMetadataJobStatus{}
 	status.ObservedState = DataplexMetadataJobObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *metadataJobAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *MetadataJobAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating dataplex metadatajob", "name", a.id)
+	log.V(2).Info("updating MetadataJob", "name", a.id)
 
-	paths, err := common.CompareProtoMessage(a.desired, a.actual, common.BasicDiff)
+	desired, diffs, updateMask, err := compareMetadataJob(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
-		return fmt.Errorf("comparing spec: %w", err)
+		return err
 	}
-	if len(paths) > 0 {
-		return fmt.Errorf("DataplexMetadataJob is immutable and cannot be updated. Detected changes: %v", paths.UnsortedList())
+	_ = desired
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("DataplexMetadataJob resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	// Even though there is no update, we still want to update KRM status with the latest state from Find().
-	mapCtx := &direct.MapContext{}
 	status := &krm.DataplexMetadataJobStatus{}
+	mapCtx := &direct.MapContext{}
 	status.ObservedState = DataplexMetadataJobObservedState_FromProto(mapCtx, a.actual)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = direct.PtrTo(a.id.String())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *metadataJobAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	log := klog.FromContext(ctx)
+func compareMetadataJob(ctx context.Context, u *unstructured.Unstructured, actual *pb.MetadataJob, desiredSpec *krm.DataplexMetadataJobSpec) (*pb.MetadataJob, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	return common.CompareGreenfieldSpecAndLabels(
+		ctx,
+		u,
+		desiredSpec,
+		actual,
+		"labels",
+		DataplexMetadataJobSpec_FromProto,
+		DataplexMetadataJobSpec_ToProto,
+		nil,
+	)
+}
 
+func (a *MetadataJobAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
 	obj := &krm.DataplexMetadataJob{}
 	mapCtx := &direct.MapContext{}
@@ -207,18 +221,15 @@ func (a *metadataJobAdapter) Export(ctx context.Context) (*unstructured.Unstruct
 		return nil, err
 	}
 
-	u := &unstructured.Unstructured{Object: uObj}
+	u.Object = uObj
 	u.SetName(a.id.MetadataJob)
 	u.SetGroupVersionKind(krm.DataplexMetadataJobGVK)
-
-	log.Info("exported object", "obj", u, "gvk", u.GroupVersionKind())
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *metadataJobAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *MetadataJobAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting dataplex metadatajob (no-op)", "name", a.id)
-	// MetadataJob does not support deletion. Returning true allows KCC to remove the finalizer.
+	log.V(2).Info("deletion not supported for MetadataJob, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
 }

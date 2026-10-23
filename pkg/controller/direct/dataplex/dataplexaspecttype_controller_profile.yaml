@@ -1,0 +1,67 @@
+package: dataplex
+kccservice: dataplex
+kccversion: v1alpha1
+kind: DataplexAspectType
+protoresource: AspectType
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.AspectTypeIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: AspectType
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: false
+    haslocation: false
+    hasresourceid: false
+    createhasidfield: true
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetAspectType
+    getrequesttype: GetAspectTypeRequest
+    getnamefield: Name
+    createmethodname: CreateAspectType
+    createrequesttype: CreateAspectTypeRequest
+    createparentfield: Parent
+    createbodyfield: AspectType
+    createidfield: AspectTypeId
+    updatemethodname: UpdateAspectType
+    updaterequesttype: UpdateAspectTypeRequest
+    updatebodyfield: AspectType
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteAspectType
+    deleterequesttype: DeleteAspectTypeRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/dataplex/apiv1
+    gcpclienttype: '*gcp.CatalogClient'
+    gcpclientconstructor: gcp.NewCatalogRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/dataplex/apiv1/dataplexpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

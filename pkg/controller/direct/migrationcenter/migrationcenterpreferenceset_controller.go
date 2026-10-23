@@ -17,9 +17,6 @@ package migrationcenter
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/migrationcenter/apiv1"
-	pb "cloud.google.com/go/migrationcenter/apiv1/migrationcenterpb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/migrationcenter/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -27,10 +24,13 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/migrationcenter/apiv1"
+	pb "cloud.google.com/go/migrationcenter/apiv1/migrationcenterpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -42,188 +42,182 @@ func init() {
 }
 
 func NewPreferenceSetModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &preferenceSetModel{config: *config}, nil
+	return &modelPreferenceSet{config: *config}, nil
 }
 
-var _ directbase.Model = &preferenceSetModel{}
+var _ directbase.Model = &modelPreferenceSet{}
+var _ = strings.TrimPrefix
 
-type preferenceSetModel struct {
+type modelPreferenceSet struct {
 	config config.ControllerConfig
 }
 
-func (m *preferenceSetModel) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building migrationcenter client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *preferenceSetModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelPreferenceSet) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.MigrationCenterPreferenceSet{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-	identity, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	preferenceSetIdentity := identity.(*krm.MigrationCenterPreferenceSetIdentity)
-
-	mapCtx := &direct.MapContext{}
-	desired := MigrationCenterPreferenceSetSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
+	id := i.(*krm.MigrationCenterPreferenceSetIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &preferenceSetAdapter{
-		id:        preferenceSetIdentity,
+	return &PreferenceSetAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *preferenceSetModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelPreferenceSet) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type preferenceSetAdapter struct {
+func (m *modelPreferenceSet) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building PreferenceSet client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type PreferenceSetAdapter struct {
 	id        *krm.MigrationCenterPreferenceSetIdentity
 	gcpClient *gcp.Client
-	desired   *pb.PreferenceSet
+	desired   *krm.MigrationCenterPreferenceSet
 	actual    *pb.PreferenceSet
 }
 
-var _ directbase.Adapter = &preferenceSetAdapter{}
+var _ directbase.Adapter = &PreferenceSetAdapter{}
 
-func (a *preferenceSetAdapter) Find(ctx context.Context) (bool, error) {
+func (a *PreferenceSetAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
+	log.V(2).Info("getting PreferenceSet", "name", a.id)
 
-	if a.id.PreferenceSet == "" { // resource is not yet created
-		return false, nil
+	req := &pb.GetPreferenceSetRequest{
+		Name: a.id.String(),
 	}
-	fqn := a.id.String()
-	log.V(2).Info("getting MigrationCenterPreferenceSet", "name", fqn)
-
-	req := &pb.GetPreferenceSetRequest{Name: fqn}
-	prefSetPb, err := a.gcpClient.GetPreferenceSet(ctx, req)
+	resp, err := a.gcpClient.GetPreferenceSet(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting MigrationCenterPreferenceSet %q: %w", fqn, err)
+		return false, fmt.Errorf("getting PreferenceSet %q: %w", a.id, err)
 	}
 
-	a.actual = prefSetPb
+	a.actual = resp
 	return true, nil
 }
 
-func (a *preferenceSetAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
-	fqn := a.id.String()
+func (a *PreferenceSetAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating MigrationCenterPreferenceSet", "name", fqn)
-
-	parent := a.id.ParentString()
-	clonedDesired := proto.Clone(a.desired).(*pb.PreferenceSet)
-	req := &pb.CreatePreferenceSetRequest{
-		Parent:          parent,
-		PreferenceSetId: a.id.PreferenceSet,
-		PreferenceSet:   clonedDesired,
-	}
-	op, err := a.gcpClient.CreatePreferenceSet(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating MigrationCenterPreferenceSet %s: %w", fqn, err)
-	}
-	created, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting MigrationCenterPreferenceSet %s creation: %w", fqn, err)
-	}
-	log.V(2).Info("successfully created MigrationCenterPreferenceSet", "name", created.Name)
-
-	latest, err := a.gcpClient.GetPreferenceSet(ctx, &pb.GetPreferenceSetRequest{Name: fqn})
-	if err != nil {
-		latest = created
-	}
-
-	return a.updateStatus(ctx, createOp, latest)
-}
-
-func (a *preferenceSetAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	u := updateOp.GetUnstructured()
-
-	fqn := a.id.String()
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating MigrationCenterPreferenceSet", "name", fqn)
-
-	maskedActual, err := mappers.OnlySpecFields(a.actual, MigrationCenterPreferenceSetSpec_FromProto, MigrationCenterPreferenceSetSpec_ToProto)
-	if err != nil {
-		return err
-	}
-
-	clonedDesired := proto.Clone(a.desired).(*pb.PreferenceSet)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return err
-	}
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", fqn)
-		return a.updateStatus(ctx, updateOp, a.actual)
-	}
-
-	diffs.Object = u
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	clonedDesired.Name = a.actual.Name
-	req := &pb.UpdatePreferenceSetRequest{
-		PreferenceSet: clonedDesired,
-		UpdateMask:    updateMask,
-	}
-	op, err := a.gcpClient.UpdatePreferenceSet(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating MigrationCenterPreferenceSet %s: %w", fqn, err)
-	}
-	updated, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting MigrationCenterPreferenceSet %s update: %w", fqn, err)
-	}
-	log.V(2).Info("successfully updated MigrationCenterPreferenceSet", "name", fqn)
-
-	latest, err := a.gcpClient.GetPreferenceSet(ctx, &pb.GetPreferenceSetRequest{Name: fqn})
-	if err != nil {
-		latest = updated
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func (a *preferenceSetAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.PreferenceSet) error {
+	log.V(2).Info("creating PreferenceSet", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	status := &krm.MigrationCenterPreferenceSetStatus{}
-	status.ObservedState = MigrationCenterPreferenceSetObservedState_FromProto(mapCtx, latest)
+
+	desired := a.desired.DeepCopy()
+	resource := MigrationCenterPreferenceSetSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-	status.ExternalRef = &latest.Name
-	return op.UpdateStatus(ctx, status, nil)
+
+	req := &pb.CreatePreferenceSetRequest{
+		Parent:          a.id.ParentString(),
+		PreferenceSetId: a.id.PreferenceSet,
+		PreferenceSet:   resource,
+	}
+	op, err := a.gcpClient.CreatePreferenceSet(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating PreferenceSet %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create PreferenceSet %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created PreferenceSet", "name", a.id)
+
+	status := &krm.MigrationCenterPreferenceSetStatus{}
+	status.ObservedState = MigrationCenterPreferenceSetObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *preferenceSetAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *PreferenceSetAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating PreferenceSet", "name", a.id)
+
+	desired, diffs, updateMask, err := comparePreferenceSet(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
+
+		req := &pb.UpdatePreferenceSetRequest{
+			PreferenceSet: desired,
+			UpdateMask:    updateMask,
+		}
+		op, err := a.gcpClient.UpdatePreferenceSet(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating PreferenceSet %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update PreferenceSet %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated PreferenceSet", "name", a.id)
+
+		status := &krm.MigrationCenterPreferenceSetStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = MigrationCenterPreferenceSetObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func comparePreferenceSet(ctx context.Context, u *unstructured.Unstructured, actual *pb.PreferenceSet, desiredSpec *krm.MigrationCenterPreferenceSetSpec) (*pb.PreferenceSet, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		MigrationCenterPreferenceSetSpec_FromProto,
+		MigrationCenterPreferenceSetSpec_ToProto,
+		nil,
+	)
+}
+
+func (a *PreferenceSetAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -232,40 +226,44 @@ func (a *preferenceSetAdapter) Export(ctx context.Context) (*unstructured.Unstru
 	obj := &krm.MigrationCenterPreferenceSet{}
 	mapCtx := &direct.MapContext{}
 	obj.Spec = direct.ValueOf(MigrationCenterPreferenceSetSpec_FromProto(mapCtx, a.actual))
-	obj.Spec.ResourceID = &a.id.PreferenceSet
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{Name: a.id.Project}
 	obj.Spec.Location = &a.id.Location
+	obj.Spec.ResourceID = &a.id.PreferenceSet
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
+
 	u.Object = uObj
 	u.SetName(a.id.PreferenceSet)
 	u.SetGroupVersionKind(krm.MigrationCenterPreferenceSetGVK)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *preferenceSetAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *PreferenceSetAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("deleting MigrationCenterPreferenceSet", "name", fqn)
+	log.V(2).Info("deleting PreferenceSet", "name", a.id)
 
-	req := &pb.DeletePreferenceSetRequest{Name: fqn}
+	req := &pb.DeletePreferenceSetRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeletePreferenceSet(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting MigrationCenterPreferenceSet %s: %w", fqn, err)
+		return false, fmt.Errorf("deleting PreferenceSet %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully deleted PreferenceSet", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting MigrationCenterPreferenceSet %s deletion: %w", fqn, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete PreferenceSet %s: %w", a.id, err)
+		}
 	}
-	log.V(2).Info("successfully deleted MigrationCenterPreferenceSet", "name", fqn)
 	return true, nil
 }

@@ -1,0 +1,73 @@
+package: cloudbuild
+kccservice: cloudbuild
+kccversion: v1alpha1
+kind: CloudBuildConnection
+protoresource: Connection
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.CloudBuildConnectionIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Connection
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: |-
+        &refs.ProjectRef{
+        		External: a.id.Project,
+        	}
+    locationexpr: '&a.id.Location'
+    resourceidexpr: direct.LazyPtr(a.id.Connection)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetConnection
+    getrequesttype: GetConnectionRequest
+    getnamefield: Name
+    createmethodname: CreateConnection
+    createrequesttype: CreateConnectionRequest
+    createparentfield: Parent
+    createbodyfield: Connection
+    createidfield: ConnectionId
+    updatemethodname: UpdateConnection
+    updaterequesttype: UpdateConnectionRequest
+    updatebodyfield: Connection
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteConnection
+    deleterequesttype: DeleteConnectionRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/cloudbuild/apiv2
+    gcpclienttype: '*gcp.RepositoryManagerClient'
+    gcpclientconstructor: gcp.NewRepositoryManagerRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/cloudbuild/apiv2/cloudbuildpb
+    pbpackagealias: cloudbuildpb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: _v1alpha1

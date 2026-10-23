@@ -1,0 +1,70 @@
+package: mapmanagement
+kccservice: mapmanagement
+kccversion: v1alpha1
+kind: MapManagementStyleConfig
+protoresource: StyleConfig
+protoversion: ""
+identity:
+    strategy: server_generated
+    typename: krm.MapManagementStyleConfigIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: StyleConfig
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: false
+    hasresourceid: true
+    servergeneratedid: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    resourceidexpr: direct.LazyPtr(a.id.StyleConfig)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    hasupdatefieldmask: true
+    getmethodname: GetStyleConfig
+    getrequesttype: GetStyleConfigRequest
+    getnamefield: Name
+    createmethodname: CreateStyleConfig
+    createrequesttype: CreateStyleConfigRequest
+    createparentfield: Parent
+    createbodyfield: StyleConfig
+    createidfield: ""
+    updatemethodname: UpdateStyleConfig
+    updaterequesttype: UpdateStyleConfigRequest
+    updatebodyfield: StyleConfig
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteStyleConfig
+    deleterequesttype: DeleteStyleConfigRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/maps/mapmanagement/apiv2beta
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/maps/mapmanagement/apiv2beta/mapmanagementpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

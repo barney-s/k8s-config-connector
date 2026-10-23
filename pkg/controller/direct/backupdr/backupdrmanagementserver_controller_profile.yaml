@@ -1,0 +1,70 @@
+package: backupdr
+kccservice: backupdr
+kccversion: v1alpha1
+kind: BackupDRManagementServer
+protoresource: ManagementServer
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.ManagementServerIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: ManagementServer
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: a.id.Location
+    resourceidexpr: direct.LazyPtr(a.id.ManagementServer)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: unsupported
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetManagementServer
+    getrequesttype: GetManagementServerRequest
+    getnamefield: Name
+    createmethodname: CreateManagementServer
+    createrequesttype: CreateManagementServerRequest
+    createparentfield: Parent
+    createbodyfield: ManagementServer
+    createidfield: ManagementServerId
+    updatemethodname: ""
+    updaterequesttype: ""
+    updatebodyfield: ""
+    updatemaskfield: ""
+    updatehastoplevelname: false
+    deletemethodname: DeleteManagementServer
+    deleterequesttype: DeleteManagementServerRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/backupdr/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/backupdr/apiv1/backupdrpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: _v1alpha1

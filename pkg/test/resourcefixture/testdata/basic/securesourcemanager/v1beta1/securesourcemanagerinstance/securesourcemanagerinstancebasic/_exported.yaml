@@ -1,8 +1,14 @@
 apiVersion: securesourcemanager.cnrm.cloud.google.com/v1beta1
 kind: SecureSourceManagerInstance
 metadata:
+  labels:
+    cnrm-test: "true"
+    managed-by-cnrm: "true"
   name: ssminstance-${uniqueId}
 spec:
+  labels:
+    cnrm-test: "true"
+    managed-by-cnrm: "true"
   location: us-central1
   projectRef:
     external: ${projectId}

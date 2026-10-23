@@ -1,0 +1,70 @@
+package: workflows
+kccservice: workflows
+kccversion: v1alpha1
+kind: WorkflowsWorkflow
+protoresource: Workflow
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.WorkflowsWorkflowIdentity
+    usegetidentity: false
+    constructorname: NewWorkflowsWorkflowIdentity
+    parentstringexpr: Parent().String()
+    idexpr: ID()
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Parent().ProjectID}'
+    locationexpr: a.id.Parent().Location
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetWorkflow
+    getrequesttype: GetWorkflowRequest
+    getnamefield: Name
+    createmethodname: CreateWorkflow
+    createrequesttype: CreateWorkflowRequest
+    createparentfield: Parent
+    createbodyfield: Workflow
+    createidfield: WorkflowId
+    updatemethodname: UpdateWorkflow
+    updaterequesttype: UpdateWorkflowRequest
+    updatebodyfield: Workflow
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteWorkflow
+    deleterequesttype: DeleteWorkflowRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/workflows/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/workflows/apiv1/workflowspb
+    pbpackagealias: workflowspb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

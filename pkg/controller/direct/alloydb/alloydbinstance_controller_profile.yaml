@@ -1,0 +1,67 @@
+package: alloydb
+kccservice: alloydb
+kccversion: v1beta1
+kind: AlloyDBInstance
+protoresource: Instance
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.AlloyDBInstanceIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: ID()
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: false
+    haslocation: false
+    hasresourceid: false
+    createhasidfield: true
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetInstance
+    getrequesttype: GetInstanceRequest
+    getnamefield: Name
+    createmethodname: CreateInstance
+    createrequesttype: CreateInstanceRequest
+    createparentfield: Parent
+    createbodyfield: Instance
+    createidfield: InstanceId
+    updatemethodname: UpdateInstance
+    updaterequesttype: UpdateInstanceRequest
+    updatebodyfield: Instance
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteInstance
+    deleterequesttype: DeleteInstanceRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/alloydb/apiv1beta
+    gcpclienttype: '*gcp.AlloyDBAdminClient'
+    gcpclientconstructor: gcp.NewAlloyDBAdminRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/alloydb/apiv1beta/alloydbpb
+    pbpackagealias: alloydbpb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: false
+    hasobservedstate: true
+    mapperversionsuffix: ""

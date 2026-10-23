@@ -1,0 +1,69 @@
+package: discoveryengine
+kccservice: discoveryengine
+kccversion: v1alpha1
+kind: DiscoveryEngineLicenseConfig
+protoresource: LicenseConfig
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.DiscoveryEngineLicenseConfigIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: LicenseConfig
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: a.id.Location
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: unsupported
+    issingleton: false
+    getmethodname: GetLicenseConfig
+    getrequesttype: GetLicenseConfigRequest
+    getnamefield: Name
+    createmethodname: CreateLicenseConfig
+    createrequesttype: CreateLicenseConfigRequest
+    createparentfield: Parent
+    createbodyfield: LicenseConfig
+    createidfield: LicenseConfigId
+    updatemethodname: UpdateLicenseConfig
+    updaterequesttype: UpdateLicenseConfigRequest
+    updatebodyfield: LicenseConfig
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: ""
+    deleterequesttype: ""
+    deletenamefield: ""
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/discoveryengine/apiv1beta
+    gcpclienttype: '*gcp.LicenseConfigClient'
+    gcpclientconstructor: gcp.NewLicenseConfigRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/discoveryengine/apiv1beta/discoveryenginepb
+    pbpackagealias: discoveryenginepb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: _v1alpha1

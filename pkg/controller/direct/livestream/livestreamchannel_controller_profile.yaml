@@ -1,0 +1,70 @@
+package: livestream
+kccservice: livestream
+kccversion: v1alpha1
+kind: LiveStreamChannel
+protoresource: Channel
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.LiveStreamChannelIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Channel
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: direct.LazyPtr(a.id.Location)
+    resourceidexpr: direct.LazyPtr(a.id.Channel)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetChannel
+    getrequesttype: GetChannelRequest
+    getnamefield: Name
+    createmethodname: CreateChannel
+    createrequesttype: CreateChannelRequest
+    createparentfield: Parent
+    createbodyfield: Channel
+    createidfield: ChannelId
+    updatemethodname: UpdateChannel
+    updaterequesttype: UpdateChannelRequest
+    updatebodyfield: Channel
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteChannel
+    deleterequesttype: DeleteChannelRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/video/livestream/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/video/livestream/apiv1/livestreampb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

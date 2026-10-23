@@ -1,0 +1,68 @@
+package: configdelivery
+kccservice: configdelivery
+kccversion: v1alpha1
+kind: ConfigDeliveryResourceBundle
+protoresource: ResourceBundle
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.ConfigDeliveryResourceBundleIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: ResourceBundle
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: false
+    haslocation: false
+    hasresourceid: true
+    createhasidfield: true
+    resourceidexpr: direct.LazyPtr(a.id.ResourceBundle)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetResourceBundle
+    getrequesttype: GetResourceBundleRequest
+    getnamefield: Name
+    createmethodname: CreateResourceBundle
+    createrequesttype: CreateResourceBundleRequest
+    createparentfield: Parent
+    createbodyfield: ResourceBundle
+    createidfield: ResourceBundleId
+    updatemethodname: UpdateResourceBundle
+    updaterequesttype: UpdateResourceBundleRequest
+    updatebodyfield: ResourceBundle
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteResourceBundle
+    deleterequesttype: DeleteResourceBundleRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/configdelivery/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/configdelivery/apiv1/configdeliverypb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

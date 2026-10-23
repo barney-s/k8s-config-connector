@@ -1,0 +1,70 @@
+package: licensemanager
+kccservice: licensemanager
+kccversion: v1alpha1
+kind: LicenseManagerConfiguration
+protoresource: Configuration
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.LicenseManagerConfigurationIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Configuration
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: a.id.Location
+    resourceidexpr: direct.LazyPtr(a.id.Configuration)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetConfiguration
+    getrequesttype: GetConfigurationRequest
+    getnamefield: Name
+    createmethodname: CreateConfiguration
+    createrequesttype: CreateConfigurationRequest
+    createparentfield: Parent
+    createbodyfield: Configuration
+    createidfield: ConfigurationId
+    updatemethodname: UpdateConfiguration
+    updaterequesttype: UpdateConfigurationRequest
+    updatebodyfield: Configuration
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteConfiguration
+    deleterequesttype: DeleteConfigurationRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/licensemanager/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/licensemanager/apiv1/licensemanagerpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

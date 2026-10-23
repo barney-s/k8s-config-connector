@@ -1,0 +1,70 @@
+package: backupdr
+kccservice: backupdr
+kccversion: v1beta1
+kind: BackupDRBackupPlan
+protoresource: BackupPlan
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.BackupPlanIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: BackupPlan
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: a.id.Location
+    resourceidexpr: direct.LazyPtr(a.id.BackupPlan)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: unsupported
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetBackupPlan
+    getrequesttype: GetBackupPlanRequest
+    getnamefield: Name
+    createmethodname: CreateBackupPlan
+    createrequesttype: CreateBackupPlanRequest
+    createparentfield: Parent
+    createbodyfield: BackupPlan
+    createidfield: BackupPlanId
+    updatemethodname: ""
+    updaterequesttype: ""
+    updatebodyfield: ""
+    updatemaskfield: ""
+    updatehastoplevelname: false
+    deletemethodname: DeleteBackupPlan
+    deleterequesttype: DeleteBackupPlanRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/backupdr/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/backupdr/apiv1/backupdrpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: false
+    hasobservedstate: true
+    mapperversionsuffix: _v1beta1

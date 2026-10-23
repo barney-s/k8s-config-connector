@@ -1,0 +1,69 @@
+package: saasservicemgmt
+kccservice: saasservicemgmt
+kccversion: v1alpha1
+kind: SaaSServiceMgmtUnit
+protoresource: Unit
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.SaaSServiceMgmtUnitIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Unit
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetUnit
+    getrequesttype: GetUnitRequest
+    getnamefield: Name
+    createmethodname: CreateUnit
+    createrequesttype: CreateUnitRequest
+    createparentfield: Parent
+    createbodyfield: Unit
+    createidfield: UnitId
+    updatemethodname: UpdateUnit
+    updaterequesttype: UpdateUnitRequest
+    updatebodyfield: Unit
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteUnit
+    deleterequesttype: DeleteUnitRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/saasplatform/saasservicemgmt/apiv1beta1
+    gcpclienttype: '*gcp.SaasDeploymentsClient'
+    gcpclientconstructor: gcp.NewSaasDeploymentsRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/saasplatform/saasservicemgmt/apiv1beta1/saasservicemgmtpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: true
+    hasobservedstate: false
+    mapperversionsuffix: ""

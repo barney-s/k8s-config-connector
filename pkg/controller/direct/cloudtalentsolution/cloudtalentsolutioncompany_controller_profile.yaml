@@ -1,0 +1,68 @@
+package: cloudtalentsolution
+kccservice: cloudtalentsolution
+kccversion: v1alpha1
+kind: CloudTalentSolutionCompany
+protoresource: Company
+protoversion: ""
+identity:
+    strategy: server_generated
+    typename: krm.CloudTalentSolutionCompanyIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Company
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: false
+    haslocation: false
+    hasresourceid: false
+    servergeneratedid: true
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    hasupdatefieldmask: true
+    getmethodname: GetCompany
+    getrequesttype: GetCompanyRequest
+    getnamefield: Name
+    createmethodname: CreateCompany
+    createrequesttype: CreateCompanyRequest
+    createparentfield: Parent
+    createbodyfield: Company
+    createidfield: ""
+    updatemethodname: UpdateCompany
+    updaterequesttype: UpdateCompanyRequest
+    updatebodyfield: Company
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteCompany
+    deleterequesttype: DeleteCompanyRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/talent/apiv4
+    gcpclienttype: '*gcp.CompanyClient'
+    gcpclientconstructor: gcp.NewCompanyRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/talent/apiv4/talentpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: false
+    hasobservedstate: true
+    mapperversionsuffix: ""

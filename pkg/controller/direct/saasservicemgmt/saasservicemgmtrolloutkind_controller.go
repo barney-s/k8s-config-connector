@@ -17,6 +17,7 @@ package saasservicemgmt
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	gcp "cloud.google.com/go/saasplatform/saasservicemgmt/apiv1beta1"
 	pb "cloud.google.com/go/saasplatform/saasservicemgmt/apiv1beta1/saasservicemgmtpb"
@@ -278,4 +279,17 @@ func compareRolloutKind(ctx context.Context, actual, desired *pb.RolloutKind) (*
 		return nil, nil, err
 	}
 	return diffs, updateMask, nil
+}
+
+func filterSystemAnnotations(annotations map[string]string) map[string]string {
+	if annotations == nil {
+		return nil
+	}
+	filtered := make(map[string]string)
+	for k, v := range annotations {
+		if !strings.Contains(k, "cnrm.cloud.google.com") {
+			filtered[k] = v
+		}
+	}
+	return filtered
 }

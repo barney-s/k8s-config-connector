@@ -1,0 +1,69 @@
+package: discoveryengine
+kccservice: discoveryengine
+kccversion: v1alpha1
+kind: DiscoveryEngineControl
+protoresource: Control
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.DiscoveryEngineControlIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Control
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: direct.PtrTo(a.id.Location)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetControl
+    getrequesttype: GetControlRequest
+    getnamefield: Name
+    createmethodname: CreateControl
+    createrequesttype: CreateControlRequest
+    createparentfield: Parent
+    createbodyfield: Control
+    createidfield: ControlId
+    updatemethodname: UpdateControl
+    updaterequesttype: UpdateControlRequest
+    updatebodyfield: Control
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteControl
+    deleterequesttype: DeleteControlRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/discoveryengine/apiv1
+    gcpclienttype: '*gcp.ControlClient'
+    gcpclientconstructor: gcp.NewControlRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/discoveryengine/apiv1/discoveryenginepb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: false
+    mapperversionsuffix: _v1alpha1

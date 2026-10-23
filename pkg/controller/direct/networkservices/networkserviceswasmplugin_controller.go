@@ -17,29 +17,25 @@ package networkservices
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
-
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/common/parent"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/networkservices/v1alpha1"
-	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/networkservices/apiv1"
 	networkservicespb "cloud.google.com/go/networkservices/apiv1/networkservicespb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
@@ -51,56 +47,34 @@ func NewWasmPluginModel(ctx context.Context, config *config.ControllerConfig) (d
 }
 
 var _ directbase.Model = &modelWasmPlugin{}
+var _ = strings.TrimPrefix
 
 type modelWasmPlugin struct {
 	config config.ControllerConfig
 }
 
-func (m *modelWasmPlugin) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building WasmPlugin client: %w", err)
-	}
-	return gcpClient, err
-}
-
 func (m *modelWasmPlugin) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
-	desired := &krm.NetworkServicesWasmPlugin{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &desired); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", desired, err)
+	_ = reader
+	obj := &krm.NetworkServicesWasmPlugin{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	id, err := krm.NewWasmPluginIdentity(ctx, reader, desired)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
+	id := i.(*krm.WasmPluginIdentity)
 
-	// Get networkservices GCP client
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredProto := NetworkServicesWasmPluginSpec_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desiredProto.Labels = label.NewGCPLabelsFromK8sLabels(u.GetLabels())
-
 	return &WasmPluginAdapter{
-		id:           id,
-		gcpClient:    gcpClient,
-		desired:      desired,
-		reader:       reader,
-		desiredProto: desiredProto,
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
@@ -109,13 +83,25 @@ func (m *modelWasmPlugin) AdapterForURL(ctx context.Context, url string) (direct
 	return nil, nil
 }
 
+func (m *modelWasmPlugin) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building WasmPlugin client: %w", err)
+	}
+	return gcpClient, err
+}
+
 type WasmPluginAdapter struct {
-	id           *krm.WasmPluginIdentity
-	gcpClient    *gcp.Client
-	desired      *krm.NetworkServicesWasmPlugin
-	reader       client.Reader
-	actual       *networkservicespb.WasmPlugin
-	desiredProto *networkservicespb.WasmPlugin
+	id        *krm.WasmPluginIdentity
+	gcpClient *gcp.Client
+	desired   *krm.NetworkServicesWasmPlugin
+	actual    *networkservicespb.WasmPlugin
 }
 
 var _ directbase.Adapter = &WasmPluginAdapter{}
@@ -124,8 +110,10 @@ func (a *WasmPluginAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("getting WasmPlugin", "name", a.id)
 
-	req := &networkservicespb.GetWasmPluginRequest{Name: a.id.String()}
-	wasmpluginpb, err := a.gcpClient.GetWasmPlugin(ctx, req)
+	req := &networkservicespb.GetWasmPluginRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetWasmPlugin(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
@@ -133,39 +121,7 @@ func (a *WasmPluginAdapter) Find(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("getting WasmPlugin %q: %w", a.id, err)
 	}
 
-	// GCP GetWasmPlugin does not return versions inline. We must list WasmPluginVersion child resources to populate actual.Versions.
-	listReq := &networkservicespb.ListWasmPluginVersionsRequest{Parent: a.id.String()}
-	versionIterator := a.gcpClient.ListWasmPluginVersions(ctx, listReq)
-	if versionIterator != nil {
-		for versionpb, err := versionIterator.Next(); err == nil; {
-			tokens := strings.Split(versionpb.Name, "/versions/")
-			if len(tokens) == 2 {
-				versionID := tokens[1]
-				if wasmpluginpb.Versions == nil {
-					wasmpluginpb.Versions = make(map[string]*networkservicespb.WasmPlugin_VersionDetails)
-				}
-				vd := &networkservicespb.WasmPlugin_VersionDetails{
-					Description: versionpb.Description,
-					Labels:      versionpb.Labels,
-					ImageUri:    versionpb.ImageUri,
-				}
-				switch source := versionpb.PluginConfigSource.(type) {
-				case *networkservicespb.WasmPluginVersion_PluginConfigData:
-					vd.PluginConfigSource = &networkservicespb.WasmPlugin_VersionDetails_PluginConfigData{
-						PluginConfigData: source.PluginConfigData,
-					}
-				case *networkservicespb.WasmPluginVersion_PluginConfigUri:
-					vd.PluginConfigSource = &networkservicespb.WasmPlugin_VersionDetails_PluginConfigUri{
-						PluginConfigUri: source.PluginConfigUri,
-					}
-				}
-				wasmpluginpb.Versions[versionID] = vd
-			}
-			versionpb, err = versionIterator.Next()
-		}
-	}
-
-	a.actual = wasmpluginpb
+	a.actual = resp
 	return true, nil
 }
 
@@ -174,8 +130,12 @@ func (a *WasmPluginAdapter) Create(ctx context.Context, createOp *directbase.Cre
 	log.V(2).Info("creating WasmPlugin", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
-	resource := proto.Clone(a.desiredProto).(*networkservicespb.WasmPlugin)
-	resource.Name = a.id.String()
+	desired := a.desired.DeepCopy()
+	resource := NetworkServicesWasmPluginSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &networkservicespb.CreateWasmPluginRequest{
 		Parent:       a.id.Parent().String(),
@@ -188,7 +148,7 @@ func (a *WasmPluginAdapter) Create(ctx context.Context, createOp *directbase.Cre
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("WasmPlugin %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create WasmPlugin %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created WasmPlugin", "name", a.id)
 
@@ -204,46 +164,57 @@ func (a *WasmPluginAdapter) Create(ctx context.Context, createOp *directbase.Cre
 func (a *WasmPluginAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("updating WasmPlugin", "name", a.id)
-	mapCtx := &direct.MapContext{}
 
-	resource := proto.Clone(a.desiredProto).(*networkservicespb.WasmPlugin)
-	resource.Name = a.id.String()
-
-	diff, err := common.CompareProtoMessage(a.actual, resource, common.BasicDiff)
+	desired, diffs, updateMask, err := compareWasmPlugin(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
-		return fmt.Errorf("comparing WasmPlugin %s: %w", a.id, err)
+		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	updated := a.actual
-	if diff.Len() == 0 {
-		log.V(2).Info("no changes detected for WasmPlugin", "name", a.id)
-	} else {
-		sortedPaths := diff.UnsortedList()
-		sort.Strings(sortedPaths)
-		updateMask := &fieldmaskpb.FieldMask{Paths: sortedPaths}
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
 
 		req := &networkservicespb.UpdateWasmPluginRequest{
+			WasmPlugin: desired,
 			UpdateMask: updateMask,
-			WasmPlugin: resource,
 		}
 		op, err := a.gcpClient.UpdateWasmPlugin(ctx, req)
 		if err != nil {
 			return fmt.Errorf("updating WasmPlugin %s: %w", a.id, err)
 		}
-		updated, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("WasmPlugin %s waiting update: %w", a.id, err)
+			return fmt.Errorf("waiting update WasmPlugin %s: %w", a.id, err)
 		}
 		log.V(2).Info("successfully updated WasmPlugin", "name", a.id)
+
+		status := &krm.NetworkServicesWasmPluginStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = NetworkServicesWasmPluginObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	status := &krm.NetworkServicesWasmPluginStatus{}
-	status.ObservedState = NetworkServicesWasmPluginObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
+}
+
+func compareWasmPlugin(ctx context.Context, u *unstructured.Unstructured, actual *networkservicespb.WasmPlugin, desiredSpec *krm.NetworkServicesWasmPluginSpec) (*networkservicespb.WasmPlugin, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	return common.CompareGreenfieldSpecAndLabels(
+		ctx,
+		u,
+		desiredSpec,
+		actual,
+		"labels",
+		NetworkServicesWasmPluginSpec_FromProto,
+		NetworkServicesWasmPluginSpec_ToProto,
+		nil,
+	)
 }
 
 func (a *WasmPluginAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
@@ -252,29 +223,22 @@ func (a *WasmPluginAdapter) Export(ctx context.Context) (*unstructured.Unstructu
 	}
 	u := &unstructured.Unstructured{}
 
-	desired := &krm.NetworkServicesWasmPlugin{}
+	obj := &krm.NetworkServicesWasmPlugin{}
 	mapCtx := &direct.MapContext{}
-	desired.Spec = direct.ValueOf(NetworkServicesWasmPluginSpec_FromProto(mapCtx, a.actual))
+	obj.Spec = direct.ValueOf(NetworkServicesWasmPluginSpec_FromProto(mapCtx, a.actual))
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	desired.Spec.ProjectAndLocationRef = &parent.ProjectAndLocationRef{
-		ProjectRef: &refs.ProjectRef{External: a.id.Parent().ProjectID},
-		Location:   a.id.Parent().Location,
-	}
 
-	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(desired)
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
+	u.Object = uObj
 	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.NetworkServicesWasmPluginGVK)
-	if a.actual.Labels != nil {
-		u.SetLabels(a.actual.Labels)
-	}
-
-	u.Object = uObj
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
@@ -282,20 +246,22 @@ func (a *WasmPluginAdapter) Delete(ctx context.Context, deleteOp *directbase.Del
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting WasmPlugin", "name", a.id)
 
-	req := &networkservicespb.DeleteWasmPluginRequest{Name: a.id.String()}
+	req := &networkservicespb.DeleteWasmPluginRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteWasmPlugin(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent WasmPlugin, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting WasmPlugin %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully deleted WasmPlugin", "name", a.id)
-
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete WasmPlugin %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete WasmPlugin %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

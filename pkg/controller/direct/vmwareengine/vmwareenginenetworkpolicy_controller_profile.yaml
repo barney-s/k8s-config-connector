@@ -1,0 +1,70 @@
+package: vmwareengine
+kccservice: vmwareengine
+kccversion: v1alpha1
+kind: VMwareEngineNetworkPolicy
+protoresource: NetworkPolicy
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.NetworkPolicyIdentity
+    usegetidentity: false
+    constructorname: NewNetworkPolicyIdentity
+    parentstringexpr: Parent().String()
+    idexpr: ID()
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Parent().ProjectID}'
+    locationexpr: a.id.Parent().Location
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetNetworkPolicy
+    getrequesttype: GetNetworkPolicyRequest
+    getnamefield: Name
+    createmethodname: CreateNetworkPolicy
+    createrequesttype: CreateNetworkPolicyRequest
+    createparentfield: Parent
+    createbodyfield: NetworkPolicy
+    createidfield: NetworkPolicyId
+    updatemethodname: UpdateNetworkPolicy
+    updaterequesttype: UpdateNetworkPolicyRequest
+    updatebodyfield: NetworkPolicy
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteNetworkPolicy
+    deleterequesttype: DeleteNetworkPolicyRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/vmwareengine/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/vmwareengine/apiv1/vmwareenginepb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: false
+    hasobservedstate: true
+    mapperversionsuffix: ""

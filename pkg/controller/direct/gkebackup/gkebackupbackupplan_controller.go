@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,29 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.gkebackup.v1.BackupForGKE
-// proto.message: google.cloud.gkebackup.v1.BackupPlan
-// crd.type: GKEBackupBackupPlan
-// crd.version: v1alpha1
-
 package gkebackup
 
 import (
 	"context"
 	"fmt"
-	"reflect"
-
-	gcp "cloud.google.com/go/gkebackup/apiv1"
-	"cloud.google.com/go/gkebackup/apiv1/gkebackuppb"
-	pb "cloud.google.com/go/gkebackup/apiv1/gkebackuppb"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/gkebackup/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -42,7 +24,19 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/gkebackup/apiv1"
+	pb "cloud.google.com/go/gkebackup/apiv1/gkebackuppb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -50,95 +44,101 @@ func init() {
 }
 
 func NewBackupPlanModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &backupPlanModel{config: *config}, nil
+	return &modelBackupPlan{config: *config}, nil
 }
 
-var _ directbase.Model = &backupPlanModel{}
+var _ directbase.Model = &modelBackupPlan{}
+var _ = strings.TrimPrefix
 
-type backupPlanModel struct {
+type modelBackupPlan struct {
 	config config.ControllerConfig
 }
 
-func (m *backupPlanModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelBackupPlan) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.GKEBackupBackupPlan{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
 	id, err := krm.NewBackupPlanIdentity(ctx, reader, obj)
 	if err != nil {
 		return nil, err
 	}
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
 
-	// Get gkebackup GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	client, err := gcpClient.newBackupForGKEClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &backupPlanAdapter{
-		gcpClient: client,
+	return &BackupPlanAdapter{
 		id:        id,
+		gcpClient: gcpClient,
 		desired:   obj,
-		reader:    reader,
 	}, nil
 }
 
-func (m *backupPlanModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelBackupPlan) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type backupPlanAdapter struct {
-	gcpClient *gcp.BackupForGKEClient
-	id        *krm.BackupPlanIdentity
-	desired   *krm.GKEBackupBackupPlan
-	actual    *pb.BackupPlan
-	reader    client.Reader
+func (m *modelBackupPlan) client(ctx context.Context) (*gcp.BackupForGKEClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewBackupForGKERESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building BackupPlan client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &backupPlanAdapter{}
+type BackupPlanAdapter struct {
+	id        *krm.BackupPlanIdentity
+	gcpClient *gcp.BackupForGKEClient
+	desired   *krm.GKEBackupBackupPlan
+	actual    *pb.BackupPlan
+}
 
-func (a *backupPlanAdapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &BackupPlanAdapter{}
+
+func (a *BackupPlanAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting gkebackup backupplan", "name", a.id)
+	log.V(2).Info("getting BackupPlan", "name", a.id)
 
-	req := &pb.GetBackupPlanRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetBackupPlan(ctx, req)
+	req := &pb.GetBackupPlanRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetBackupPlan(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting gkebackup backupplan %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting BackupPlan %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *backupPlanAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *BackupPlanAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating gkebackup backupplan", "name", a.id)
-
-	if err := a.normalizeReferenceFields(ctx); err != nil {
-		return err
-	}
-
+	log.V(2).Info("creating BackupPlan", "name", a.id)
 	mapCtx := &direct.MapContext{}
+
 	desired := a.desired.DeepCopy()
 	resource := GKEBackupBackupPlanSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateBackupPlanRequest{
 		Parent:       a.id.Parent().String(),
@@ -147,13 +147,13 @@ func (a *backupPlanAdapter) Create(ctx context.Context, createOp *directbase.Cre
 	}
 	op, err := a.gcpClient.CreateBackupPlan(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating gkebackup backupplan %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating BackupPlan %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("gkebackup backupplan %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create BackupPlan %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created gkebackup backupplan in gcp", "name", a.id)
+	log.V(2).Info("successfully created BackupPlan", "name", a.id)
 
 	status := &krm.GKEBackupBackupPlanStatus{}
 	status.ObservedState = GKEBackupBackupPlanObservedState_FromProto(mapCtx, created)
@@ -164,84 +164,63 @@ func (a *backupPlanAdapter) Create(ctx context.Context, createOp *directbase.Cre
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *backupPlanAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *BackupPlanAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating gkebackup backupplan", "name", a.id)
+	log.V(2).Info("updating BackupPlan", "name", a.id)
 
-	if err := a.normalizeReferenceFields(ctx); err != nil {
+	desired, diffs, updateMask, err := compareBackupPlan(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
+	if err != nil {
 		return err
 	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
 
-	mapCtx := &direct.MapContext{}
-	desired := a.desired.DeepCopy()
-	resource := GKEBackupBackupPlanSpec_ToProto(mapCtx, &desired.Spec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
 
-	report := &structuredreporting.Diff{Object: updateOp.GetUnstructured()}
-
-	paths := []string{}
-	if desired.Spec.Description != nil && !reflect.DeepEqual(resource.GetDescription(), a.actual.GetDescription()) {
-		report.AddField("description", a.actual.GetDescription(), resource.GetDescription())
-		paths = append(paths, "description")
-	}
-	if desired.Spec.RetentionPolicy != nil && !reflect.DeepEqual(resource.GetRetentionPolicy(), a.actual.GetRetentionPolicy()) {
-		report.AddField("retention_policy", a.actual.GetRetentionPolicy(), resource.GetRetentionPolicy())
-		paths = append(paths, "retention_policy")
-	}
-	if desired.Spec.Labels != nil && !reflect.DeepEqual(resource.GetLabels(), a.actual.GetLabels()) {
-		report.AddField("labels", a.actual.GetLabels(), resource.GetLabels())
-		paths = append(paths, "labels")
-	}
-	if desired.Spec.BackupSchedule != nil && !reflect.DeepEqual(resource.GetBackupSchedule(), a.actual.GetBackupSchedule()) {
-		report.AddField("backup_schedule", a.actual.GetBackupSchedule(), resource.GetBackupSchedule())
-		paths = append(paths, "backup_schedule")
-	}
-	if desired.Spec.Deactivated != nil && !reflect.DeepEqual(resource.GetDeactivated(), a.actual.GetDeactivated()) {
-		report.AddField("deactivated", a.actual.GetDeactivated(), resource.GetDeactivated())
-		paths = append(paths, "deactivated")
-	}
-
-	// cannot use reflect.DeepEqual here because BackupScope is a oneof field which results in unexpected diffs
-	if desired.Spec.BackupConfig != nil && !backupConfigsEqual(resource.GetBackupConfig(), a.actual.GetBackupConfig()) {
-		report.AddField("backup_config", a.actual.GetBackupConfig(), resource.GetBackupConfig())
-		paths = append(paths, "backup_config")
-	}
-
-	var updated *pb.BackupPlan
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		// even though there is no update, we still want to update KRM status
-		updated = a.actual
-	} else {
-		structuredreporting.ReportDiff(ctx, report)
-		resource.Name = a.id.String() // we need to set the name so that GCP API can identify the resource
 		req := &pb.UpdateBackupPlanRequest{
-			BackupPlan: resource,
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: paths},
+			BackupPlan: desired,
+			UpdateMask: updateMask,
 		}
 		op, err := a.gcpClient.UpdateBackupPlan(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating gkebackup backupplan %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating BackupPlan %s: %w", a.id, err)
 		}
-		updated, err = op.Wait(ctx)
+		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("gkebackup backupplan %s waiting for update: %w", a.id, err)
+			return fmt.Errorf("waiting update BackupPlan %s: %w", a.id, err)
 		}
-		log.V(2).Info("successfully updated gkebackup backupplan", "name", a.id)
+		log.V(2).Info("successfully updated BackupPlan", "name", a.id)
+
+		status := &krm.GKEBackupBackupPlanStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = GKEBackupBackupPlanObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	status := &krm.GKEBackupBackupPlanStatus{}
-	status.ObservedState = GKEBackupBackupPlanObservedState_FromProto(mapCtx, updated)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return updateOp.UpdateStatus(ctx, status, nil)
+	return nil
 }
 
-func (a *backupPlanAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func compareBackupPlan(ctx context.Context, u *unstructured.Unstructured, actual *pb.BackupPlan, desiredSpec *krm.GKEBackupBackupPlanSpec) (*pb.BackupPlan, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	return common.CompareGreenfieldSpecAndLabels(
+		ctx,
+		u,
+		desiredSpec,
+		actual,
+		"labels",
+		GKEBackupBackupPlanSpec_FromProto,
+		GKEBackupBackupPlanSpec_ToProto,
+		nil,
+	)
+}
+
+func (a *BackupPlanAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -255,102 +234,39 @@ func (a *backupPlanAdapter) Export(ctx context.Context) (*unstructured.Unstructu
 	}
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
 	obj.Spec.Location = a.id.Parent().Location
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u.SetName(a.actual.Name)
-	u.SetGroupVersionKind(krm.GKEBackupBackupPlanGVK)
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.GKEBackupBackupPlanGVK)
+	export.SetLabels(u, a.actual.Labels)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *backupPlanAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *BackupPlanAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting gkebackup backupplan", "name", a.id)
+	log.V(2).Info("deleting BackupPlan", "name", a.id)
 
-	req := &pb.DeleteBackupPlanRequest{Name: a.id.String()}
+	req := &pb.DeleteBackupPlanRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteBackupPlan(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent BackupVault, assuming it was already deleted", "name", a.id)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting gkebackup backupplan %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting BackupPlan %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted gkebackup backupplan", "name", a.id)
-
+	log.V(2).Info("successfully deleted BackupPlan", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete BackupVault %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete BackupPlan %s: %w", a.id, err)
+		}
 	}
 	return true, nil
-}
-
-func backupConfigsEqual(a, b *gkebackuppb.BackupPlan_BackupConfig) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-
-	// Compare BackupScope (oneof field)
-	aScope, bScope := a.GetBackupScope(), b.GetBackupScope()
-	if (aScope == nil) != (bScope == nil) {
-		return false
-	}
-	if aScope != nil {
-		// Check which type is set in the oneof
-		switch aTyped := aScope.(type) {
-		case *gkebackuppb.BackupPlan_BackupConfig_AllNamespaces:
-			bTyped, ok := bScope.(*gkebackuppb.BackupPlan_BackupConfig_AllNamespaces)
-			if !ok || aTyped.AllNamespaces != bTyped.AllNamespaces {
-				return false
-			}
-		case *gkebackuppb.BackupPlan_BackupConfig_SelectedNamespaces:
-			bTyped, ok := bScope.(*gkebackuppb.BackupPlan_BackupConfig_SelectedNamespaces)
-			if !ok || !proto.Equal(aTyped.SelectedNamespaces, bTyped.SelectedNamespaces) {
-				return false
-			}
-		case *gkebackuppb.BackupPlan_BackupConfig_SelectedApplications:
-			bTyped, ok := bScope.(*gkebackuppb.BackupPlan_BackupConfig_SelectedApplications)
-			if !ok || !proto.Equal(aTyped.SelectedApplications, bTyped.SelectedApplications) {
-				return false
-			}
-		default:
-			// Unknown type
-			return false
-		}
-	}
-
-	// Compare other fields
-	if a.GetIncludeVolumeData() != b.GetIncludeVolumeData() {
-		return false
-	}
-	if a.GetIncludeSecrets() != b.GetIncludeSecrets() {
-		return false
-	}
-	if !proto.Equal(a.GetEncryptionKey(), b.GetEncryptionKey()) {
-		return false
-	}
-	if a.GetPermissiveMode() != b.GetPermissiveMode() {
-		return false
-	}
-
-	return true
-}
-
-func (a *backupPlanAdapter) normalizeReferenceFields(ctx context.Context) error {
-	obj := a.desired
-
-	if obj.Spec.ClusterRef != nil {
-		if _, err := obj.Spec.ClusterRef.NormalizedExternal(ctx, a.reader, obj.GetNamespace()); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }

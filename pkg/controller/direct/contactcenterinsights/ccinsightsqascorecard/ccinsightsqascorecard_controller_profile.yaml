@@ -1,0 +1,69 @@
+package: ccinsightsqascorecard
+kccservice: contactcenterinsights
+kccversion: v1alpha1
+kind: CCInsightsQAScorecard
+protoresource: QaScorecard
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.CCInsightsQAScorecardIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: QaScorecard
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetQaScorecard
+    getrequesttype: GetQaScorecardRequest
+    getnamefield: Name
+    createmethodname: CreateQaScorecard
+    createrequesttype: CreateQaScorecardRequest
+    createparentfield: Parent
+    createbodyfield: QaScorecard
+    createidfield: QaScorecardId
+    updatemethodname: UpdateQaScorecard
+    updaterequesttype: UpdateQaScorecardRequest
+    updatebodyfield: QaScorecard
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteQaScorecard
+    deleterequesttype: DeleteQaScorecardRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/contactcenterinsights/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/contactcenterinsights/apiv1/contactcenterinsightspb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

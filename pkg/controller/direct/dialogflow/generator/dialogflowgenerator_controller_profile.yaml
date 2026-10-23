@@ -1,0 +1,70 @@
+package: generator
+kccservice: dialogflow
+kccversion: v1alpha1
+kind: DialogflowGenerator
+protoresource: Generator
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.DialogflowGeneratorIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Generator
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{Name: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: direct.LazyPtr(a.id.Generator)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetGenerator
+    getrequesttype: GetGeneratorRequest
+    getnamefield: Name
+    createmethodname: CreateGenerator
+    createrequesttype: CreateGeneratorRequest
+    createparentfield: Parent
+    createbodyfield: Generator
+    createidfield: GeneratorId
+    updatemethodname: UpdateGenerator
+    updaterequesttype: UpdateGeneratorRequest
+    updatebodyfield: Generator
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteGenerator
+    deleterequesttype: DeleteGeneratorRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/dialogflow/apiv2
+    gcpclienttype: '*gcp.GeneratorsClient'
+    gcpclientconstructor: gcp.NewGeneratorsRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/dialogflow/apiv2/dialogflowpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

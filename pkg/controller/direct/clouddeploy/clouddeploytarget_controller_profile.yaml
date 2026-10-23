@@ -1,0 +1,69 @@
+package: clouddeploy
+kccservice: clouddeploy
+kccversion: v1alpha1
+kind: CloudDeployTarget
+protoresource: Target
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.CloudDeployTargetIdentity
+    usegetidentity: true
+    parentstringexpr: Parent().String()
+    idexpr: ID()
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Parent().ProjectID}'
+    locationexpr: direct.LazyPtr(a.id.Parent().Location)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetTarget
+    getrequesttype: GetTargetRequest
+    getnamefield: Name
+    createmethodname: CreateTarget
+    createrequesttype: CreateTargetRequest
+    createparentfield: Parent
+    createbodyfield: Target
+    createidfield: TargetId
+    updatemethodname: UpdateTarget
+    updaterequesttype: UpdateTargetRequest
+    updatebodyfield: Target
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteTarget
+    deleterequesttype: DeleteTargetRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/deploy/apiv1
+    gcpclienttype: '*gcp.CloudDeployClient'
+    gcpclientconstructor: gcp.NewCloudDeployRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/deploy/apiv1/deploypb
+    pbpackagealias: clouddeploypb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: false
+    hasobservedstate: true
+    mapperversionsuffix: _v1alpha1

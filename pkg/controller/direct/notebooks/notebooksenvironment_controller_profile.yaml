@@ -1,0 +1,70 @@
+package: notebooks
+kccservice: notebooks
+kccversion: v1alpha1
+kind: NotebooksEnvironment
+protoresource: Environment
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.NotebooksEnvironmentIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: ID()
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: a.id.Location
+    resourceidexpr: direct.LazyPtr(a.id.ID())
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: unsupported
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetEnvironment
+    getrequesttype: GetEnvironmentRequest
+    getnamefield: Name
+    createmethodname: CreateEnvironment
+    createrequesttype: CreateEnvironmentRequest
+    createparentfield: Parent
+    createbodyfield: Environment
+    createidfield: EnvironmentId
+    updatemethodname: ""
+    updaterequesttype: ""
+    updatebodyfield: ""
+    updatemaskfield: ""
+    updatehastoplevelname: false
+    deletemethodname: DeleteEnvironment
+    deleterequesttype: DeleteEnvironmentRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/notebooks/apiv1beta1
+    gcpclienttype: '*gcp.NotebookClient'
+    gcpclientconstructor: gcp.NewNotebookRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/notebooks/apiv1beta1/notebookspb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: _v1alpha1

@@ -17,9 +17,6 @@ package videostitcher
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/video/stitcher/apiv1"
-	pb "cloud.google.com/go/video/stitcher/apiv1/stitcherpb"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/videostitcher/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -27,58 +24,47 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/video/stitcher/apiv1"
+	pb "cloud.google.com/go/video/stitcher/apiv1/stitcherpb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.VideoStitcherCDNKeyGVK, NewModel)
+	registry.RegisterModel(krm.VideoStitcherCDNKeyGVK, NewCdnKeyModel)
 }
 
-func NewModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &model{config: *config}, nil
+func NewCdnKeyModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelCdnKey{config: *config}, nil
 }
 
-var _ directbase.Model = &model{}
+var _ directbase.Model = &modelCdnKey{}
+var _ = strings.TrimPrefix
 
-type model struct {
+type modelCdnKey struct {
 	config config.ControllerConfig
 }
 
-func (m *model) client(ctx context.Context) (*gcp.VideoStitcherClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.GRPCClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewVideoStitcherClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building VideoStitcher client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelCdnKey) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.VideoStitcherCDNKey{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	idBase, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idBase.(*krm.VideoStitcherCDNKeyIdentity)
-
+	id := i.(*krm.VideoStitcherCDNKeyIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
@@ -87,134 +73,142 @@ func (m *model) AdapterForObject(ctx context.Context, op *directbase.AdapterForO
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := VideoStitcherCDNKeySpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &Adapter{
+	return &CdnKeyAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
-		model:     m,
+		desired:   obj,
 	}, nil
 }
 
-func (m *model) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelCdnKey) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
 	return nil, nil
 }
 
-type Adapter struct {
-	id        *krm.VideoStitcherCDNKeyIdentity
-	gcpClient *gcp.VideoStitcherClient
-	desired   *pb.CdnKey
-	actual    *pb.CdnKey
-	model     *model
+func (m *modelCdnKey) client(ctx context.Context) (*gcp.VideoStitcherClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.GRPCClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewVideoStitcherClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building CdnKey client: %w", err)
+	}
+	return gcpClient, err
 }
 
-var _ directbase.Adapter = &Adapter{}
+type CdnKeyAdapter struct {
+	id        *krm.VideoStitcherCDNKeyIdentity
+	gcpClient *gcp.VideoStitcherClient
+	desired   *krm.VideoStitcherCDNKey
+	actual    *pb.CdnKey
+}
 
-func (a *Adapter) Find(ctx context.Context) (bool, error) {
+var _ directbase.Adapter = &CdnKeyAdapter{}
+
+func (a *CdnKeyAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("finding VideoStitcherCDNKey", "id", a.id)
+	log.V(2).Info("getting CdnKey", "name", a.id)
 
 	req := &pb.GetCdnKeyRequest{
 		Name: a.id.String(),
 	}
-	cdnKey, err := a.gcpClient.GetCdnKey(ctx, req)
+	resp, err := a.gcpClient.GetCdnKey(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting VideoStitcherCDNKey %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting CdnKey %q: %w", a.id, err)
 	}
 
-	a.actual = cdnKey
+	a.actual = resp
 	return true, nil
 }
 
-func (a *Adapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *CdnKeyAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating VideoStitcherCDNKey", "id", a.id)
+	log.V(2).Info("creating CdnKey", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := VideoStitcherCDNKeySpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreateCdnKeyRequest{
 		Parent:   a.id.ParentString(),
 		CdnKeyId: a.id.CdnKey,
-		CdnKey:   a.desired,
+		CdnKey:   resource,
 	}
 	op, err := a.gcpClient.CreateCdnKey(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating VideoStitcherCDNKey %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating CdnKey %s: %w", a.id, err)
 	}
-
-	created, err := op.Wait(ctx)
+	_, err = op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for VideoStitcherCDNKey %s creation: %w", a.id.String(), err)
+		return fmt.Errorf("waiting create CdnKey %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created CdnKey", "name", a.id)
 
-	// Fetch fully-populated resource after creation
-	refetched, err := a.gcpClient.GetCdnKey(ctx, &pb.GetCdnKeyRequest{Name: a.id.String()})
-	if err != nil {
-		refetched = created
-	}
-	a.actual = refetched
-
-	return a.updateStatus(ctx, createOp, refetched)
+	status := &krm.VideoStitcherCDNKeyStatus{}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *Adapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *CdnKeyAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating VideoStitcherCDNKey", "id", a.id)
+	log.V(2).Info("updating CdnKey", "name", a.id)
 
-	diffs, updateMask, err := a.compareCDNKey(ctx, a.actual, a.desired)
+	desired, diffs, updateMask, err := compareCdnKey(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desiredCopy := proto.CloneOf(a.desired)
-		desiredCopy.Name = a.id.String()
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
 
 		req := &pb.UpdateCdnKeyRequest{
-			CdnKey:     desiredCopy,
+			CdnKey:     desired,
 			UpdateMask: updateMask,
 		}
-
 		op, err := a.gcpClient.UpdateCdnKey(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating VideoStitcherCDNKey %s: %w", a.id.String(), err)
+			return fmt.Errorf("updating CdnKey %s: %w", a.id, err)
 		}
-		latest, err = op.Wait(ctx)
+		_, err = op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("waiting VideoStitcherCDNKey %s update: %w", a.id.String(), err)
+			return fmt.Errorf("waiting update CdnKey %s: %w", a.id, err)
 		}
+		log.V(2).Info("successfully updated CdnKey", "name", a.id)
 
-		// Fetch fully-populated resource after update
-		refetched, err := a.gcpClient.GetCdnKey(ctx, &pb.GetCdnKeyRequest{Name: a.id.String()})
-		if err != nil {
-			return fmt.Errorf("fetching VideoStitcherCDNKey %s after update: %w", a.id.String(), err)
-		}
-		latest = refetched
+		status := &krm.VideoStitcherCDNKeyStatus{}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *Adapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.CdnKey) error {
-	status := krm.VideoStitcherCDNKeyStatus{}
-
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
-	return op.UpdateStatus(ctx, &status, nil)
+func compareCdnKey(ctx context.Context, u *unstructured.Unstructured, actual *pb.CdnKey, desiredSpec *krm.VideoStitcherCDNKeySpec) (*pb.CdnKey, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		VideoStitcherCDNKeySpec_FromProto,
+		VideoStitcherCDNKeySpec_ToProto,
+		nil,
+	)
 }
 
-func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *CdnKeyAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -226,10 +220,9 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.CdnKey)
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = a.id.Location
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.CdnKey)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -239,53 +232,29 @@ func (a *Adapter) Export(ctx context.Context) (*unstructured.Unstructured, error
 	u.Object = uObj
 	u.SetName(a.id.CdnKey)
 	u.SetGroupVersionKind(krm.VideoStitcherCDNKeyGVK)
-
 	return u, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *CdnKeyAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting VideoStitcherCDNKey", "id", a.id)
+	log.V(2).Info("deleting CdnKey", "name", a.id)
 
-	req := &pb.DeleteCdnKeyRequest{Name: a.id.String()}
+	req := &pb.DeleteCdnKeyRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteCdnKey(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent VideoStitcherCDNKey, assuming it was already deleted", "id", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting VideoStitcherCDNKey %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting CdnKey %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted CdnKey", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete VideoStitcherCDNKey %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete CdnKey %s: %w", a.id, err)
+		}
 	}
 	return true, nil
-}
-
-func (a *Adapter) compareCDNKey(ctx context.Context, actual, desired *pb.CdnKey) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, VideoStitcherCDNKeySpec_FromProto, VideoStitcherCDNKeySpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-
-	// Since private keys and token keys are write-only fields and not returned by GCP,
-	// we preserve the desired secrets in maskedActual to avoid false drifts.
-	if desired.GetGoogleCdnKey() != nil && maskedActual.GetGoogleCdnKey() != nil {
-		maskedActual.GetGoogleCdnKey().PrivateKey = desired.GetGoogleCdnKey().PrivateKey
-	}
-	if desired.GetMediaCdnKey() != nil && maskedActual.GetMediaCdnKey() != nil {
-		maskedActual.GetMediaCdnKey().PrivateKey = desired.GetMediaCdnKey().PrivateKey
-	}
-	if desired.GetAkamaiCdnKey() != nil && maskedActual.GetAkamaiCdnKey() != nil {
-		maskedActual.GetAkamaiCdnKey().TokenKey = desired.GetAkamaiCdnKey().TokenKey
-	}
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

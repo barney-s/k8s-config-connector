@@ -1,0 +1,67 @@
+package: hypercomputecluster
+kccservice: hypercomputecluster
+kccversion: v1alpha1
+kind: HypercomputeClusterCluster
+protoresource: Cluster
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.HypercomputeClusterClusterIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Cluster
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: false
+    haslocation: false
+    hasresourceid: false
+    createhasidfield: true
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetCluster
+    getrequesttype: GetClusterRequest
+    getnamefield: Name
+    createmethodname: CreateCluster
+    createrequesttype: CreateClusterRequest
+    createparentfield: Parent
+    createbodyfield: Cluster
+    createidfield: ClusterId
+    updatemethodname: UpdateCluster
+    updaterequesttype: UpdateClusterRequest
+    updatebodyfield: Cluster
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteCluster
+    deleterequesttype: DeleteClusterRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/hypercomputecluster/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/hypercomputecluster/apiv1/hypercomputeclusterpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

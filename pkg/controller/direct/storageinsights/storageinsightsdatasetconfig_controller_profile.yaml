@@ -1,0 +1,70 @@
+package: storageinsights
+kccservice: storageinsights
+kccversion: v1alpha1
+kind: StorageInsightsDatasetConfig
+protoresource: DatasetConfig
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.StorageInsightsDatasetConfigIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: DatasetConfig
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: direct.PtrTo(a.id.DatasetConfig)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetDatasetConfig
+    getrequesttype: GetDatasetConfigRequest
+    getnamefield: Name
+    createmethodname: CreateDatasetConfig
+    createrequesttype: CreateDatasetConfigRequest
+    createparentfield: Parent
+    createbodyfield: DatasetConfig
+    createidfield: DatasetConfigId
+    updatemethodname: UpdateDatasetConfig
+    updaterequesttype: UpdateDatasetConfigRequest
+    updatebodyfield: DatasetConfig
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteDatasetConfig
+    deleterequesttype: DeleteDatasetConfigRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/storageinsights/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/storageinsights/apiv1/storageinsightspb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

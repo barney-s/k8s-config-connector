@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,35 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.kms.v1.KeyManagementService
-// proto.message: google.cloud.kms.v1.ImportJob
-// crd.type: KMSImportJob
-// crd.version: v1alpha1
-
 package kms
 
 import (
 	"context"
 	"fmt"
-
-	kmsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/kms/v1beta1"
-
-	kms "cloud.google.com/go/kms/apiv1"
-	"cloud.google.com/go/kms/apiv1/kmspb"
-	"google.golang.org/api/option"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/kms/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/kms/apiv1"
+	kmspb "cloud.google.com/go/kms/apiv1/kmspb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -48,101 +41,94 @@ func init() {
 }
 
 func NewImportJobModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &importJobModel{config: *config}, nil
+	return &modelImportJob{config: *config}, nil
 }
 
-var _ directbase.Model = &importJobModel{}
+var _ directbase.Model = &modelImportJob{}
+var _ = strings.TrimPrefix
 
-type importJobModel struct {
+type modelImportJob struct {
 	config config.ControllerConfig
 }
 
-func (m *importJobModel) client(ctx context.Context, projectID string) (*kms.KeyManagementClient, error) {
-	var opts []option.ClientOption
-
-	config := m.config
-
-	opts, err := config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-
-	gcpClient, err := kms.NewKeyManagementRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building kms importjob client: %w", err)
-	}
-
-	return gcpClient, err
-}
-
-func (m *importJobModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelImportJob) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.KMSImportJob{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
 	id, err := krm.NewImportJobIdentity(ctx, reader, obj)
 	if err != nil {
 		return nil, err
 	}
 
-	gcpClient, err := m.client(ctx, id.Parent().Project)
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ImportJobAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelImportJob) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelImportJob) client(ctx context.Context) (*gcp.KeyManagementClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	return &importJobAdapter{
-		gcpClient: gcpClient,
-		id:        id,
-		desired:   obj,
-		reader:    reader,
-	}, nil
+	gcpClient, err := gcp.NewKeyManagementRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ImportJob client: %w", err)
+	}
+	return gcpClient, err
 }
 
-func (m *importJobModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	return nil, nil
-}
-
-type importJobAdapter struct {
-	gcpClient *kms.KeyManagementClient
+type ImportJobAdapter struct {
 	id        *krm.ImportJobIdentity
+	gcpClient *gcp.KeyManagementClient
 	desired   *krm.KMSImportJob
 	actual    *kmspb.ImportJob
-	reader    client.Reader
 }
 
-var _ directbase.Adapter = &importJobAdapter{}
+var _ directbase.Adapter = &ImportJobAdapter{}
 
-// Find retrieves the GCP resource.
-// Return true means the object is found. This triggers Adapter `Update` call.
-// Return false means the object is not found. This triggers Adapter `Create` call.
-// Return a non-nil error requeues the requests.
-func (a *importJobAdapter) Find(ctx context.Context) (bool, error) {
+func (a *ImportJobAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting kms importjob", "name", a.id)
+	log.V(2).Info("getting ImportJob", "name", a.id)
 
-	req := &kmspb.GetImportJobRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetImportJob(ctx, req)
+	req := &kmspb.GetImportJobRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetImportJob(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting kms importjob %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting ImportJob %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-// Create creates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *importJobAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ImportJobAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating kms importjob", "name", a.id)
+	log.V(2).Info("creating ImportJob", "name", a.id)
 	mapCtx := &direct.MapContext{}
 
-	desired := KMSImportJobSpec_ToProto(mapCtx, &a.desired.Spec)
+	desired := a.desired.DeepCopy()
+	resource := KMSImportJobSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
@@ -150,62 +136,66 @@ func (a *importJobAdapter) Create(ctx context.Context, createOp *directbase.Crea
 	req := &kmspb.CreateImportJobRequest{
 		Parent:      a.id.Parent().String(),
 		ImportJobId: a.id.ID(),
-		ImportJob:   desired,
+		ImportJob:   resource,
 	}
 	created, err := a.gcpClient.CreateImportJob(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating kms importjob %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating ImportJob %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created kms importjob in gcp", "name", a.id)
+	log.V(2).Info("successfully created ImportJob", "name", a.id)
 
 	status := &krm.KMSImportJobStatus{}
-	status.ObservedState = KMSImportJobObservedState_v1beta1_FromProto(mapCtx, created)
+	status.ObservedState = KMSImportJobObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
-
-	status.ExternalRef = direct.PtrTo(a.id.String())
+	status.ExternalRef = direct.LazyPtr(a.id.String())
 	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-// Update updates the resource in GCP based on `spec` and update the Config Connector object `status` based on the GCP response.
-func (a *importJobAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ImportJobAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("updating KMSImportJob", "name", a.id)
-	mapCtx := &direct.MapContext{}
+	log.V(2).Info("updating ImportJob", "name", a.id)
 
-	desiredPb := KMSImportJobSpec_ToProto(mapCtx, &a.desired.Spec)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	desiredPb.Name = a.id.String()
-
-	// Match output-only fields that are not marked as output-only in the proto.
-	desiredPb.PublicKey = a.actual.PublicKey
-	desiredPb.Attestation = a.actual.Attestation
-
-	paths := make(sets.Set[string])
-	var err error
-	paths, err = common.CompareProtoMessage(desiredPb, a.actual, common.BasicDiff)
+	desired, diffs, updateMask, err := compareImportJob(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
-
-	if len(paths) == 0 {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return nil
+	_ = desired
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("KMSImportJob resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
 	}
 
-	log.V(2).Info("KMSImportJob doesn't support update", "name", a.id)
-	return fmt.Errorf("updating KMSImportJob %s: update is not supported", a.id)
+	status := &krm.KMSImportJobStatus{}
+	mapCtx := &direct.MapContext{}
+	status.ObservedState = KMSImportJobObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
 }
 
-// Export implements the Adapter interface.
-func (a *importJobAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	log := klog.FromContext(ctx)
+func compareImportJob(ctx context.Context, u *unstructured.Unstructured, actual *kmspb.ImportJob, desiredSpec *krm.KMSImportJobSpec) (*kmspb.ImportJob, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		KMSImportJobSpec_FromProto,
+		KMSImportJobSpec_ToProto,
+		nil,
+	)
+}
+
+func (a *ImportJobAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
+	u := &unstructured.Unstructured{}
 
 	obj := &krm.KMSImportJob{}
 	mapCtx := &direct.MapContext{}
@@ -213,25 +203,20 @@ func (a *importJobAdapter) Export(ctx context.Context) (*unstructured.Unstructur
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-	obj.Spec.KMSKeyRingRef = &kmsv1beta1.KMSKeyRingRef{External: a.id.Parent().String()}
+
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
 
-	u := &unstructured.Unstructured{Object: uObj}
+	u.Object = uObj
 	u.SetName(a.id.ID())
 	u.SetGroupVersionKind(krm.KMSImportJobGVK)
-
-	log.Info("exported object", "obj", u, "gvk", u.GroupVersionKind())
 	return u, nil
 }
 
-// Delete the resource from GCP service when the corresponding Config Connector resource is deleted.
-func (a *importJobAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ImportJobAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.Info("No-op Delete for import job", "name", a.id.String())
-	// KMS API does not support deleting an import job. An import job expires after three days.
-	// Return success to remove the finalizer, so the resource can be deleted in k8s.
+	log.V(2).Info("deletion not supported for ImportJob, removing finalizer without deleting GCP resource", "name", a.id)
 	return true, nil
 }

@@ -12,25 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +tool:controller
-// proto.service: google.cloud.vmwareengine.v1.VmwareEngine
-// proto.message: google.cloud.vmwareengine.v1.PrivateConnection
-// crd.type: VMwareEnginePrivateConnection
-// crd.version: v1alpha1
-
 package vmwareengine
 
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/vmwareengine/apiv1"
-	pb "cloud.google.com/go/vmwareengine/apiv1/vmwareenginepb"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog/v2"
-
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/vmwareengine/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -38,8 +24,17 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/vmwareengine/apiv1"
+	pb "cloud.google.com/go/vmwareengine/apiv1/vmwareenginepb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 )
 
 func init() {
@@ -47,167 +42,181 @@ func init() {
 }
 
 func NewPrivateConnectionModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &privateConnectionModel{config: *config}, nil
+	return &modelPrivateConnection{config: *config}, nil
 }
 
-var _ directbase.Model = &privateConnectionModel{}
+var _ directbase.Model = &modelPrivateConnection{}
+var _ = strings.TrimPrefix
 
-type privateConnectionModel struct {
+type modelPrivateConnection struct {
 	config config.ControllerConfig
 }
 
-func (m *privateConnectionModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelPrivateConnection) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.VMwareEnginePrivateConnection{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
 	id, err := krm.NewPrivateConnectionIdentity(ctx, reader, obj)
 	if err != nil {
 		return nil, err
 	}
-
-	// Normalize references
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	// Get VMwareEngine GCP client
-	gcpClient, err := newGCPClient(ctx, &m.config)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	client, err := gcpClient.newClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	mapCtx := &direct.MapContext{}
-	desired := VMwareEnginePrivateConnectionSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &privateConnectionAdapter{
-		gcpClient: client,
+	return &PrivateConnectionAdapter{
 		id:        id,
-		desired:   desired,
+		gcpClient: gcpClient,
+		desired:   obj,
 	}, nil
 }
 
-func (m *privateConnectionModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelPrivateConnection) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type privateConnectionAdapter struct {
-	gcpClient *gcp.Client
+func (m *modelPrivateConnection) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building PrivateConnection client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type PrivateConnectionAdapter struct {
 	id        *krm.PrivateConnectionIdentity
-	desired   *pb.PrivateConnection
+	gcpClient *gcp.Client
+	desired   *krm.VMwareEnginePrivateConnection
 	actual    *pb.PrivateConnection
 }
 
-var _ directbase.Adapter = &privateConnectionAdapter{}
+var _ directbase.Adapter = &PrivateConnectionAdapter{}
 
-func (a *privateConnectionAdapter) Find(ctx context.Context) (bool, error) {
+func (a *PrivateConnectionAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting vmwareengine privateconnection", "name", a.id)
+	log.V(2).Info("getting PrivateConnection", "name", a.id)
 
-	req := &pb.GetPrivateConnectionRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetPrivateConnection(ctx, req)
+	req := &pb.GetPrivateConnectionRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetPrivateConnection(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting vmwareengine privateconnection %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting PrivateConnection %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *privateConnectionAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *PrivateConnectionAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating vmwareengine privateconnection", "name", a.id)
+	log.V(2).Info("creating PrivateConnection", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := VMwareEnginePrivateConnectionSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &pb.CreatePrivateConnectionRequest{
 		Parent:              a.id.Parent().String(),
 		PrivateConnectionId: a.id.ID(),
-		PrivateConnection:   a.desired,
+		PrivateConnection:   resource,
 	}
 	op, err := a.gcpClient.CreatePrivateConnection(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating vmwareengine privateconnection %s: %w", a.id.String(), err)
+		return fmt.Errorf("creating PrivateConnection %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("vmwareengine privateconnection %s waiting creation: %w", a.id, err)
+		return fmt.Errorf("waiting create PrivateConnection %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created vmwareengine privateconnection in gcp", "name", a.id)
+	log.V(2).Info("successfully created PrivateConnection", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
-}
-
-func (a *privateConnectionAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating vmwareengine privateconnection", "name", a.id)
-
-	diffs, updateMask, err := comparePrivateConnection(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	latest := a.actual
-	if diffs.HasDiff() {
-		diffs.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diffs)
-
-		a.desired.Name = a.id.String() // we need to set the name so that GCP API can identify the resource
-		req := &pb.UpdatePrivateConnectionRequest{
-			PrivateConnection: a.desired,
-			UpdateMask:        updateMask,
-		}
-		op, err := a.gcpClient.UpdatePrivateConnection(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating vmwareengine privateconnection %s: %w", a.id.String(), err)
-		}
-		latest, err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("vmwareengine privateconnection %s waiting update: %w", a.id, err)
-		}
-		log.V(2).Info("successfully updated vmwareengine privateconnection", "name", a.id)
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func comparePrivateConnection(ctx context.Context, actual, desired *pb.PrivateConnection) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, VMwareEnginePrivateConnectionSpec_FromProto, VMwareEnginePrivateConnectionSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func (a *privateConnectionAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.PrivateConnection) error {
-	mapCtx := &direct.MapContext{}
 	status := &krm.VMwareEnginePrivateConnectionStatus{}
-	status.ObservedState = VMwareEnginePrivateConnectionObservedState_FromProto(mapCtx, latest)
+	status.ObservedState = VMwareEnginePrivateConnectionObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *privateConnectionAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *PrivateConnectionAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating PrivateConnection", "name", a.id)
+
+	desired, diffs, updateMask, err := comparePrivateConnection(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
+
+		req := &pb.UpdatePrivateConnectionRequest{
+			PrivateConnection: desired,
+			UpdateMask:        updateMask,
+		}
+		op, err := a.gcpClient.UpdatePrivateConnection(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating PrivateConnection %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update PrivateConnection %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated PrivateConnection", "name", a.id)
+
+		status := &krm.VMwareEnginePrivateConnectionStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = VMwareEnginePrivateConnectionObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func comparePrivateConnection(ctx context.Context, u *unstructured.Unstructured, actual *pb.PrivateConnection, desiredSpec *krm.VMwareEnginePrivateConnectionSpec) (*pb.PrivateConnection, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		VMwareEnginePrivateConnectionSpec_FromProto,
+		VMwareEnginePrivateConnectionSpec_ToProto,
+		nil,
+	)
+}
+
+func (a *PrivateConnectionAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -228,29 +237,32 @@ func (a *privateConnectionAdapter) Export(ctx context.Context) (*unstructured.Un
 		return nil, err
 	}
 
-	u.SetName(a.actual.Name)
-	u.SetGroupVersionKind(krm.VMwareEnginePrivateConnectionGVK)
 	u.Object = uObj
+	u.SetName(a.id.ID())
+	u.SetGroupVersionKind(krm.VMwareEnginePrivateConnectionGVK)
 	return u, nil
 }
 
-func (a *privateConnectionAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *PrivateConnectionAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting vmwareengine privateconnection", "name", a.id)
+	log.V(2).Info("deleting PrivateConnection", "name", a.id)
 
-	req := &pb.DeletePrivateConnectionRequest{Name: a.id.String()}
+	req := &pb.DeletePrivateConnectionRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeletePrivateConnection(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting vmwareengine privateconnection %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting PrivateConnection %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully deleted vmwareengine privateconnection", "name", a.id)
-
+	log.V(2).Info("successfully deleted PrivateConnection", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete vmwareengine privateconnection %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete PrivateConnection %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

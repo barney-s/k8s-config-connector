@@ -17,7 +17,6 @@ package logging
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/logging/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
@@ -25,6 +24,7 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/logging/apiv2"
 	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
@@ -37,115 +37,110 @@ import (
 )
 
 func init() {
-	registry.RegisterModel(krm.LoggingLinkGVK, NewLoggingLinkModel)
+	registry.RegisterModel(krm.LoggingLinkGVK, NewLinkModel)
 }
 
-func NewLoggingLinkModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &modelLoggingLink{config: *config}, nil
+func NewLinkModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelLink{config: *config}, nil
 }
 
-var _ directbase.Model = &modelLoggingLink{}
+var _ directbase.Model = &modelLink{}
+var _ = strings.TrimPrefix
 
-type modelLoggingLink struct {
+type modelLink struct {
 	config config.ControllerConfig
 }
 
-func (m *modelLoggingLink) client(ctx context.Context) (*gcp.ConfigClient, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewConfigRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building Logging Config client: %w", err)
-	}
-	return gcpClient, err
-}
-
-func (m *modelLoggingLink) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelLink) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.LoggingLink{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
+	}
+	id := i.(*krm.LoggingLinkIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
 	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desiredPb := LoggingLinkSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	resourceID := direct.ValueOf(obj.Spec.ResourceID)
-	if resourceID == "" {
-		resourceID = obj.Name
-	}
-
-	return &LoggingLinkAdapter{
-		id:        id.(*krm.LoggingLinkIdentity),
+	return &LinkAdapter{
+		id:        id,
 		gcpClient: gcpClient,
-		desiredID: resourceID,
-		desired:   desiredPb,
+		desired:   obj,
 	}, nil
 }
 
-func (m *modelLoggingLink) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelLink) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	// TODO: Support URLs
 	return nil, nil
 }
 
-type LoggingLinkAdapter struct {
+func (m *modelLink) client(ctx context.Context) (*gcp.ConfigClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewConfigRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building Link client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type LinkAdapter struct {
 	id        *krm.LoggingLinkIdentity
 	gcpClient *gcp.ConfigClient
-	desiredID string
-	desired   *loggingpb.Link
+	desired   *krm.LoggingLink
 	actual    *loggingpb.Link
 }
 
-var _ directbase.Adapter = &LoggingLinkAdapter{}
+var _ directbase.Adapter = &LinkAdapter{}
 
-func (a *LoggingLinkAdapter) Find(ctx context.Context) (bool, error) {
+func (a *LinkAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("getting LoggingLink", "name", a.id)
+	log.V(2).Info("getting Link", "name", a.id)
 
-	req := &loggingpb.GetLinkRequest{Name: a.id.String()}
-	linkpb, err := a.gcpClient.GetLink(ctx, req)
+	req := &loggingpb.GetLinkRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetLink(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting LoggingLink %q: %w", a.id, err)
+		return false, fmt.Errorf("getting Link %q: %w", a.id, err)
 	}
 
-	a.actual = linkpb
+	a.actual = resp
 	return true, nil
 }
 
-func (a *LoggingLinkAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *LinkAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating LoggingLink", "id", a.id.String())
+	log.V(2).Info("creating Link", "name", a.id)
+	mapCtx := &direct.MapContext{}
 
-	parent := a.id.Parent()
+	desired := a.desired.DeepCopy()
+	resource := LoggingLinkSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &loggingpb.CreateLinkRequest{
-		Parent: parent.String(),
-		Link:   a.desired,
-		LinkId: a.desiredID,
+		Parent: a.id.ParentString(),
+		LinkId: a.id.Link,
+		Link:   resource,
 	}
 	op, err := a.gcpClient.CreateLink(ctx, req)
 	if err != nil {
@@ -153,43 +148,58 @@ func (a *LoggingLinkAdapter) Create(ctx context.Context, createOp *directbase.Cr
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting Link %s creation: %w", a.id, err)
+		return fmt.Errorf("waiting create Link %s: %w", a.id, err)
 	}
 	log.V(2).Info("successfully created Link", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
-}
-
-func (a *LoggingLinkAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating LoggingLink", "name", a.id.String())
-
-	diffs, _, err := compareLink(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	if diffs.HasDiff() {
-		diffs.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diffs)
-		return fmt.Errorf("LoggingLink is immutable and cannot be updated")
-	}
-
-	return a.updateStatus(ctx, updateOp, a.actual)
-}
-
-func (a *LoggingLinkAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *loggingpb.Link) error {
-	mapCtx := &direct.MapContext{}
 	status := &krm.LoggingLinkStatus{}
-	status.ObservedState = LoggingLinkObservedState_FromProto(mapCtx, latest)
+	status.ObservedState = LoggingLinkObservedState_FromProto(mapCtx, created)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 	status.ExternalRef = direct.LazyPtr(a.id.String())
-	return op.UpdateStatus(ctx, status, nil)
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *LoggingLinkAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *LinkAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating Link", "name", a.id)
+
+	desired, diffs, updateMask, err := compareLink(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
+	if err != nil {
+		return err
+	}
+	_ = desired
+	_ = updateMask
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+		return fmt.Errorf("LoggingLink resource is immutable and cannot be updated. Field(s) changed: %v", diffs.FieldIDs())
+	}
+
+	status := &krm.LoggingLinkStatus{}
+	mapCtx := &direct.MapContext{}
+	status.ObservedState = LoggingLinkObservedState_FromProto(mapCtx, a.actual)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return updateOp.UpdateStatus(ctx, status, nil)
+}
+
+func compareLink(ctx context.Context, u *unstructured.Unstructured, actual *loggingpb.Link, desiredSpec *krm.LoggingLinkSpec) (*loggingpb.Link, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		LoggingLinkSpec_FromProto,
+		LoggingLinkSpec_ToProto,
+		nil,
+	)
+}
+
+func (a *LinkAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -201,6 +211,7 @@ func (a *LoggingLinkAdapter) Export(ctx context.Context) (*unstructured.Unstruct
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.Link)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -208,54 +219,31 @@ func (a *LoggingLinkAdapter) Export(ctx context.Context) (*unstructured.Unstruct
 	}
 
 	u.Object = uObj
-	u.SetName(a.actual.Name)
+	u.SetName(a.id.Link)
 	u.SetGroupVersionKind(krm.LoggingLinkGVK)
 	return u, nil
 }
 
-// Delete implements the Adapter interface.
-func (a *LoggingLinkAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *LinkAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
 	log.V(2).Info("deleting Link", "name", a.id)
 
-	req := &loggingpb.DeleteLinkRequest{Name: a.id.String()}
+	req := &loggingpb.DeleteLinkRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteLink(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent LoggingLink, assuming it was already deleted", "name", a.id.String())
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("deleting Link %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully initiated deletion of Link", "name", a.id)
-
+	log.V(2).Info("successfully deleted Link", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete Link %s: %w", a.id, err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Link %s: %w", a.id, err)
+		}
 	}
-	log.V(2).Info("successfully waited for link deletion LRO", "name", a.id)
-
 	return true, nil
-}
-
-func compareLink(ctx context.Context, actual, desired *loggingpb.Link) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	var maskedActual *loggingpb.Link
-	{
-		// A "trick" to only compare spec fields - round trip via the spec
-		mapCtx := &direct.MapContext{}
-		spec := LoggingLinkSpec_FromProto(mapCtx, actual)
-		if mapCtx.Err() != nil {
-			return nil, nil, mapCtx.Err()
-		}
-		maskedActual = LoggingLinkSpec_ToProto(mapCtx, spec)
-		if mapCtx.Err() != nil {
-			return nil, nil, mapCtx.Err()
-		}
-	}
-	maskedActual.Name = desired.Name
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

@@ -17,9 +17,6 @@ package agentregistry
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/agentregistry/apiv1"
-	agentregistrypb "cloud.google.com/go/agentregistry/apiv1/agentregistrypb"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/agentregistry/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -27,204 +24,209 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/agentregistry/apiv1"
+	agentregistrypb "cloud.google.com/go/agentregistry/apiv1/agentregistrypb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 )
 
 func init() {
-	registry.RegisterModel(krm.AgentRegistryBindingGVK, NewAgentRegistryBindingModel)
+	registry.RegisterModel(krm.AgentRegistryBindingGVK, NewBindingModel)
 }
 
-func NewAgentRegistryBindingModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &modelAgentRegistryBinding{config: config}, nil
+func NewBindingModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
+	return &modelBinding{config: *config}, nil
 }
 
-var _ directbase.Model = &modelAgentRegistryBinding{}
+var _ directbase.Model = &modelBinding{}
+var _ = strings.TrimPrefix
 
-type modelAgentRegistryBinding struct {
-	config *config.ControllerConfig
+type modelBinding struct {
+	config config.ControllerConfig
 }
 
-func (m *modelAgentRegistryBinding) client(ctx context.Context) (*gcp.Client, error) {
+func (m *modelBinding) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.AgentRegistryBinding{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	id, err := krm.NewAgentRegistryBindingIdentity(ctx, reader, obj)
+	if err != nil {
+		return nil, err
+	}
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
+
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &BindingAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelBinding) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	id := &krm.AgentRegistryBindingIdentity{}
+	if err := id.FromExternal(url); err != nil {
+		return nil, nil
+	}
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &BindingAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+	}, nil
+}
+
+func (m *modelBinding) client(ctx context.Context) (*gcp.Client, error) {
 	var opts []option.ClientOption
 	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
+
 	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building AgentRegistry REST client: %w", err)
+		return nil, fmt.Errorf("building Binding client: %w", err)
 	}
-	return gcpClient, nil
+	return gcpClient, err
 }
 
-func (m *modelAgentRegistryBinding) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.AgentRegistryBinding{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	// Always call common.NormalizeReferences to resolve references
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, fmt.Errorf("normalizing references: %w", err)
-	}
-
-	id, err := krm.NewAgentRegistryBindingIdentity(ctx, reader, obj)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert the KRM spec to API format
-	mapCtx := &direct.MapContext{}
-	desired := AgentRegistryBindingSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-	desired.Name = id.String()
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &AgentRegistryBindingAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-		desired:   desired,
-	}, nil
-}
-
-func (m *modelAgentRegistryBinding) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	id := &krm.AgentRegistryBindingIdentity{}
-	if err := id.FromExternal(url); err != nil {
-		// Not recognized
-		return nil, nil
-	}
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &AgentRegistryBindingAdapter{
-		id:        id,
-		gcpClient: gcpClient,
-	}, nil
-}
-
-type AgentRegistryBindingAdapter struct {
+type BindingAdapter struct {
 	id        *krm.AgentRegistryBindingIdentity
 	gcpClient *gcp.Client
-	desired   *agentregistrypb.Binding
+	desired   *krm.AgentRegistryBinding
 	actual    *agentregistrypb.Binding
 }
 
-var _ directbase.Adapter = &AgentRegistryBindingAdapter{}
+var _ directbase.Adapter = &BindingAdapter{}
 
-func (a *AgentRegistryBindingAdapter) Find(ctx context.Context) (bool, error) {
+func (a *BindingAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("getting AgentRegistryBinding", "name", fqn)
+	log.V(2).Info("getting Binding", "name", a.id)
 
 	req := &agentregistrypb.GetBindingRequest{
-		Name: fqn,
+		Name: a.id.String(),
 	}
-	resource, err := a.gcpClient.GetBinding(ctx, req)
+	resp, err := a.gcpClient.GetBinding(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting AgentRegistryBinding %q: %w", fqn, err)
+		return false, fmt.Errorf("getting Binding %q: %w", a.id, err)
 	}
 
-	a.actual = resource
+	a.actual = resp
 	return true, nil
 }
 
-func (a *AgentRegistryBindingAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *BindingAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	parent := a.id.Parent().String()
-	fqn := a.id.String()
-	log.V(2).Info("creating AgentRegistryBinding", "name", fqn)
+	log.V(2).Info("creating Binding", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := AgentRegistryBindingSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
 
 	req := &agentregistrypb.CreateBindingRequest{
-		Parent:    parent,
+		Parent:    a.id.Parent().String(),
 		BindingId: a.id.ID(),
-		Binding:   a.desired,
+		Binding:   resource,
 	}
 	op, err := a.gcpClient.CreateBinding(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating AgentRegistryBinding %s: %w", a.id.ID(), err)
+		return fmt.Errorf("creating Binding %s: %w", a.id, err)
 	}
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for AgentRegistryBinding %s creation: %w", a.id.ID(), err)
+		return fmt.Errorf("waiting create Binding %s: %w", a.id, err)
 	}
-	log.V(2).Info("successfully created AgentRegistryBinding", "name", created.Name)
+	log.V(2).Info("successfully created Binding", "name", a.id)
 
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.AgentRegistryBindingStatus{}
+	status.ObservedState = AgentRegistryBindingObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *AgentRegistryBindingAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *BindingAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("updating AgentRegistryBinding", "name", fqn)
+	log.V(2).Info("updating Binding", "name", a.id)
 
-	diffs, updateMask, err := compareBinding(ctx, a.actual, a.desired)
+	desired, diffs, updateMask, err := compareBinding(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desired := proto.Clone(a.desired).(*agentregistrypb.Binding)
-		desired.Name = fqn
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
 
 		req := &agentregistrypb.UpdateBindingRequest{
 			Binding:    desired,
 			UpdateMask: updateMask,
 		}
-
 		op, err := a.gcpClient.UpdateBinding(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating AgentRegistryBinding %s: %w", fqn, err)
+			return fmt.Errorf("updating Binding %s: %w", a.id, err)
 		}
 		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("waiting for AgentRegistryBinding %s update: %w", fqn, err)
+			return fmt.Errorf("waiting update Binding %s: %w", a.id, err)
 		}
-		latest = updated
+		log.V(2).Info("successfully updated Binding", "name", a.id)
+
+		status := &krm.AgentRegistryBindingStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = AgentRegistryBindingObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *AgentRegistryBindingAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *agentregistrypb.Binding) error {
-	mapCtx := &direct.MapContext{}
-	observedState := AgentRegistryBindingObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status := &krm.AgentRegistryBindingStatus{}
-	status.ObservedState = observedState
-	externalRef := latest.Name
-	status.ExternalRef = &externalRef
-	return op.UpdateStatus(ctx, status, nil)
+func compareBinding(ctx context.Context, u *unstructured.Unstructured, actual *agentregistrypb.Binding, desiredSpec *krm.AgentRegistryBindingSpec) (*agentregistrypb.Binding, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		AgentRegistryBindingSpec_FromProto,
+		AgentRegistryBindingSpec_ToProto,
+		nil,
+	)
 }
 
-func (a *AgentRegistryBindingAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *BindingAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -236,10 +238,8 @@ func (a *AgentRegistryBindingAdapter) Export(ctx context.Context) (*unstructured
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	parent := a.id.Parent()
-	obj.Spec.ProjectRef = &refs.ProjectRef{External: parent.ProjectID}
-	obj.Spec.Location = parent.Location
+	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Parent().ProjectID}
+	obj.Spec.Location = a.id.Parent().Location
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -252,40 +252,26 @@ func (a *AgentRegistryBindingAdapter) Export(ctx context.Context) (*unstructured
 	return u, nil
 }
 
-func (a *AgentRegistryBindingAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *BindingAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("deleting AgentRegistryBinding", "name", fqn)
+	log.V(2).Info("deleting Binding", "name", a.id)
 
-	req := &agentregistrypb.DeleteBindingRequest{Name: fqn}
+	req := &agentregistrypb.DeleteBindingRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteBinding(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent AgentRegistryBinding, assuming it was already deleted", "name", fqn)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting AgentRegistryBinding %s: %w", fqn, err)
+		return false, fmt.Errorf("deleting Binding %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully deleted Binding", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		if direct.IsNotFound(err) {
-			return true, nil
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete Binding %s: %w", a.id, err)
 		}
-		return false, fmt.Errorf("waiting for AgentRegistryBinding %s deletion: %w", fqn, err)
 	}
-	log.V(2).Info("successfully deleted AgentRegistryBinding", "name", fqn)
 	return true, nil
-}
-
-func compareBinding(ctx context.Context, actual, desired *agentregistrypb.Binding) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, AgentRegistryBindingSpec_FromProto, AgentRegistryBindingSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Name = desired.Name
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

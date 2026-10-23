@@ -1,0 +1,69 @@
+package: securitycentermanagement
+kccservice: securitycentermanagement
+kccversion: v1alpha1
+kind: SecurityCenterManagementEventThreatDetectionCustomModule
+protoresource: EventThreatDetectionCustomModule
+protoversion: ""
+identity:
+    strategy: server_generated
+    typename: krm.SecurityCenterManagementEventThreatDetectionCustomModuleIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Organization
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: false
+    haslocation: true
+    hasresourceid: false
+    servergeneratedid: true
+    locationexpr: '&a.id.Location'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    hasupdatefieldmask: true
+    getmethodname: GetEventThreatDetectionCustomModule
+    getrequesttype: GetEventThreatDetectionCustomModuleRequest
+    getnamefield: Name
+    createmethodname: CreateEventThreatDetectionCustomModule
+    createrequesttype: CreateEventThreatDetectionCustomModuleRequest
+    createparentfield: Parent
+    createbodyfield: EventThreatDetectionCustomModule
+    createidfield: ""
+    updatemethodname: UpdateEventThreatDetectionCustomModule
+    updaterequesttype: UpdateEventThreatDetectionCustomModuleRequest
+    updatebodyfield: EventThreatDetectionCustomModule
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteEventThreatDetectionCustomModule
+    deleterequesttype: DeleteEventThreatDetectionCustomModuleRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: false
+        isempty: false
+    update:
+        islro: false
+        isempty: false
+    delete:
+        islro: false
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/securitycentermanagement/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/securitycentermanagement/apiv1/securitycentermanagementpb
+    pbpackagealias: securitycentermanagementpb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: false
+    hasobservedstate: true
+    mapperversionsuffix: ""

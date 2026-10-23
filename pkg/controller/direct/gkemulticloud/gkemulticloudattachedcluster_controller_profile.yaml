@@ -1,0 +1,70 @@
+package: gkemulticloud
+kccservice: gkemulticloud
+kccversion: v1alpha1
+kind: GKEMulticloudAttachedCluster
+protoresource: AttachedCluster
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.GKEMulticloudAttachedClusterIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: AttachedCluster
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: direct.LazyPtr(a.id.AttachedCluster)
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetAttachedCluster
+    getrequesttype: GetAttachedClusterRequest
+    getnamefield: Name
+    createmethodname: CreateAttachedCluster
+    createrequesttype: CreateAttachedClusterRequest
+    createparentfield: Parent
+    createbodyfield: AttachedCluster
+    createidfield: AttachedClusterId
+    updatemethodname: UpdateAttachedCluster
+    updaterequesttype: UpdateAttachedClusterRequest
+    updatebodyfield: AttachedCluster
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteAttachedCluster
+    deleterequesttype: DeleteAttachedClusterRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/gkemulticloud/apiv1
+    gcpclienttype: '*gcp.AttachedClustersClient'
+    gcpclientconstructor: gcp.NewAttachedClustersClient
+    usegrpcclient: true
+    pbimportpath: cloud.google.com/go/gkemulticloud/apiv1/gkemulticloudpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

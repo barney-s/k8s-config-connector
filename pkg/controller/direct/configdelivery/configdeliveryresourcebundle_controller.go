@@ -17,24 +17,22 @@ package configdelivery
 import (
 	"context"
 	"fmt"
-
-	gcp "cloud.google.com/go/configdelivery/apiv1"
-	pb "cloud.google.com/go/configdelivery/apiv1/configdeliverypb"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/apis/common/parent"
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/configdelivery/v1alpha1"
-	refsv1beta1 "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
-	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/mappers"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
+	gcp "cloud.google.com/go/configdelivery/apiv1"
+	pb "cloud.google.com/go/configdelivery/apiv1/configdeliverypb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -45,196 +43,194 @@ func init() {
 }
 
 func NewResourceBundleModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &resourceBundleModel{config: config}, nil
+	return &modelResourceBundle{config: *config}, nil
 }
 
-var _ directbase.Model = &resourceBundleModel{}
+var _ directbase.Model = &modelResourceBundle{}
+var _ = strings.TrimPrefix
 
-type resourceBundleModel struct {
-	config *config.ControllerConfig
+type modelResourceBundle struct {
+	config config.ControllerConfig
 }
 
-func (m *resourceBundleModel) client(ctx context.Context, project string) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions(config.WithDefaultQuotaProject(project))
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building ConfigDelivery client: %w", err)
-	}
-	return gcpClient, nil
-}
-
-func (m *resourceBundleModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+func (m *modelResourceBundle) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.ConfigDeliveryResourceBundle{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	// Always call common.NormalizeReferences to resolve references
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.ConfigDeliveryResourceBundleIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
 
-	idVal, err := obj.GetIdentity(ctx, reader)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, ok := idVal.(*krm.ConfigDeliveryResourceBundleIdentity)
-	if !ok {
-		return nil, fmt.Errorf("unexpected identity type: %T", idVal)
-	}
-
-	// Convert the KRM spec to API format
-	mapCtx := &direct.MapContext{}
-	desired := ConfigDeliveryResourceBundleSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	desired.Labels = obj.GetLabels()
-	desired.Name = id.String()
-
-	gcpClient, err := m.client(ctx, id.Project)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ConfigDeliveryResourceBundleAdapter{
+	return &ResourceBundleAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
-func (m *resourceBundleModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+func (m *modelResourceBundle) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
 	id := &krm.ConfigDeliveryResourceBundleIdentity{}
 	if err := id.FromExternal(url); err != nil {
-		// Not recognized
 		return nil, nil
 	}
-
-	gcpClient, err := m.client(ctx, id.Project)
+	gcpClient, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &ConfigDeliveryResourceBundleAdapter{
+	return &ResourceBundleAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type ConfigDeliveryResourceBundleAdapter struct {
+func (m *modelResourceBundle) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building ResourceBundle client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type ResourceBundleAdapter struct {
 	id        *krm.ConfigDeliveryResourceBundleIdentity
 	gcpClient *gcp.Client
-	desired   *pb.ResourceBundle
+	desired   *krm.ConfigDeliveryResourceBundle
 	actual    *pb.ResourceBundle
 }
 
-var _ directbase.Adapter = &ConfigDeliveryResourceBundleAdapter{}
+var _ directbase.Adapter = &ResourceBundleAdapter{}
 
-func (a *ConfigDeliveryResourceBundleAdapter) Find(ctx context.Context) (bool, error) {
+func (a *ResourceBundleAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("getting ConfigDeliveryResourceBundle", "name", fqn)
+	log.V(2).Info("getting ResourceBundle", "name", a.id)
 
 	req := &pb.GetResourceBundleRequest{
-		Name: fqn,
+		Name: a.id.String(),
 	}
-	resource, err := a.gcpClient.GetResourceBundle(ctx, req)
+	resp, err := a.gcpClient.GetResourceBundle(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting ConfigDeliveryResourceBundle %q: %w", fqn, err)
+		return false, fmt.Errorf("getting ResourceBundle %q: %w", a.id, err)
 	}
 
-	a.actual = resource
+	a.actual = resp
 	return true, nil
 }
 
-func (a *ConfigDeliveryResourceBundleAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *ResourceBundleAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	parentPath := a.id.ParentString()
-	fqn := a.id.String()
-	log.V(2).Info("creating ConfigDeliveryResourceBundle", "name", fqn)
+	log.V(2).Info("creating ResourceBundle", "name", a.id)
+	mapCtx := &direct.MapContext{}
+
+	desired := a.desired.DeepCopy()
+	resource := ConfigDeliveryResourceBundleSpec_ToProto(mapCtx, &desired.Spec)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
 	req := &pb.CreateResourceBundleRequest{
-		Parent:           parentPath,
+		Parent:           a.id.ParentString(),
 		ResourceBundleId: a.id.ResourceBundle,
-		ResourceBundle:   a.desired,
+		ResourceBundle:   resource,
 	}
 	op, err := a.gcpClient.CreateResourceBundle(ctx, req)
 	if err != nil {
-		return fmt.Errorf("creating ConfigDeliveryResourceBundle %s: %w", a.id.ResourceBundle, err)
+		return fmt.Errorf("creating ResourceBundle %s: %w", a.id, err)
 	}
-
 	created, err := op.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for ConfigDeliveryResourceBundle creation: %w", err)
+		return fmt.Errorf("waiting create ResourceBundle %s: %w", a.id, err)
 	}
+	log.V(2).Info("successfully created ResourceBundle", "name", a.id)
 
-	log.V(2).Info("successfully created ConfigDeliveryResourceBundle", "name", created.Name)
-
-	return a.updateStatus(ctx, createOp, created)
+	status := &krm.ConfigDeliveryResourceBundleStatus{}
+	status.ObservedState = ConfigDeliveryResourceBundleObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *ConfigDeliveryResourceBundleAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+func (a *ResourceBundleAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("updating ConfigDeliveryResourceBundle", "name", fqn)
+	log.V(2).Info("updating ResourceBundle", "name", a.id)
 
-	diffs, updateMask, err := compareResourceBundle(ctx, a.actual, a.desired)
+	desired, diffs, updateMask, err := compareResourceBundle(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
 	if err != nil {
 		return err
 	}
-
-	latest := a.actual
 	if diffs.HasDiff() {
 		diffs.Object = updateOp.GetUnstructured()
 		structuredreporting.ReportDiff(ctx, diffs)
 
-		desired := proto.Clone(a.desired).(*pb.ResourceBundle)
-		desired.Name = fqn
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
 
 		req := &pb.UpdateResourceBundleRequest{
 			ResourceBundle: desired,
 			UpdateMask:     updateMask,
 		}
-
 		op, err := a.gcpClient.UpdateResourceBundle(ctx, req)
 		if err != nil {
-			return fmt.Errorf("updating ConfigDeliveryResourceBundle %s: %w", fqn, err)
+			return fmt.Errorf("updating ResourceBundle %s: %w", a.id, err)
 		}
-
 		updated, err := op.Wait(ctx)
 		if err != nil {
-			return fmt.Errorf("waiting for ConfigDeliveryResourceBundle update: %w", err)
+			return fmt.Errorf("waiting update ResourceBundle %s: %w", a.id, err)
 		}
+		log.V(2).Info("successfully updated ResourceBundle", "name", a.id)
 
-		latest = updated
+		status := &krm.ConfigDeliveryResourceBundleStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = ConfigDeliveryResourceBundleObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
 	}
 
-	return a.updateStatus(ctx, updateOp, latest)
+	return nil
 }
 
-func (a *ConfigDeliveryResourceBundleAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *pb.ResourceBundle) error {
-	mapCtx := &direct.MapContext{}
-	status := krm.ConfigDeliveryResourceBundleStatus{}
-	status.ObservedState = ConfigDeliveryResourceBundleObservedState_FromProto(mapCtx, latest)
-	if mapCtx.Err() != nil {
-		return mapCtx.Err()
-	}
-	status.ExternalRef = direct.LazyPtr(latest.Name)
-	return op.UpdateStatus(ctx, &status, nil)
+func compareResourceBundle(ctx context.Context, u *unstructured.Unstructured, actual *pb.ResourceBundle, desiredSpec *krm.ConfigDeliveryResourceBundleSpec) (*pb.ResourceBundle, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	return common.CompareGreenfieldSpecAndLabels(
+		ctx,
+		u,
+		desiredSpec,
+		actual,
+		"labels",
+		ConfigDeliveryResourceBundleSpec_FromProto,
+		ConfigDeliveryResourceBundleSpec_ToProto,
+		nil,
+	)
 }
 
-func (a *ConfigDeliveryResourceBundleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *ResourceBundleAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -246,11 +242,6 @@ func (a *ConfigDeliveryResourceBundleAdapter) Export(ctx context.Context) (*unst
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ProjectAndLocationRef = &parent.ProjectAndLocationRef{
-		ProjectRef: &refsv1beta1.ProjectRef{External: a.id.Project},
-		Location:   a.id.Location,
-	}
 	obj.Spec.ResourceID = direct.LazyPtr(a.id.ResourceBundle)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
@@ -261,50 +252,30 @@ func (a *ConfigDeliveryResourceBundleAdapter) Export(ctx context.Context) (*unst
 	u.Object = uObj
 	u.SetName(a.id.ResourceBundle)
 	u.SetGroupVersionKind(krm.ConfigDeliveryResourceBundleGVK)
-
 	export.SetLabels(u, a.actual.Labels)
-
 	return u, nil
 }
 
-func (a *ConfigDeliveryResourceBundleAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *ResourceBundleAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	fqn := a.id.String()
-	log.V(2).Info("deleting ConfigDeliveryResourceBundle", "name", fqn)
+	log.V(2).Info("deleting ResourceBundle", "name", a.id)
 
 	req := &pb.DeleteResourceBundleRequest{
-		Name:  fqn,
-		Force: true,
+		Name: a.id.String(),
 	}
 	op, err := a.gcpClient.DeleteResourceBundle(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent ConfigDeliveryResourceBundle, assuming it was already deleted", "name", fqn)
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting ConfigDeliveryResourceBundle %s: %w", fqn, err)
+		return false, fmt.Errorf("deleting ResourceBundle %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted ResourceBundle", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting for ConfigDeliveryResourceBundle deletion: %w", err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete ResourceBundle %s: %w", a.id, err)
+		}
 	}
-
-	log.V(2).Info("successfully deleted ConfigDeliveryResourceBundle", "name", fqn)
 	return true, nil
-}
-
-func compareResourceBundle(ctx context.Context, actual, desired *pb.ResourceBundle) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
-	maskedActual, err := mappers.OnlySpecFields(actual, ConfigDeliveryResourceBundleSpec_FromProto, ConfigDeliveryResourceBundleSpec_ToProto)
-	if err != nil {
-		return nil, nil, err
-	}
-	maskedActual.Labels = actual.Labels
-	maskedActual.Name = desired.Name
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
 }

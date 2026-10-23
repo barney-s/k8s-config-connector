@@ -1,0 +1,70 @@
+package: migrationcenter
+kccservice: migrationcenter
+kccversion: v1alpha1
+kind: MigrationCenterPreferenceSet
+protoresource: PreferenceSet
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.MigrationCenterPreferenceSetIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: PreferenceSet
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{Name: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: '&a.id.PreferenceSet'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetPreferenceSet
+    getrequesttype: GetPreferenceSetRequest
+    getnamefield: Name
+    createmethodname: CreatePreferenceSet
+    createrequesttype: CreatePreferenceSetRequest
+    createparentfield: Parent
+    createbodyfield: PreferenceSet
+    createidfield: PreferenceSetId
+    updatemethodname: UpdatePreferenceSet
+    updaterequesttype: UpdatePreferenceSetRequest
+    updatebodyfield: PreferenceSet
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeletePreferenceSet
+    deleterequesttype: DeletePreferenceSetRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/migrationcenter/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/migrationcenter/apiv1/migrationcenterpb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

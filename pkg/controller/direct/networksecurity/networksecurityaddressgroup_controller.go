@@ -17,21 +17,22 @@ package networksecurity
 import (
 	"context"
 	"fmt"
-	"reflect"
-	"sort"
-
-	gcp "cloud.google.com/go/networksecurity/apiv1"
-	pb "cloud.google.com/go/networksecurity/apiv1/networksecuritypb"
-	"google.golang.org/api/option"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/networksecurity/v1alpha1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/common"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/export"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/label"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
+
+	gcp "cloud.google.com/go/networksecurity/apiv1"
+	pb "cloud.google.com/go/networksecurity/apiv1/networksecuritypb"
+	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -42,293 +43,228 @@ func init() {
 }
 
 func NewAddressGroupModel(ctx context.Context, config *config.ControllerConfig) (directbase.Model, error) {
-	return &addressGroupModel{config: *config}, nil
+	return &modelAddressGroup{config: *config}, nil
 }
 
-var _ directbase.Model = &addressGroupModel{}
+var _ directbase.Model = &modelAddressGroup{}
+var _ = strings.TrimPrefix
 
-type addressGroupModel struct {
+type modelAddressGroup struct {
 	config config.ControllerConfig
 }
 
-func (m *addressGroupModel) client(ctx context.Context) (*gcp.AddressGroupClient, error) {
-	var opts []option.ClientOption
+func (m *modelAddressGroup) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
+	u := op.GetUnstructured()
+	reader := op.Reader
+	_ = reader
+	obj := &krm.NetworkSecurityAddressGroup{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
+		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
+	}
+	i, err := obj.GetIdentity(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	id := i.(*krm.NetworkSecurityAddressGroupIdentity)
+	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
+		return nil, fmt.Errorf("normalizing references: %w", err)
+	}
 
-	config := m.config
-	opts, err := config.RESTClientOptions()
+	gcpClient, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &AddressGroupAdapter{
+		id:        id,
+		gcpClient: gcpClient,
+		desired:   obj,
+	}, nil
+}
+
+func (m *modelAddressGroup) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
+	// TODO: Support URLs
+	return nil, nil
+}
+
+func (m *modelAddressGroup) client(ctx context.Context) (*gcp.AddressGroupClient, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
 	if err != nil {
 		return nil, err
 	}
 
 	gcpClient, err := gcp.NewAddressGroupRESTClient(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("building networksecurity REST client: %w", err)
+		return nil, fmt.Errorf("building AddressGroup client: %w", err)
 	}
-
-	return gcpClient, nil
+	return gcpClient, err
 }
 
-func (m *addressGroupModel) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
-	u := op.GetUnstructured()
-	reader := op.Reader
-	obj := &krm.NetworkSecurityAddressGroup{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
-		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
-	}
-
-	id, err := obj.GetIdentity(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
-		return nil, err
-	}
-	mapCtx := &direct.MapContext{}
-	desired := NetworkSecurityAddressGroupSpec_v1alpha1_ToProto(mapCtx, &obj.Spec)
-	if err := mapCtx.Err(); err != nil {
-		return nil, err
-	}
-
-	desired.Name = id.String()
-
-	gcpClient, err := m.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &addressGroupAdapter{
-		gcpClient: gcpClient,
-		id:        id.(*krm.NetworkSecurityAddressGroupIdentity),
-		desired:   desired,
-	}, nil
-}
-
-func (m *addressGroupModel) AdapterForURL(ctx context.Context, url string) (directbase.Adapter, error) {
-	return nil, nil
-}
-
-type addressGroupAdapter struct {
-	gcpClient *gcp.AddressGroupClient
+type AddressGroupAdapter struct {
 	id        *krm.NetworkSecurityAddressGroupIdentity
-	desired   *pb.AddressGroup
+	gcpClient *gcp.AddressGroupClient
+	desired   *krm.NetworkSecurityAddressGroup
 	actual    *pb.AddressGroup
 }
 
-var _ directbase.Adapter = &addressGroupAdapter{}
+var _ directbase.Adapter = &AddressGroupAdapter{}
 
-func (a *addressGroupAdapter) Find(ctx context.Context) (bool, error) {
+func (a *AddressGroupAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.Info("getting networksecurity address group", "name", a.id)
+	log.V(2).Info("getting AddressGroup", "name", a.id)
 
-	req := &pb.GetAddressGroupRequest{Name: a.id.String()}
-	actual, err := a.gcpClient.GetAddressGroup(ctx, req)
+	req := &pb.GetAddressGroupRequest{
+		Name: a.id.String(),
+	}
+	resp, err := a.gcpClient.GetAddressGroup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting networksecurity address group %q from gcp: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting AddressGroup %q: %w", a.id, err)
 	}
 
-	a.actual = actual
+	a.actual = resp
 	return true, nil
 }
 
-func (a *addressGroupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *AddressGroupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.Info("creating networksecurity address group", "name", a.id)
-
-	// In Create, we must not send the Name field in AddressGroup because it is output-only
-	// and is not accepted or sent in the HTTP request body.
-	a.desired.Name = ""
-
-	parent := a.id.ParentString()
-	req := &pb.CreateAddressGroupRequest{
-		Parent:         parent,
-		AddressGroupId: a.id.Addressgroup,
-		AddressGroup:   a.desired,
-	}
-	op, err := a.gcpClient.CreateAddressGroup(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating networksecurity address group %s: %w", a.id.String(), err)
-	}
-
-	actual, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("networksecurity address group %s waiting for creation: %w", a.id.String(), err)
-	}
-
-	log.V(2).Info("successfully created networksecurity address group", "name", a.id.String())
-
-	return a.updateStatus(ctx, createOp, actual)
-}
-
-func (a *addressGroupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.Info("updating networksecurity address group", "name", a.id)
-
-	a.desired.Name = a.id.String()
-
-	diffs, updateMask, err := compareAddressGroup(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	diffs.Object = updateOp.GetUnstructured()
-	structuredreporting.ReportDiff(ctx, diffs)
-
-	if !diffs.HasDiff() {
-		log.V(2).Info("no field needs update", "name", a.id)
-		return a.updateStatus(ctx, updateOp, a.actual)
-	}
-
-	log.V(2).Info("fields need update", "name", a.id, "updateMask", updateMask)
-
-	req := &pb.UpdateAddressGroupRequest{
-		UpdateMask:   updateMask,
-		AddressGroup: a.desired,
-	}
-
-	op, err := a.gcpClient.UpdateAddressGroup(ctx, req)
-	if err != nil {
-		return fmt.Errorf("updating networksecurity address group %s: %w", a.id, err)
-	}
-	latest, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("networksecurity address group %s waiting update: %w", a.id, err)
-	}
-
-	log.V(2).Info("successfully updated networksecurity address group", "name", a.id)
-
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func compareAddressGroup(ctx context.Context, actual, desired *pb.AddressGroup) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	log.V(2).Info("creating AddressGroup", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	spec := NetworkSecurityAddressGroupSpec_v1alpha1_FromProto(mapCtx, actual)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
-	}
-	maskedActual := NetworkSecurityAddressGroupSpec_v1alpha1_ToProto(mapCtx, spec)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
-	}
-	maskedActual.Name = desired.Name
 
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, desired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-
-	filterFalseDiffs(diffs, updateMask, actual, desired)
-
-	return diffs, updateMask, nil
-}
-
-func stringSlicesEqualOrderIndependent(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	if len(a) == 0 {
-		return true
-	}
-	aCopy := make([]string, len(a))
-	copy(aCopy, a)
-	bCopy := make([]string, len(b))
-	copy(bCopy, b)
-	sort.Strings(aCopy)
-	sort.Strings(bCopy)
-	return reflect.DeepEqual(aCopy, bCopy)
-}
-
-func filterFalseDiffs(diffs *structuredreporting.Diff, updateMask *fieldmaskpb.FieldMask, actual, desired *pb.AddressGroup) {
-	var keepFields []structuredreporting.DiffField
-	var keepPaths []string
-
-	klog.V(2).Infof("filterFalseDiffs inputs: actual.Purpose=%v, desired.Purpose=%v, actual.Items=%v, desired.Items=%v, actual.Labels=%v, desired.Labels=%v", actual.Purpose, desired.Purpose, actual.Items, desired.Items, actual.Labels, desired.Labels)
-
-	for _, field := range diffs.Fields {
-		isFalseDiff := false
-
-		switch field.ID {
-		case "purpose":
-			actualPurpose := actual.Purpose
-			desiredPurpose := desired.Purpose
-			if len(actualPurpose) == 0 && len(desiredPurpose) == 0 {
-				isFalseDiff = true
-			} else {
-				// If desired is empty, it defaults to DEFAULT on actual
-				if len(desiredPurpose) == 0 {
-					desiredPurpose = []pb.AddressGroup_Purpose{pb.AddressGroup_DEFAULT}
-				}
-				if len(actualPurpose) == 0 {
-					actualPurpose = []pb.AddressGroup_Purpose{pb.AddressGroup_DEFAULT}
-				}
-				if reflect.DeepEqual(actualPurpose, desiredPurpose) {
-					isFalseDiff = true
-				}
-			}
-		case "items":
-			if len(actual.Items) == 0 && len(desired.Items) == 0 {
-				isFalseDiff = true
-			} else if stringSlicesEqualOrderIndependent(actual.Items, desired.Items) {
-				isFalseDiff = true
-			}
-		case "labels":
-			if len(actual.Labels) == 0 && len(desired.Labels) == 0 {
-				isFalseDiff = true
-			} else if reflect.DeepEqual(actual.Labels, desired.Labels) {
-				isFalseDiff = true
-			}
-		}
-
-		if isFalseDiff {
-			klog.Infof("filtering out false diff for field %q", field.ID)
-		} else {
-			keepFields = append(keepFields, field)
-			keepPaths = append(keepPaths, field.ID)
-		}
-	}
-
-	diffs.Fields = keepFields
-	updateMask.Paths = keepPaths
-}
-
-func (a *addressGroupAdapter) updateStatus(ctx context.Context, op directbase.Operation, actual *pb.AddressGroup) error {
-	mapCtx := &direct.MapContext{}
-	status := &krm.NetworkSecurityAddressGroupStatus{}
-	status.ObservedState = NetworkSecurityAddressGroupObservedState_v1alpha1_FromProto(mapCtx, actual)
+	desired := a.desired.DeepCopy()
+	resource := NetworkSecurityAddressGroupSpec_v1alpha1_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
+	resource.Labels = label.NewGCPLabelsFromK8sLabels(a.desired.GetObjectMeta().GetLabels())
 
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
+	req := &pb.CreateAddressGroupRequest{
+		Parent:         a.id.ParentString(),
+		AddressGroupId: a.id.Addressgroup,
+		AddressGroup:   resource,
+	}
+	op, err := a.gcpClient.CreateAddressGroup(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating AddressGroup %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create AddressGroup %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created AddressGroup", "name", a.id)
 
-	return op.UpdateStatus(ctx, status, nil)
+	status := &krm.NetworkSecurityAddressGroupStatus{}
+	status.ObservedState = NetworkSecurityAddressGroupObservedState_v1alpha1_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *addressGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
-	return nil, nil
-}
-
-func (a *addressGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *AddressGroupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
 	log := klog.FromContext(ctx)
-	log.Info("deleting networksecurity address group", "name", a.id)
+	log.V(2).Info("updating AddressGroup", "name", a.id)
 
-	req := &pb.DeleteAddressGroupRequest{Name: a.id.String()}
+	desired, diffs, updateMask, err := compareAddressGroup(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
+
+		req := &pb.UpdateAddressGroupRequest{
+			AddressGroup: desired,
+			UpdateMask:   updateMask,
+		}
+		op, err := a.gcpClient.UpdateAddressGroup(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating AddressGroup %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update AddressGroup %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated AddressGroup", "name", a.id)
+
+		status := &krm.NetworkSecurityAddressGroupStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = NetworkSecurityAddressGroupObservedState_v1alpha1_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareAddressGroup(ctx context.Context, u *unstructured.Unstructured, actual *pb.AddressGroup, desiredSpec *krm.NetworkSecurityAddressGroupSpec) (*pb.AddressGroup, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	return common.CompareGreenfieldSpecAndLabels(
+		ctx,
+		u,
+		desiredSpec,
+		actual,
+		"labels",
+		NetworkSecurityAddressGroupSpec_v1alpha1_FromProto,
+		NetworkSecurityAddressGroupSpec_v1alpha1_ToProto,
+		nil,
+	)
+}
+
+func (a *AddressGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+	if a.actual == nil {
+		return nil, fmt.Errorf("Find() not called")
+	}
+	u := &unstructured.Unstructured{}
+
+	obj := &krm.NetworkSecurityAddressGroup{}
+	mapCtx := &direct.MapContext{}
+	obj.Spec = direct.ValueOf(NetworkSecurityAddressGroupSpec_v1alpha1_FromProto(mapCtx, a.actual))
+	if mapCtx.Err() != nil {
+		return nil, mapCtx.Err()
+	}
+
+	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+
+	u.Object = uObj
+	u.SetName(a.id.Addressgroup)
+	u.SetGroupVersionKind(krm.NetworkSecurityAddressGroupGVK)
+	export.SetLabels(u, a.actual.Labels)
+	return u, nil
+}
+
+func (a *AddressGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("deleting AddressGroup", "name", a.id)
+
+	req := &pb.DeleteAddressGroupRequest{
+		Name: a.id.String(),
+	}
 	op, err := a.gcpClient.DeleteAddressGroup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting networksecurity address group %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting AddressGroup %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted AddressGroup", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("networksecurity address group %s waiting for deletion: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete AddressGroup %s: %w", a.id, err)
+		}
 	}
-
 	return true, nil
 }

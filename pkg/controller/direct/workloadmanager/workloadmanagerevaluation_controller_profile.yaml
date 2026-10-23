@@ -1,0 +1,69 @@
+package: workloadmanager
+kccservice: workloadmanager
+kccversion: v1alpha1
+kind: WorkloadManagerEvaluation
+protoresource: Evaluation
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.WorkloadManagerEvaluationIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: Evaluation
+    namefield: Name
+    hasfromexternal: false
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: false
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetEvaluation
+    getrequesttype: GetEvaluationRequest
+    getnamefield: Name
+    createmethodname: CreateEvaluation
+    createrequesttype: CreateEvaluationRequest
+    createparentfield: Parent
+    createbodyfield: Evaluation
+    createidfield: EvaluationId
+    updatemethodname: UpdateEvaluation
+    updaterequesttype: UpdateEvaluationRequest
+    updatebodyfield: Evaluation
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteEvaluation
+    deleterequesttype: DeleteEvaluationRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/workloadmanager/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/workloadmanager/apiv1/workloadmanagerpb
+    pbpackagealias: workloadmanagerpb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

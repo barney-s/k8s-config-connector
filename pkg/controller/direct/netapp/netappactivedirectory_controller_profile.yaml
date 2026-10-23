@@ -1,0 +1,70 @@
+package: netapp
+kccservice: netapp
+kccversion: v1alpha1
+kind: NetAppActiveDirectory
+protoresource: ActiveDirectory
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.NetAppActiveDirectoryIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: ActiveDirectory
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: '&a.id.ActiveDirectory'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetActiveDirectory
+    getrequesttype: GetActiveDirectoryRequest
+    getnamefield: Name
+    createmethodname: CreateActiveDirectory
+    createrequesttype: CreateActiveDirectoryRequest
+    createparentfield: Parent
+    createbodyfield: ActiveDirectory
+    createidfield: ActiveDirectoryId
+    updatemethodname: UpdateActiveDirectory
+    updaterequesttype: UpdateActiveDirectoryRequest
+    updatebodyfield: ActiveDirectory
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteActiveDirectory
+    deleterequesttype: DeleteActiveDirectoryRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/netapp/apiv1
+    gcpclienttype: '*gcp.Client'
+    gcpclientconstructor: gcp.NewRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/netapp/apiv1/netapppb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: true
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: ""

@@ -17,7 +17,6 @@ package netapp
 import (
 	"context"
 	"fmt"
-
 	krm "github.com/GoogleCloudPlatform/k8s-config-connector/apis/netapp/v1alpha1"
 	refs "github.com/GoogleCloudPlatform/k8s-config-connector/apis/refs/v1beta1"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/config"
@@ -26,11 +25,11 @@ import (
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/directbase"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/controller/direct/registry"
 	"github.com/GoogleCloudPlatform/k8s-config-connector/pkg/structuredreporting"
+	"strings"
 
 	gcp "cloud.google.com/go/netapp/apiv1"
 	netapppb "cloud.google.com/go/netapp/apiv1/netapppb"
 	"google.golang.org/api/option"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -47,38 +46,25 @@ func NewHostGroupModel(ctx context.Context, config *config.ControllerConfig) (di
 }
 
 var _ directbase.Model = &modelHostGroup{}
+var _ = strings.TrimPrefix
 
 type modelHostGroup struct {
 	config config.ControllerConfig
 }
 
-func (m *modelHostGroup) client(ctx context.Context) (*gcp.Client, error) {
-	var opts []option.ClientOption
-	opts, err := m.config.RESTClientOptions()
-	if err != nil {
-		return nil, err
-	}
-	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("building NetApp client: %w", err)
-	}
-	return gcpClient, nil
-}
-
 func (m *modelHostGroup) AdapterForObject(ctx context.Context, op *directbase.AdapterForObjectOperation) (directbase.Adapter, error) {
 	u := op.GetUnstructured()
 	reader := op.Reader
+	_ = reader
 	obj := &krm.NetAppHostGroup{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &obj); err != nil {
 		return nil, fmt.Errorf("error converting to %T: %w", obj, err)
 	}
-
-	idBase, err := obj.GetIdentity(ctx, reader)
+	i, err := obj.GetIdentity(ctx, reader)
 	if err != nil {
 		return nil, err
 	}
-	id := idBase.(*krm.NetAppHostGroupIdentity)
-
+	id := i.(*krm.NetAppHostGroupIdentity)
 	if err := common.NormalizeReferences(ctx, reader, obj, nil); err != nil {
 		return nil, fmt.Errorf("normalizing references: %w", err)
 	}
@@ -87,17 +73,10 @@ func (m *modelHostGroup) AdapterForObject(ctx context.Context, op *directbase.Ad
 	if err != nil {
 		return nil, err
 	}
-
-	mapCtx := &direct.MapContext{}
-	desired := NetAppHostGroupSpec_ToProto(mapCtx, &obj.Spec)
-	if mapCtx.Err() != nil {
-		return nil, mapCtx.Err()
-	}
-
-	return &hostGroupAdapter{
+	return &HostGroupAdapter{
 		id:        id,
 		gcpClient: gcpClient,
-		desired:   desired,
+		desired:   obj,
 	}, nil
 }
 
@@ -110,151 +89,145 @@ func (m *modelHostGroup) AdapterForURL(ctx context.Context, url string) (directb
 	if err != nil {
 		return nil, err
 	}
-	return &hostGroupAdapter{
+	return &HostGroupAdapter{
 		id:        id,
 		gcpClient: gcpClient,
 	}, nil
 }
 
-type hostGroupAdapter struct {
+func (m *modelHostGroup) client(ctx context.Context) (*gcp.Client, error) {
+	var opts []option.ClientOption
+	opts, err := m.config.RESTClientOptions()
+	if err != nil {
+		return nil, err
+	}
+
+	gcpClient, err := gcp.NewRESTClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("building HostGroup client: %w", err)
+	}
+	return gcpClient, err
+}
+
+type HostGroupAdapter struct {
 	id        *krm.NetAppHostGroupIdentity
 	gcpClient *gcp.Client
-	desired   *netapppb.HostGroup
+	desired   *krm.NetAppHostGroup
 	actual    *netapppb.HostGroup
 }
 
-var _ directbase.Adapter = &hostGroupAdapter{}
+var _ directbase.Adapter = &HostGroupAdapter{}
 
-func (a *hostGroupAdapter) Find(ctx context.Context) (bool, error) {
+func (a *HostGroupAdapter) Find(ctx context.Context) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("finding NetAppHostGroup", "id", a.id)
+	log.V(2).Info("getting HostGroup", "name", a.id)
 
 	req := &netapppb.GetHostGroupRequest{
 		Name: a.id.String(),
 	}
-	hostGroup, err := a.gcpClient.GetHostGroup(ctx, req)
+	resp, err := a.gcpClient.GetHostGroup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting NetAppHostGroup %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("getting HostGroup %q: %w", a.id, err)
 	}
 
-	a.actual = hostGroup
+	a.actual = resp
 	return true, nil
 }
 
-func (a *hostGroupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
+func (a *HostGroupAdapter) Create(ctx context.Context, createOp *directbase.CreateOperation) error {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("creating NetAppHostGroup", "id", a.id)
-
-	req := &netapppb.CreateHostGroupRequest{
-		Parent:      a.id.ParentString(),
-		HostGroupId: a.id.HostGroup,
-		HostGroup:   a.desired,
-	}
-	op, err := a.gcpClient.CreateHostGroup(ctx, req)
-	if err != nil {
-		return fmt.Errorf("creating NetAppHostGroup %s: %w", a.id.String(), err)
-	}
-
-	created, err := op.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for NetAppHostGroup %s creation: %w", a.id.String(), err)
-	}
-
-	// Fetch fully-populated resource after creation
-	refetched, err := a.gcpClient.GetHostGroup(ctx, &netapppb.GetHostGroupRequest{Name: a.id.String()})
-	if err != nil {
-		refetched = created
-	}
-	a.actual = refetched
-
-	return a.updateStatus(ctx, createOp, refetched)
-}
-
-func (a *hostGroupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
-	log := klog.FromContext(ctx)
-	log.V(2).Info("updating NetAppHostGroup", "id", a.id)
-
-	diffs, updateMask, err := a.compareHostGroup(ctx, a.actual, a.desired)
-	if err != nil {
-		return err
-	}
-
-	latest := a.actual
-	if diffs.HasDiff() {
-		diffs.Object = updateOp.GetUnstructured()
-		structuredreporting.ReportDiff(ctx, diffs)
-
-		desiredCopy := proto.Clone(a.desired).(*netapppb.HostGroup)
-		desiredCopy.Name = a.id.String()
-
-		req := &netapppb.UpdateHostGroupRequest{
-			HostGroup:  desiredCopy,
-			UpdateMask: updateMask,
-		}
-
-		op, err := a.gcpClient.UpdateHostGroup(ctx, req)
-		if err != nil {
-			return fmt.Errorf("updating NetAppHostGroup %s: %w", a.id.String(), err)
-		}
-		latest, err = op.Wait(ctx)
-		if err != nil {
-			return fmt.Errorf("waiting NetAppHostGroup %s update: %w", a.id.String(), err)
-		}
-
-		// Fetch fully-populated resource after update
-		refetched, err := a.gcpClient.GetHostGroup(ctx, &netapppb.GetHostGroupRequest{Name: a.id.String()})
-		if err != nil {
-			refetched = latest
-		}
-		latest = refetched
-	}
-
-	return a.updateStatus(ctx, updateOp, latest)
-}
-
-func (a *hostGroupAdapter) compareHostGroup(ctx context.Context, actual, desired *netapppb.HostGroup) (*structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	log.V(2).Info("creating HostGroup", "name", a.id)
 	mapCtx := &direct.MapContext{}
-	specActual := NetAppHostGroupSpec_FromProto(mapCtx, actual)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
-	}
-	maskedActual := NetAppHostGroupSpec_ToProto(mapCtx, specActual)
-	if mapCtx.Err() != nil {
-		return nil, nil, mapCtx.Err()
-	}
-	maskedActual.Name = desired.Name
 
-	clonedDesired := proto.Clone(desired).(*netapppb.HostGroup)
-
-	populateDefaults := func(obj *netapppb.HostGroup) {
-	}
-	populateDefaults(maskedActual)
-	populateDefaults(clonedDesired)
-
-	diffs, updateMask, err := common.DiffForTopLevelFields(ctx, clonedDesired.ProtoReflect(), maskedActual.ProtoReflect())
-	if err != nil {
-		return nil, nil, err
-	}
-	return diffs, updateMask, nil
-}
-
-func (a *hostGroupAdapter) updateStatus(ctx context.Context, op directbase.Operation, latest *netapppb.HostGroup) error {
-	mapCtx := &direct.MapContext{}
-	status := krm.NetAppHostGroupStatus{}
-	status.ObservedState = NetAppHostGroupObservedState_FromProto(mapCtx, latest)
+	desired := a.desired.DeepCopy()
+	resource := NetAppHostGroupSpec_ToProto(mapCtx, &desired.Spec)
 	if mapCtx.Err() != nil {
 		return mapCtx.Err()
 	}
 
-	externalRef := a.id.String()
-	status.ExternalRef = &externalRef
-	return op.UpdateStatus(ctx, &status, nil)
+	req := &netapppb.CreateHostGroupRequest{
+		Parent:      a.id.ParentString(),
+		HostGroupId: a.id.HostGroup,
+		HostGroup:   resource,
+	}
+	op, err := a.gcpClient.CreateHostGroup(ctx, req)
+	if err != nil {
+		return fmt.Errorf("creating HostGroup %s: %w", a.id, err)
+	}
+	created, err := op.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting create HostGroup %s: %w", a.id, err)
+	}
+	log.V(2).Info("successfully created HostGroup", "name", a.id)
+
+	status := &krm.NetAppHostGroupStatus{}
+	status.ObservedState = NetAppHostGroupObservedState_FromProto(mapCtx, created)
+	if mapCtx.Err() != nil {
+		return mapCtx.Err()
+	}
+	status.ExternalRef = direct.LazyPtr(a.id.String())
+	return createOp.UpdateStatus(ctx, status, nil)
 }
 
-func (a *hostGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
+func (a *HostGroupAdapter) Update(ctx context.Context, updateOp *directbase.UpdateOperation) error {
+	log := klog.FromContext(ctx)
+	log.V(2).Info("updating HostGroup", "name", a.id)
+
+	desired, diffs, updateMask, err := compareHostGroup(ctx, updateOp.GetUnstructured(), a.actual, &a.desired.Spec)
+	if err != nil {
+		return err
+	}
+	if diffs.HasDiff() {
+		diffs.Object = updateOp.GetUnstructured()
+		structuredreporting.ReportDiff(ctx, diffs)
+
+		if desired != nil {
+			desired.Name = a.id.String()
+		}
+
+		req := &netapppb.UpdateHostGroupRequest{
+			HostGroup:  desired,
+			UpdateMask: updateMask,
+		}
+		op, err := a.gcpClient.UpdateHostGroup(ctx, req)
+		if err != nil {
+			return fmt.Errorf("updating HostGroup %s: %w", a.id, err)
+		}
+		updated, err := op.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("waiting update HostGroup %s: %w", a.id, err)
+		}
+		log.V(2).Info("successfully updated HostGroup", "name", a.id)
+
+		status := &krm.NetAppHostGroupStatus{}
+		mapCtx := &direct.MapContext{}
+		status.ObservedState = NetAppHostGroupObservedState_FromProto(mapCtx, updated)
+		if mapCtx.Err() != nil {
+			return mapCtx.Err()
+		}
+		status.ExternalRef = direct.LazyPtr(a.id.String())
+		return updateOp.UpdateStatus(ctx, status, nil)
+	}
+
+	return nil
+}
+
+func compareHostGroup(ctx context.Context, u *unstructured.Unstructured, actual *netapppb.HostGroup, desiredSpec *krm.NetAppHostGroupSpec) (*netapppb.HostGroup, *structuredreporting.Diff, *fieldmaskpb.FieldMask, error) {
+	_ = u
+	return common.CompareGreenfieldSpec(
+		ctx,
+		desiredSpec,
+		actual,
+		NetAppHostGroupSpec_FromProto,
+		NetAppHostGroupSpec_ToProto,
+		nil,
+	)
+}
+
+func (a *HostGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructured, error) {
 	if a.actual == nil {
 		return nil, fmt.Errorf("Find() not called")
 	}
@@ -266,10 +239,9 @@ func (a *hostGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructur
 	if mapCtx.Err() != nil {
 		return nil, mapCtx.Err()
 	}
-
-	obj.Spec.ResourceID = direct.LazyPtr(a.id.HostGroup)
 	obj.Spec.ProjectRef = &refs.ProjectRef{External: a.id.Project}
 	obj.Spec.Location = direct.LazyPtr(a.id.Location)
+	obj.Spec.ResourceID = direct.LazyPtr(a.id.HostGroup)
 
 	uObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
@@ -279,13 +251,12 @@ func (a *hostGroupAdapter) Export(ctx context.Context) (*unstructured.Unstructur
 	u.Object = uObj
 	u.SetName(a.id.HostGroup)
 	u.SetGroupVersionKind(krm.NetAppHostGroupGVK)
-
 	return u, nil
 }
 
-func (a *hostGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
+func (a *HostGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.DeleteOperation) (bool, error) {
 	log := klog.FromContext(ctx)
-	log.V(2).Info("deleting NetAppHostGroup", "id", a.id)
+	log.V(2).Info("deleting HostGroup", "name", a.id)
 
 	req := &netapppb.DeleteHostGroupRequest{
 		Name: a.id.String(),
@@ -293,15 +264,16 @@ func (a *hostGroupAdapter) Delete(ctx context.Context, deleteOp *directbase.Dele
 	op, err := a.gcpClient.DeleteHostGroup(ctx, req)
 	if err != nil {
 		if direct.IsNotFound(err) {
-			log.V(2).Info("skipping delete for non-existent NetAppHostGroup, assuming it was already deleted", "id", a.id.String())
-			return true, nil
+			return false, nil
 		}
-		return false, fmt.Errorf("deleting NetAppHostGroup %s: %w", a.id.String(), err)
+		return false, fmt.Errorf("deleting HostGroup %s: %w", a.id, err)
 	}
-
+	log.V(2).Info("successfully deleted HostGroup", "name", a.id)
 	err = op.Wait(ctx)
 	if err != nil {
-		return false, fmt.Errorf("waiting delete NetAppHostGroup %s: %w", a.id.String(), err)
+		if !direct.IsNotFound(err) && !strings.Contains(err.Error(), "missing \"value\" field") {
+			return false, fmt.Errorf("waiting delete HostGroup %s: %w", a.id, err)
+		}
 	}
 	return true, nil
 }

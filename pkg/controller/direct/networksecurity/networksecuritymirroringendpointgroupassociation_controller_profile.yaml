@@ -1,0 +1,70 @@
+package: networksecurity
+kccservice: networksecurity
+kccversion: v1alpha1
+kind: NetworkSecurityMirroringEndpointGroupAssociation
+protoresource: MirroringEndpointGroupAssociation
+protoversion: ""
+identity:
+    strategy: client_field
+    typename: krm.NetworkSecurityMirroringEndpointGroupAssociationIdentity
+    usegetidentity: true
+    parentstringexpr: ParentString()
+    idexpr: MirroringEndpointGroupAssociation
+    namefield: Name
+    hasfromexternal: true
+    hasidentityspecified: false
+    hasprojectref: true
+    haslocation: true
+    hasresourceid: true
+    createhasidfield: true
+    projectrefexpr: '&refs.ProjectRef{External: a.id.Project}'
+    locationexpr: '&a.id.Location'
+    resourceidexpr: '&a.id.MirroringEndpointGroupAssociation'
+lifecycle:
+    hasget: true
+    cancreate: true
+    updatestyle: mask
+    deletestyle: standard
+    issingleton: false
+    getmethodname: GetMirroringEndpointGroupAssociation
+    getrequesttype: GetMirroringEndpointGroupAssociationRequest
+    getnamefield: Name
+    createmethodname: CreateMirroringEndpointGroupAssociation
+    createrequesttype: CreateMirroringEndpointGroupAssociationRequest
+    createparentfield: Parent
+    createbodyfield: MirroringEndpointGroupAssociation
+    createidfield: MirroringEndpointGroupAssociationId
+    updatemethodname: UpdateMirroringEndpointGroupAssociation
+    updaterequesttype: UpdateMirroringEndpointGroupAssociationRequest
+    updatebodyfield: MirroringEndpointGroupAssociation
+    updatemaskfield: UpdateMask
+    updatehastoplevelname: false
+    deletemethodname: DeleteMirroringEndpointGroupAssociation
+    deleterequesttype: DeleteMirroringEndpointGroupAssociationRequest
+    deletenamefield: Name
+    deleteforcefield: ""
+execution:
+    create:
+        islro: true
+        isempty: false
+    update:
+        islro: true
+        isempty: false
+    delete:
+        islro: true
+        isempty: true
+transport:
+    gcpclientimportpath: cloud.google.com/go/networksecurity/apiv1
+    gcpclienttype: '*gcp.MirroringClient'
+    gcpclientconstructor: gcp.NewMirroringRESTClient
+    usegrpcclient: false
+    pbimportpath: cloud.google.com/go/networksecurity/apiv1/networksecuritypb
+    pbpackagealias: pb
+    regionalendpoint: ""
+    servicehost: ""
+    locationexpr: ""
+    labeldiffing: none
+    haslabels: false
+    hasreferences: true
+    hasobservedstate: true
+    mapperversionsuffix: _v1alpha1
