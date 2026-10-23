@@ -1,0 +1,912 @@
+{
+  "results": [
+    {
+      "kind": "AgentRegistryBinding",
+      "service": "agentregistry",
+      "fixture": "agentregistrybinding-minimal",
+      "status": "PASS",
+      "duration": 16.34,
+      "error": ""
+    },
+    {
+      "kind": "AIPlatformPersistentResource",
+      "service": "aiplatform",
+      "fixture": "aiplatformpersistentresource-minimal",
+      "status": "PASS",
+      "duration": 15.97,
+      "error": ""
+    },
+    {
+      "kind": "AIPlatformReasoningEngine",
+      "service": "aiplatform",
+      "fixture": "aiplatformreasoningengine-minimal",
+      "status": "FAIL",
+      "duration": 28.3,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T19:53:05.184Z\",\"msg\":\"resource is not ready\",\"kind\":\"AIPlatformReasoningEngine\",\"name\":\"aiplatformreasoningengine-vpgsjkpq5bs6pxi\",\"conditions\":[{\"lastTransitionTime\":\"2026-10-22T19:52:49Z\",\"message\":\"Update call failed: cannot change AIPlatformReasoningEng"
+    },
+    {
+      "kind": "AIPlatformSpecialistPool",
+      "service": "aiplatform",
+      "fixture": "aiplatformspecialistpool-minimal",
+      "status": "FAIL",
+      "duration": 28.26,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T19:53:33.607Z\",\"msg\":\"resource is not ready\",\"kind\":\"AIPlatformSpecialistPool\",\"name\":\"aiplatformspecialistpool-3d6d7kfa7oqdfvy\",\"conditions\":[{\"lastTransitionTime\":\"2026-10-22T19:53:17Z\",\"message\":\"Update call failed: cannot change AIPlatformSpecialistPool"
+    },
+    {
+      "kind": "AlloyDBInstance",
+      "service": "alloydb",
+      "fixture": "alloydbinstance_with_invalid_labels",
+      "status": "PASS",
+      "duration": 13.69,
+      "error": ""
+    },
+    {
+      "kind": "APIGatewayAPI",
+      "service": "apigateway",
+      "fixture": "apigatewayapi-minimal",
+      "status": "PASS",
+      "duration": 14.79,
+      "error": ""
+    },
+    {
+      "kind": "AppHubApplication",
+      "service": "apphub",
+      "fixture": "apphubapplication-minimal",
+      "status": "PASS",
+      "duration": 14.72,
+      "error": ""
+    },
+    {
+      "kind": "AssetFeed",
+      "service": "asset",
+      "fixture": "assetfeed-minimal",
+      "status": "PASS",
+      "duration": 14.36,
+      "error": ""
+    },
+    {
+      "kind": "AssetSavedQuery",
+      "service": "asset",
+      "fixture": "assetsavedquery-minimal",
+      "status": "PASS",
+      "duration": 14.37,
+      "error": ""
+    },
+    {
+      "kind": "BackupDRBackupPlan",
+      "service": "backupdr",
+      "fixture": "backupdrbackupplan-minimal",
+      "status": "FAIL",
+      "duration": 13.41,
+      "error": "--- FAIL: TestAllInSeries/fixtures (13.18s) | --- FAIL: TestAllInSeries/fixtures/backupdrbackupplan-minimal (12.89s) | FAIL"
+    },
+    {
+      "kind": "BackupDRBackupPlanAssociation",
+      "service": "backupdr",
+      "fixture": "backupdrbackupplanassociation-minimal",
+      "status": "FAIL",
+      "duration": 13.27,
+      "error": "--- FAIL: TestAllInSeries/fixtures (13.04s) | --- FAIL: TestAllInSeries/fixtures/backupdrbackupplanassociation-minimal (12.75s) | FAIL"
+    },
+    {
+      "kind": "BackupDRBackupVault",
+      "service": "backupdr",
+      "fixture": "backupdrbackupvault-minimal",
+      "status": "FAIL",
+      "duration": 13.98,
+      "error": "--- FAIL: TestAllInSeries/fixtures (13.74s) | --- FAIL: TestAllInSeries/fixtures/backupdrbackupvault-minimal (13.45s) | FAIL"
+    },
+    {
+      "kind": "BigQueryReservationReservation",
+      "service": "bigqueryreservation",
+      "fixture": "bigqueryreservationenterprise",
+      "status": "PASS",
+      "duration": 14.17,
+      "error": ""
+    },
+    {
+      "kind": "CloudBuildConnection",
+      "service": "cloudbuild",
+      "fixture": "cloudbuildconnection-minimal",
+      "status": "FAIL",
+      "duration": 28.27,
+      "error": "{\"severity\":\"error\",\"timestamp\":\"2026-10-22T19:56:07.473Z\",\"msg\":\"Observed a panic\",\"controller\":\"secretmanagersecret-parent-controller\",\"controllerGroup\":\"secretmanager.cnrm.cloud.google.com\",\"controllerKind\":\"SecretManagerSecret\",\"SecretManagerSecret\":{\"name\":\"secretmanagersecret-6kd3vjzjufh6iqa\","
+    },
+    {
+      "kind": "CloudDeployAutomation",
+      "service": "clouddeploy",
+      "fixture": "automation-basic",
+      "status": "PASS",
+      "duration": 16.79,
+      "error": ""
+    },
+    {
+      "kind": "CloudDeployTarget",
+      "service": "clouddeploy",
+      "fixture": "target-basic",
+      "status": "PASS",
+      "duration": 16.77,
+      "error": ""
+    },
+    {
+      "kind": "APIQuotaPreference",
+      "service": "cloudquota",
+      "fixture": "apiquotapreference-minimal",
+      "status": "FAIL",
+      "duration": 28.25,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T19:57:10.029Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"apiquotapreference-parent-controller\",\"controllerGroup\":\"cloudquota.cnrm.cloud.google.com\",\"controllerKind\":\"APIQuotaPreference\",\"APIQuotaPreference\":{\"name\":\"qpref-minimal-dro2glmdqhqp"
+    },
+    {
+      "kind": "ConfigDeliveryResourceBundle",
+      "service": "configdelivery",
+      "fixture": "configdeliveryresourcebundle-minimal",
+      "status": "PASS",
+      "duration": 16.49,
+      "error": ""
+    },
+    {
+      "kind": "CCInsightsQAScorecard",
+      "service": "contactcenterinsights",
+      "fixture": "ccinsightsqascorecard-minimal",
+      "status": "PASS",
+      "duration": 16.41,
+      "error": ""
+    },
+    {
+      "kind": "DataCatalogEntry",
+      "service": "datacatalog",
+      "fixture": "datacatalogentry-minimal",
+      "status": "FAIL",
+      "duration": 28.25,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T19:58:10.803Z\",\"msg\":\"structuredreporting OnError\",\"controller\":\"datacatalogentrygroup-parent-controller\",\"controllerGroup\":\"datacatalog.cnrm.cloud.google.com\",\"controllerKind\":\"DataCatalogEntryGroup\",\"DataCatalogEntryGroup\":{\"name\":\"datacatalogentrygroup-m"
+    },
+    {
+      "kind": "DataCatalogEntryGroup",
+      "service": "datacatalog",
+      "fixture": "datacatalogentrygroup-minimal",
+      "status": "FAIL",
+      "duration": 13.96,
+      "error": "--- FAIL: TestAllInSeries/fixtures (13.75s) | --- FAIL: TestAllInSeries/fixtures/datacatalogentrygroup-minimal (13.45s) | FAIL"
+    },
+    {
+      "kind": "DataCatalogTagTemplate",
+      "service": "datacatalog",
+      "fixture": "datacatalogtagtemplate-minimal",
+      "status": "FAIL",
+      "duration": 13.47,
+      "error": "--- FAIL: TestAllInSeries/fixtures (13.24s) | --- FAIL: TestAllInSeries/fixtures/datacatalogtagtemplate-minimal (12.94s) | FAIL"
+    },
+    {
+      "kind": "DataplexAspectType",
+      "service": "dataplex",
+      "fixture": "dataplexaspecttype-minimal",
+      "status": "PASS",
+      "duration": 16.41,
+      "error": ""
+    },
+    {
+      "kind": "DataplexDataProduct",
+      "service": "dataplex",
+      "fixture": "dataplexdataproduct-minimal",
+      "status": "PASS",
+      "duration": 16.86,
+      "error": ""
+    },
+    {
+      "kind": "DataplexDataTaxonomy",
+      "service": "dataplex",
+      "fixture": "dataplexdatataxonomy-minimal",
+      "status": "PASS",
+      "duration": 17.19,
+      "error": ""
+    },
+    {
+      "kind": "DataplexMetadataFeed",
+      "service": "dataplex",
+      "fixture": "dataplexmetadatafeed-minimal",
+      "status": "FAIL",
+      "duration": 23.12,
+      "error": "--- FAIL: TestAllInSeries/fixtures (22.89s) | --- FAIL: TestAllInSeries/fixtures/dataplexmetadatafeed-minimal (22.59s) | FAIL"
+    },
+    {
+      "kind": "DataplexMetadataJob",
+      "service": "dataplex",
+      "fixture": "dataplexmetadatajob-minimal",
+      "status": "PASS",
+      "duration": 16.2,
+      "error": ""
+    },
+    {
+      "kind": "DatastreamConnectionProfile",
+      "service": "datastream",
+      "fixture": "datastreamconnectionprofile-minimal",
+      "status": "PASS",
+      "duration": 15.27,
+      "error": ""
+    },
+    {
+      "kind": "DatastreamPrivateConnection",
+      "service": "datastream",
+      "fixture": "datastreamprivateconnection-minimal",
+      "status": "PASS",
+      "duration": 14.27,
+      "error": ""
+    },
+    {
+      "kind": "DatastreamRoute",
+      "service": "datastream",
+      "fixture": "datastreamroute-minimal",
+      "status": "FAIL",
+      "duration": 28.3,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:01:19.540Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"datastreamroute-parent-controller\",\"controllerGroup\":\"datastream.cnrm.cloud.google.com\",\"controllerKind\":\"DatastreamRoute\",\"DatastreamRoute\":{\"name\":\"datastreamroute-minimal-4qpg5shoxrq"
+    },
+    {
+      "kind": "DevConnectAccountConnector",
+      "service": "developerconnect",
+      "fixture": "devconnectaccountconnector-minimal",
+      "status": "PASS",
+      "duration": 16.28,
+      "error": ""
+    },
+    {
+      "kind": "DialogflowGenerator",
+      "service": "dialogflow",
+      "fixture": "dialogflowgenerator-minimal",
+      "status": "PASS",
+      "duration": 15.43,
+      "error": ""
+    },
+    {
+      "kind": "DiscoveryEngineControl",
+      "service": "discoveryengine",
+      "fixture": "discoveryenginecontrol-minimal",
+      "status": "PASS",
+      "duration": 17.3,
+      "error": ""
+    },
+    {
+      "kind": "DiscoveryEngineLicenseConfig",
+      "service": "discoveryengine",
+      "fixture": "discoveryenginelicenseconfig-minimal",
+      "status": "PASS",
+      "duration": 16.03,
+      "error": ""
+    },
+    {
+      "kind": "DiscoveryEngineSampleQuerySet",
+      "service": "discoveryengine",
+      "fixture": "discoveryenginesamplequeryset-minimal",
+      "status": "PASS",
+      "duration": 17.53,
+      "error": ""
+    },
+    {
+      "kind": "DiscoveryEngineServingConfig",
+      "service": "discoveryengine",
+      "fixture": "discoveryengineservingconfig-minimal",
+      "status": "PASS",
+      "duration": 16.2,
+      "error": ""
+    },
+    {
+      "kind": "FinancialServicesInstance",
+      "service": "financialservices",
+      "fixture": "financialservicesinstance-minimal",
+      "status": "PASS",
+      "duration": 17.64,
+      "error": ""
+    },
+    {
+      "kind": "GeminiDataAnalyticsConversation",
+      "service": "geminidataanalytics",
+      "fixture": "geminidataanalyticsconversation-minimal",
+      "status": "PASS",
+      "duration": 16.21,
+      "error": ""
+    },
+    {
+      "kind": "GKEBackupBackup",
+      "service": "gkebackup",
+      "fixture": "gkebackupbackup-minimal",
+      "status": "PASS",
+      "duration": 16.28,
+      "error": ""
+    },
+    {
+      "kind": "GKEBackupBackupChannel",
+      "service": "gkebackup",
+      "fixture": "gkebackupbackupchannel-minimal",
+      "status": "PASS",
+      "duration": 16.19,
+      "error": ""
+    },
+    {
+      "kind": "GKEBackupBackupPlan",
+      "service": "gkebackup",
+      "fixture": "gkebackupbackupplan-minimal",
+      "status": "PASS",
+      "duration": 16.55,
+      "error": ""
+    },
+    {
+      "kind": "GKEBackupRestore",
+      "service": "gkebackup",
+      "fixture": "gkebackuprestore-minimal",
+      "status": "FAIL",
+      "duration": 16.51,
+      "error": "--- FAIL: TestAllInSeries/fixtures (16.30s) | --- FAIL: TestAllInSeries/fixtures/gkebackuprestore-minimal (15.98s) | FAIL"
+    },
+    {
+      "kind": "GKEBackupRestorePlan",
+      "service": "gkebackup",
+      "fixture": "gkebackuprestoreplan-minimal",
+      "status": "PASS",
+      "duration": 16.5,
+      "error": ""
+    },
+    {
+      "kind": "GKEMulticloudAttachedCluster",
+      "service": "gkemulticloud",
+      "fixture": "gkemulticloudattachedcluster-minimal",
+      "status": "PASS",
+      "duration": 16.19,
+      "error": ""
+    },
+    {
+      "kind": "HypercomputeClusterCluster",
+      "service": "hypercomputecluster",
+      "fixture": "hypercomputeclustercluster-minimal",
+      "status": "PASS",
+      "duration": 16.05,
+      "error": ""
+    },
+    {
+      "kind": "KMSImportJob",
+      "service": "kms",
+      "fixture": "basickmsimportjob",
+      "status": "PASS",
+      "duration": 13.98,
+      "error": ""
+    },
+    {
+      "kind": "LicenseManagerConfiguration",
+      "service": "licensemanager",
+      "fixture": "licensemanagerconfiguration-minimal",
+      "status": "PASS",
+      "duration": 15.65,
+      "error": ""
+    },
+    {
+      "kind": "LiveStreamAsset",
+      "service": "livestream",
+      "fixture": "livestreamasset-minimal",
+      "status": "PASS",
+      "duration": 0.52,
+      "error": ""
+    },
+    {
+      "kind": "LiveStreamChannel",
+      "service": "livestream",
+      "fixture": "livestreamchannel-minimal",
+      "status": "FAIL",
+      "duration": 17.44,
+      "error": "--- FAIL: TestAllInSeries/fixtures (17.24s) | --- FAIL: TestAllInSeries/fixtures/livestreamchannel-minimal (16.95s) | FAIL"
+    },
+    {
+      "kind": "LiveStreamInput",
+      "service": "livestream",
+      "fixture": "livestreaminput-minimal",
+      "status": "PASS",
+      "duration": 15.4,
+      "error": ""
+    },
+    {
+      "kind": "LoggingLink",
+      "service": "logging",
+      "fixture": "logginglink-basic",
+      "status": "PASS",
+      "duration": 13.59,
+      "error": ""
+    },
+    {
+      "kind": "ManagedKafkaCluster",
+      "service": "managedkafka",
+      "fixture": "managedkafkacluster-basic",
+      "status": "FAIL",
+      "duration": 15.22,
+      "error": "--- FAIL: TestAllInSeries/fixtures (15.01s) | --- FAIL: TestAllInSeries/fixtures/managedkafkacluster-basic (14.73s) | FAIL"
+    },
+    {
+      "kind": "ManagedKafkaConnectCluster",
+      "service": "managedkafka",
+      "fixture": "managedkafkaconnectcluster-minimal",
+      "status": "PASS",
+      "duration": 16.52,
+      "error": ""
+    },
+    {
+      "kind": "MetastoreBackup",
+      "service": "metastore",
+      "fixture": "metastorebackup-minimal",
+      "status": "PASS",
+      "duration": 13.88,
+      "error": ""
+    },
+    {
+      "kind": "MetastoreFederation",
+      "service": "metastore",
+      "fixture": "metastorefederation-minimal",
+      "status": "PASS",
+      "duration": 14.69,
+      "error": ""
+    },
+    {
+      "kind": "MetastoreService",
+      "service": "metastore",
+      "fixture": "metastoreservice-minimal",
+      "status": "PASS",
+      "duration": 14.63,
+      "error": ""
+    },
+    {
+      "kind": "MigrationCenterGroup",
+      "service": "migrationcenter",
+      "fixture": "migrationcentergroup-minimal",
+      "status": "PASS",
+      "duration": 16.04,
+      "error": ""
+    },
+    {
+      "kind": "MigrationCenterPreferenceSet",
+      "service": "migrationcenter",
+      "fixture": "migrationcenterpreferenceset-minimal",
+      "status": "PASS",
+      "duration": 15.57,
+      "error": ""
+    },
+    {
+      "kind": "MigrationCenterSource",
+      "service": "migrationcenter",
+      "fixture": "migrationcentersource-minimal",
+      "status": "PASS",
+      "duration": 0.54,
+      "error": ""
+    },
+    {
+      "kind": "ModelArmorTemplate",
+      "service": "modelarmor",
+      "fixture": "modelarmortemplate-minimal",
+      "status": "PASS",
+      "duration": 15.08,
+      "error": ""
+    },
+    {
+      "kind": "NetAppActiveDirectory",
+      "service": "netapp",
+      "fixture": "netappactivedirectory-minimal",
+      "status": "FAIL",
+      "duration": 16.85,
+      "error": "--- FAIL: TestAllInSeries/fixtures (16.66s) | --- FAIL: TestAllInSeries/fixtures/netappactivedirectory-minimal (16.36s) | FAIL"
+    },
+    {
+      "kind": "NetAppBackupPolicy",
+      "service": "netapp",
+      "fixture": "netappbackuppolicy-basic",
+      "status": "PASS",
+      "duration": 15.32,
+      "error": ""
+    },
+    {
+      "kind": "NetAppHostGroup",
+      "service": "netapp",
+      "fixture": "netapphostgroup-minimal",
+      "status": "PASS",
+      "duration": 0.49,
+      "error": ""
+    },
+    {
+      "kind": "NetworkManagementVPCFlowLogsConfig",
+      "service": "networkmanagement",
+      "fixture": "networkmanagementvpcflowlogsconfig-minimal",
+      "status": "PASS",
+      "duration": 15.57,
+      "error": ""
+    },
+    {
+      "kind": "NetworkSecurityInterceptEndpointGroup",
+      "service": "networksecurity",
+      "fixture": "networksecurityinterceptendpointgroup-minimal",
+      "status": "PASS",
+      "duration": 16.78,
+      "error": ""
+    },
+    {
+      "kind": "NetworkSecurityAddressGroup",
+      "service": "networksecurity",
+      "fixture": "networksecurityaddressgroup-minimal",
+      "status": "PASS",
+      "duration": 16.83,
+      "error": ""
+    },
+    {
+      "kind": "NetworkSecurityAuthzPolicy",
+      "service": "networksecurity",
+      "fixture": "networksecurityauthzpolicy-minimal",
+      "status": "PASS",
+      "duration": 19.9,
+      "error": ""
+    },
+    {
+      "kind": "NetworkSecurityInterceptDeployment",
+      "service": "networksecurity",
+      "fixture": "networksecurityinterceptdeployment-minimal",
+      "status": "PASS",
+      "duration": 15.4,
+      "error": ""
+    },
+    {
+      "kind": "NetworkSecurityMirroringEndpointGroupAssociation",
+      "service": "networksecurity",
+      "fixture": "networksecuritymirroringendpointgroupassociation-minimal",
+      "status": "PASS",
+      "duration": 25.56,
+      "error": ""
+    },
+    {
+      "kind": "NetworkSecurityTLSInspectionPolicy",
+      "service": "networksecurity",
+      "fixture": "tlsinspectionpolicy-basic",
+      "status": "PASS",
+      "duration": 17.0,
+      "error": ""
+    },
+    {
+      "kind": "NetworkSecurityURLList",
+      "service": "networksecurity",
+      "fixture": "urllist-minimal",
+      "status": "PASS",
+      "duration": 15.61,
+      "error": ""
+    },
+    {
+      "kind": "NetworkServicesAuthzExtension",
+      "service": "networkservices",
+      "fixture": "networkservicesauthzextension-minimal",
+      "status": "FAIL",
+      "duration": 28.3,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:12:13.115Z\",\"msg\":\"resource is not ready\",\"kind\":\"NetworkServicesAuthzExtension\",\"name\":\"authzext-min-ov3ajfirot2x6aa\",\"conditions\":[{\"lastTransitionTime\":\"2026-10-22T20:11:57Z\",\"message\":\"Update call failed: getting AuthzExtension \\\"projects//locations/"
+    },
+    {
+      "kind": "NetworkServicesLBTrafficExtension",
+      "service": "networkservices",
+      "fixture": "networkserviceslbtrafficextension-minimal",
+      "status": "FAIL",
+      "duration": 28.3,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:12:41.635Z\",\"msg\":\"resource is not ready\",\"kind\":\"NetworkServicesLBTrafficExtension\",\"name\":\"lbtrafficextension-4oivd57ueaxgvzi\",\"conditions\":[{\"lastTransitionTime\":\"2026-10-22T20:12:25Z\",\"message\":\"Update call failed: getting LbTrafficExtension \\\"projec"
+    },
+    {
+      "kind": "NetworkServicesServiceBinding",
+      "service": "networkservices",
+      "fixture": "networkservicesservicebinding-minimal",
+      "status": "PASS",
+      "duration": 13.85,
+      "error": ""
+    },
+    {
+      "kind": "NetworkServicesWasmPlugin",
+      "service": "networkservices",
+      "fixture": "wasmplugin-basic",
+      "status": "FAIL",
+      "duration": 28.25,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:13:23.065Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"networkserviceswasmplugin-parent-controller\",\"controllerGroup\":\"networkservices.cnrm.cloud.google.com\",\"controllerKind\":\"NetworkServicesWasmPlugin\",\"NetworkServicesWasmPlugin\":{\"name\":\""
+    },
+    {
+      "kind": "NotebooksEnvironment",
+      "service": "notebooks",
+      "fixture": "notebooksenvironment-containerimage",
+      "status": "FAIL",
+      "duration": 12.63,
+      "error": "--- FAIL: TestAllInSeries/fixtures (12.42s) | --- FAIL: TestAllInSeries/fixtures/notebooksenvironment-containerimage (12.09s) | FAIL"
+    },
+    {
+      "kind": "NotebooksExecution",
+      "service": "notebooks",
+      "fixture": "notebooksexecution-minimal",
+      "status": "PASS",
+      "duration": 15.38,
+      "error": ""
+    },
+    {
+      "kind": "NotebooksSchedule",
+      "service": "notebooks",
+      "fixture": "notebooksschedule-minimal",
+      "status": "PASS",
+      "duration": 16.07,
+      "error": ""
+    },
+    {
+      "kind": "ParameterManagerParameter",
+      "service": "parametermanager",
+      "fixture": "parametermanagerparameter-basic",
+      "status": "PASS",
+      "duration": 16.08,
+      "error": ""
+    },
+    {
+      "kind": "ParameterManagerParameterVersion",
+      "service": "parametermanager",
+      "fixture": "parametermanagerparameterversion-basic",
+      "status": "PASS",
+      "duration": 15.69,
+      "error": ""
+    },
+    {
+      "kind": "SaasServiceMgmtRelease",
+      "service": "saasservicemgmt",
+      "fixture": "saasservicemgmtrelease-minimal",
+      "status": "PASS",
+      "duration": 16.08,
+      "error": ""
+    },
+    {
+      "kind": "SaaSServiceMgmtUnit",
+      "service": "saasservicemgmt",
+      "fixture": "saasservicemgmtunit-minimal",
+      "status": "PASS",
+      "duration": 0.53,
+      "error": ""
+    },
+    {
+      "kind": "SecretManagerSecret",
+      "service": "secretmanager",
+      "fixture": "basicsecretmanagersecret",
+      "status": "FAIL",
+      "duration": 28.23,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:15:29.276Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"secretmanagersecret-parent-controller\",\"controllerGroup\":\"secretmanager.cnrm.cloud.google.com\",\"controllerKind\":\"SecretManagerSecret\",\"SecretManagerSecret\":{\"name\":\"secretmanagersecret-"
+    },
+    {
+      "kind": "SecureSourceManagerInstance",
+      "service": "securesourcemanager",
+      "fixture": "securesourcemanagerinstancebasic",
+      "status": "PASS",
+      "duration": 14.53,
+      "error": ""
+    },
+    {
+      "kind": "SpannerBackupSchedule",
+      "service": "spanner",
+      "fixture": "spannerbackupschedules-basic",
+      "status": "FAIL",
+      "duration": 28.29,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:16:12.522Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"spannerbackupschedule-parent-controller\",\"controllerGroup\":\"spanner.cnrm.cloud.google.com\",\"controllerKind\":\"SpannerBackupSchedule\",\"SpannerBackupSchedule\":{\"name\":\"spannerbackupschedul"
+    },
+    {
+      "kind": "StorageAnywhereCache",
+      "service": "storage",
+      "fixture": "storageanywherecache-base",
+      "status": "FAIL",
+      "duration": 28.24,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:16:41.957Z\",\"msg\":\"structuredreporting OnReconcileEnd\",\"controller\":\"storageanywherecache-parent-controller\",\"controllerGroup\":\"storage.cnrm.cloud.google.com\",\"controllerKind\":\"StorageAnywhereCache\",\"StorageAnywhereCache\":{\"name\":\"storageanywherecache-sa"
+    },
+    {
+      "kind": "StorageInsightsDatasetConfig",
+      "service": "storageinsights",
+      "fixture": "storageinsightsdatasetconfig-minimal",
+      "status": "PASS",
+      "duration": 16.27,
+      "error": ""
+    },
+    {
+      "kind": "StorageInsightsReportConfig",
+      "service": "storageinsights",
+      "fixture": "storageinsightsreportconfig-minimal",
+      "status": "PASS",
+      "duration": 0.57,
+      "error": ""
+    },
+    {
+      "kind": "VectorSearchCollection",
+      "service": "vectorsearch",
+      "fixture": "vectorsearchcollection-minimal",
+      "status": "PASS",
+      "duration": 16.16,
+      "error": ""
+    },
+    {
+      "kind": "VertexAIFeaturestore",
+      "service": "vertexai",
+      "fixture": "featurestore-basic",
+      "status": "FAIL",
+      "duration": 14.15,
+      "error": "--- FAIL: TestAllInSeries/fixtures (13.95s) | --- FAIL: TestAllInSeries/fixtures/featurestore-basic (13.63s) | FAIL"
+    },
+    {
+      "kind": "VertexAIMetadataStore",
+      "service": "vertexai",
+      "fixture": "metadatastorebasic",
+      "status": "FAIL",
+      "duration": 13.09,
+      "error": "--- FAIL: TestAllInSeries/fixtures (12.86s) | --- FAIL: TestAllInSeries/fixtures/metadatastorebasic (12.54s) | FAIL"
+    },
+    {
+      "kind": "VideoStitcherCDNKey",
+      "service": "videostitcher",
+      "fixture": "videostitchercdnkey-minimal",
+      "status": "PASS",
+      "duration": 15.7,
+      "error": ""
+    },
+    {
+      "kind": "VisionProduct",
+      "service": "vision",
+      "fixture": "visionproduct-minimal",
+      "status": "PASS",
+      "duration": 15.52,
+      "error": ""
+    },
+    {
+      "kind": "VisionAIApplication",
+      "service": "visionai",
+      "fixture": "visionaiapplication-minimal",
+      "status": "PASS",
+      "duration": 0.53,
+      "error": ""
+    },
+    {
+      "kind": "VMMigrationGroup",
+      "service": "vmmigration",
+      "fixture": "vmmigrationgroup-minimal",
+      "status": "PASS",
+      "duration": 15.76,
+      "error": ""
+    },
+    {
+      "kind": "VMwareEngineExternalAccessRule",
+      "service": "vmwareengine",
+      "fixture": "vmwareengineexternalaccessrule-minimal",
+      "status": "FAIL",
+      "duration": 28.28,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:18:56.442Z\",\"msg\":\"structuredreporting OnError\",\"controller\":\"vmwareenginenetworkpolicy-parent-controller\",\"controllerGroup\":\"vmwareengine.cnrm.cloud.google.com\",\"controllerKind\":\"VMwareEngineNetworkPolicy\",\"VMwareEngineNetworkPolicy\":{\"name\":\"vmwareengi"
+    },
+    {
+      "kind": "VMwareEngineExternalAddress",
+      "service": "vmwareengine",
+      "fixture": "vmwareengineexternaladdress-minimal",
+      "status": "FAIL",
+      "duration": 28.25,
+      "error": "{\"severity\":\"info\",\"timestamp\":\"2026-10-22T20:19:25.081Z\",\"msg\":\"structuredreporting OnError\",\"controller\":\"vmwareenginenetworkpolicy-parent-controller\",\"controllerGroup\":\"vmwareengine.cnrm.cloud.google.com\",\"controllerKind\":\"VMwareEngineNetworkPolicy\",\"VMwareEngineNetworkPolicy\":{\"name\":\"vmwareengi"
+    },
+    {
+      "kind": "VMwareEngineNetwork",
+      "service": "vmwareengine",
+      "fixture": "vmwareenginenetwork-minimal",
+      "status": "PASS",
+      "duration": 14.81,
+      "error": ""
+    },
+    {
+      "kind": "VMwareEngineNetworkPeering",
+      "service": "vmwareengine",
+      "fixture": "vmwareenginenetworkpeering-minimal",
+      "status": "PASS",
+      "duration": 14.65,
+      "error": ""
+    },
+    {
+      "kind": "VMwareEngineNetworkPolicy",
+      "service": "vmwareengine",
+      "fixture": "vmwareenginenetworkpolicy-minimal",
+      "status": "FAIL",
+      "duration": 14.58,
+      "error": "--- FAIL: TestAllInSeries/fixtures (14.37s) | --- FAIL: TestAllInSeries/fixtures/vmwareenginenetworkpolicy-minimal (14.04s) | FAIL"
+    },
+    {
+      "kind": "VMwareEnginePrivateConnection",
+      "service": "vmwareengine",
+      "fixture": "vmwareengineprivateconnection-minimal",
+      "status": "PASS",
+      "duration": 17.2,
+      "error": ""
+    },
+    {
+      "kind": "WorkflowsWorkflow",
+      "service": "workflows",
+      "fixture": "workflowsworkflow-minimal",
+      "status": "PASS",
+      "duration": 15.65,
+      "error": ""
+    },
+    {
+      "kind": "WorkloadManagerEvaluation",
+      "service": "workloadmanager",
+      "fixture": "workloadmanagerevaluation-minimal",
+      "status": "PASS",
+      "duration": 16.83,
+      "error": ""
+    },
+    {
+      "kind": "BackupDRManagementServer",
+      "service": "backupdr",
+      "fixture": null,
+      "status": "NO_FIXTURE",
+      "duration": 0,
+      "error": "No test fixture found in config/tests/samples/create/"
+    },
+    {
+      "kind": "Company",
+      "service": "cloudtalentsolution",
+      "fixture": null,
+      "status": "NO_FIXTURE",
+      "duration": 0,
+      "error": "No test fixture found in config/tests/samples/create/"
+    },
+    {
+      "kind": "ConversationDataset",
+      "service": "dialogflow",
+      "fixture": null,
+      "status": "NO_FIXTURE",
+      "duration": 0,
+      "error": "No test fixture found in config/tests/samples/create/"
+    },
+    {
+      "kind": "Conversation",
+      "service": "discoveryengine",
+      "fixture": null,
+      "status": "NO_FIXTURE",
+      "duration": 0,
+      "error": "No test fixture found in config/tests/samples/create/"
+    },
+    {
+      "kind": "Session",
+      "service": "discoveryengine",
+      "fixture": null,
+      "status": "NO_FIXTURE",
+      "duration": 0,
+      "error": "No test fixture found in config/tests/samples/create/"
+    },
+    {
+      "kind": "ManagedKafkaTopic",
+      "service": "managedkafka",
+      "fixture": null,
+      "status": "NO_FIXTURE",
+      "duration": 0,
+      "error": "No test fixture found in config/tests/samples/create/"
+    },
+    {
+      "kind": "MapConfig",
+      "service": "mapmanagement",
+      "fixture": null,
+      "status": "NO_FIXTURE",
+      "duration": 0,
+      "error": "No test fixture found in config/tests/samples/create/"
+    },
+    {
+      "kind": "StyleConfig",
+      "service": "mapmanagement",
+      "fixture": null,
+      "status": "NO_FIXTURE",
+      "duration": 0,
+      "error": "No test fixture found in config/tests/samples/create/"
+    },
+    {
+      "kind": "NetworkSecurityMirroringDeploymentGroup",
+      "service": "networksecurity",
+      "fixture": null,
+      "status": "NO_FIXTURE",
+      "duration": 0,
+      "error": "No test fixture found in config/tests/samples/create/"
+    },
+    {
+      "kind": "EventThreatDetectionCustomModule",
+      "service": "securitycentermanagement",
+      "fixture": null,
+      "status": "NO_FIXTURE",
+      "duration": 0,
+      "error": "No test fixture found in config/tests/samples/create/"
+    }
+  ],
+  "passed": 75,
+  "failed": 28,
+  "total_tier1": 113,
+  "total_fixtures": 103
+}

@@ -1,0 +1,620 @@
+[
+  {
+    "kind": "AgentRegistryBinding",
+    "service": "agentregistry",
+    "fixture": "agentregistrybinding-minimal",
+    "file": "pkg/controller/direct/agentregistry/agentregistrybinding_controller.go"
+  },
+  {
+    "kind": "AIPlatformPersistentResource",
+    "service": "aiplatform",
+    "fixture": "aiplatformpersistentresource-minimal",
+    "file": "pkg/controller/direct/aiplatform/aiplatformpersistentresource_controller.go"
+  },
+  {
+    "kind": "AIPlatformReasoningEngine",
+    "service": "aiplatform",
+    "fixture": "aiplatformreasoningengine-minimal",
+    "file": "pkg/controller/direct/aiplatform/aiplatformreasoningengine_controller.go"
+  },
+  {
+    "kind": "AIPlatformSpecialistPool",
+    "service": "aiplatform",
+    "fixture": "aiplatformspecialistpool-minimal",
+    "file": "pkg/controller/direct/aiplatform/aiplatformspecialistpool_controller.go"
+  },
+  {
+    "kind": "AlloyDBInstance",
+    "service": "alloydb",
+    "fixture": "alloydbinstance_with_invalid_labels",
+    "file": "pkg/controller/direct/alloydb/alloydbinstance_controller.go"
+  },
+  {
+    "kind": "APIGatewayAPI",
+    "service": "apigateway",
+    "fixture": "apigatewayapi-minimal",
+    "file": "pkg/controller/direct/apigateway/apigatewayapi_controller.go"
+  },
+  {
+    "kind": "AppHubApplication",
+    "service": "apphub",
+    "fixture": "apphubapplication-minimal",
+    "file": "pkg/controller/direct/apphub/apphubapplication_controller.go"
+  },
+  {
+    "kind": "AssetFeed",
+    "service": "asset",
+    "fixture": "assetfeed-minimal",
+    "file": "pkg/controller/direct/asset/assetfeed_controller.go"
+  },
+  {
+    "kind": "AssetSavedQuery",
+    "service": "asset",
+    "fixture": "assetsavedquery-minimal",
+    "file": "pkg/controller/direct/asset/assetsavedquery_controller.go"
+  },
+  {
+    "kind": "BackupDRBackupPlan",
+    "service": "backupdr",
+    "fixture": "backupdrbackupplan-minimal",
+    "file": "pkg/controller/direct/backupdr/backupdrbackupplan_controller.go"
+  },
+  {
+    "kind": "BackupDRBackupPlanAssociation",
+    "service": "backupdr",
+    "fixture": "backupdrbackupplanassociation-minimal",
+    "file": "pkg/controller/direct/backupdr/backupdrbackupplanassociation_controller.go"
+  },
+  {
+    "kind": "BackupDRBackupVault",
+    "service": "backupdr",
+    "fixture": "backupdrbackupvault-minimal",
+    "file": "pkg/controller/direct/backupdr/backupdrbackupvault_controller.go"
+  },
+  {
+    "kind": "BigQueryReservationReservation",
+    "service": "bigqueryreservation",
+    "fixture": "bigqueryreservationenterprise",
+    "file": "pkg/controller/direct/bigqueryreservation/bigqueryreservationreservation_controller.go"
+  },
+  {
+    "kind": "CloudBuildConnection",
+    "service": "cloudbuild",
+    "fixture": "cloudbuildconnection-minimal",
+    "file": "pkg/controller/direct/cloudbuild/cloudbuildconnection_controller.go"
+  },
+  {
+    "kind": "CloudDeployAutomation",
+    "service": "clouddeploy",
+    "fixture": "automation-basic",
+    "file": "pkg/controller/direct/clouddeploy/clouddeployautomation_controller.go"
+  },
+  {
+    "kind": "CloudDeployTarget",
+    "service": "clouddeploy",
+    "fixture": "target-basic",
+    "file": "pkg/controller/direct/clouddeploy/clouddeploytarget_controller.go"
+  },
+  {
+    "kind": "APIQuotaPreference",
+    "service": "cloudquota",
+    "fixture": "apiquotapreference-minimal",
+    "file": "pkg/controller/direct/cloudquota/apiquotapreference_controller.go"
+  },
+  {
+    "kind": "ConfigDeliveryResourceBundle",
+    "service": "configdelivery",
+    "fixture": "configdeliveryresourcebundle-minimal",
+    "file": "pkg/controller/direct/configdelivery/configdeliveryresourcebundle_controller.go"
+  },
+  {
+    "kind": "CCInsightsQAScorecard",
+    "service": "contactcenterinsights",
+    "fixture": "ccinsightsqascorecard-minimal",
+    "file": "pkg/controller/direct/contactcenterinsights/ccinsightsqascorecard/ccinsightsqascorecard_controller.go"
+  },
+  {
+    "kind": "DataCatalogEntry",
+    "service": "datacatalog",
+    "fixture": "datacatalogentry-minimal",
+    "file": "pkg/controller/direct/datacatalog/datacatalogentry_controller.go"
+  },
+  {
+    "kind": "DataCatalogEntryGroup",
+    "service": "datacatalog",
+    "fixture": "datacatalogentrygroup-minimal",
+    "file": "pkg/controller/direct/datacatalog/datacatalogentrygroup_controller.go"
+  },
+  {
+    "kind": "DataCatalogTagTemplate",
+    "service": "datacatalog",
+    "fixture": "datacatalogtagtemplate-minimal",
+    "file": "pkg/controller/direct/datacatalog/datacatalogtagtemplate_controller.go"
+  },
+  {
+    "kind": "DataplexAspectType",
+    "service": "dataplex",
+    "fixture": "dataplexaspecttype-minimal",
+    "file": "pkg/controller/direct/dataplex/dataplexaspecttype_controller.go"
+  },
+  {
+    "kind": "DataplexDataProduct",
+    "service": "dataplex",
+    "fixture": "dataplexdataproduct-minimal",
+    "file": "pkg/controller/direct/dataplex/dataplexdataproduct_controller.go"
+  },
+  {
+    "kind": "DataplexDataTaxonomy",
+    "service": "dataplex",
+    "fixture": "dataplexdatataxonomy-minimal",
+    "file": "pkg/controller/direct/dataplex/dataplexdatataxonomy_controller.go"
+  },
+  {
+    "kind": "DataplexMetadataFeed",
+    "service": "dataplex",
+    "fixture": "dataplexmetadatafeed-minimal",
+    "file": "pkg/controller/direct/dataplex/dataplexmetadatafeed_controller.go"
+  },
+  {
+    "kind": "DataplexMetadataJob",
+    "service": "dataplex",
+    "fixture": "dataplexmetadatajob-minimal",
+    "file": "pkg/controller/direct/dataplex/dataplexmetadatajob_controller.go"
+  },
+  {
+    "kind": "DatastreamConnectionProfile",
+    "service": "datastream",
+    "fixture": "datastreamconnectionprofile-minimal",
+    "file": "pkg/controller/direct/datastream/datastreamconnectionprofile_controller.go"
+  },
+  {
+    "kind": "DatastreamPrivateConnection",
+    "service": "datastream",
+    "fixture": "datastreamprivateconnection-minimal",
+    "file": "pkg/controller/direct/datastream/datastreamprivateconnection_controller.go"
+  },
+  {
+    "kind": "DatastreamRoute",
+    "service": "datastream",
+    "fixture": "datastreamroute-minimal",
+    "file": "pkg/controller/direct/datastream/datastreamroute_controller.go"
+  },
+  {
+    "kind": "DevConnectAccountConnector",
+    "service": "developerconnect",
+    "fixture": "devconnectaccountconnector-minimal",
+    "file": "pkg/controller/direct/developerconnect/devconnectaccountconnector_controller.go"
+  },
+  {
+    "kind": "DialogflowGenerator",
+    "service": "dialogflow",
+    "fixture": "dialogflowgenerator-minimal",
+    "file": "pkg/controller/direct/dialogflow/generator/dialogflowgenerator_controller.go"
+  },
+  {
+    "kind": "DiscoveryEngineControl",
+    "service": "discoveryengine",
+    "fixture": "discoveryenginecontrol-minimal",
+    "file": "pkg/controller/direct/discoveryengine/discoveryenginecontrol_controller.go"
+  },
+  {
+    "kind": "DiscoveryEngineLicenseConfig",
+    "service": "discoveryengine",
+    "fixture": "discoveryenginelicenseconfig-minimal",
+    "file": "pkg/controller/direct/discoveryengine/discoveryenginelicenseconfig_controller.go"
+  },
+  {
+    "kind": "DiscoveryEngineSampleQuerySet",
+    "service": "discoveryengine",
+    "fixture": "discoveryenginesamplequeryset-minimal",
+    "file": "pkg/controller/direct/discoveryengine/discoveryenginesamplequeryset_controller.go"
+  },
+  {
+    "kind": "DiscoveryEngineServingConfig",
+    "service": "discoveryengine",
+    "fixture": "discoveryengineservingconfig-minimal",
+    "file": "pkg/controller/direct/discoveryengine/discoveryengineservingconfig_controller.go"
+  },
+  {
+    "kind": "FinancialServicesInstance",
+    "service": "financialservices",
+    "fixture": "financialservicesinstance-minimal",
+    "file": "pkg/controller/direct/financialservices/financialservicesinstance_controller.go"
+  },
+  {
+    "kind": "GeminiDataAnalyticsConversation",
+    "service": "geminidataanalytics",
+    "fixture": "geminidataanalyticsconversation-minimal",
+    "file": "pkg/controller/direct/geminidataanalytics/geminidataanalyticsconversation_controller.go"
+  },
+  {
+    "kind": "GKEBackupBackup",
+    "service": "gkebackup",
+    "fixture": "gkebackupbackup-minimal",
+    "file": "pkg/controller/direct/gkebackup/gkebackupbackup_controller.go"
+  },
+  {
+    "kind": "GKEBackupBackupChannel",
+    "service": "gkebackup",
+    "fixture": "gkebackupbackupchannel-minimal",
+    "file": "pkg/controller/direct/gkebackup/gkebackupbackupchannel_controller.go"
+  },
+  {
+    "kind": "GKEBackupBackupPlan",
+    "service": "gkebackup",
+    "fixture": "gkebackupbackupplan-minimal",
+    "file": "pkg/controller/direct/gkebackup/gkebackupbackupplan_controller.go"
+  },
+  {
+    "kind": "GKEBackupRestore",
+    "service": "gkebackup",
+    "fixture": "gkebackuprestore-minimal",
+    "file": "pkg/controller/direct/gkebackup/gkebackuprestore_controller.go"
+  },
+  {
+    "kind": "GKEBackupRestorePlan",
+    "service": "gkebackup",
+    "fixture": "gkebackuprestoreplan-minimal",
+    "file": "pkg/controller/direct/gkebackup/gkebackuprestoreplan_controller.go"
+  },
+  {
+    "kind": "GKEMulticloudAttachedCluster",
+    "service": "gkemulticloud",
+    "fixture": "gkemulticloudattachedcluster-minimal",
+    "file": "pkg/controller/direct/gkemulticloud/gkemulticloudattachedcluster_controller.go"
+  },
+  {
+    "kind": "HypercomputeClusterCluster",
+    "service": "hypercomputecluster",
+    "fixture": "hypercomputeclustercluster-minimal",
+    "file": "pkg/controller/direct/hypercomputecluster/hypercomputeclustercluster_controller.go"
+  },
+  {
+    "kind": "KMSImportJob",
+    "service": "kms",
+    "fixture": "basickmsimportjob",
+    "file": "pkg/controller/direct/kms/kmsimportjob_controller.go"
+  },
+  {
+    "kind": "LicenseManagerConfiguration",
+    "service": "licensemanager",
+    "fixture": "licensemanagerconfiguration-minimal",
+    "file": "pkg/controller/direct/licensemanager/licensemanagerconfiguration_controller.go"
+  },
+  {
+    "kind": "LiveStreamAsset",
+    "service": "livestream",
+    "fixture": "livestreamasset-minimal",
+    "file": "pkg/controller/direct/livestream/livestreamasset_controller.go"
+  },
+  {
+    "kind": "LiveStreamChannel",
+    "service": "livestream",
+    "fixture": "livestreamchannel-minimal",
+    "file": "pkg/controller/direct/livestream/livestreamchannel_controller.go"
+  },
+  {
+    "kind": "LiveStreamInput",
+    "service": "livestream",
+    "fixture": "livestreaminput-minimal",
+    "file": "pkg/controller/direct/livestream/livestreaminput_controller.go"
+  },
+  {
+    "kind": "LoggingLink",
+    "service": "logging",
+    "fixture": "logginglink-basic",
+    "file": "pkg/controller/direct/logging/logginglink_controller.go"
+  },
+  {
+    "kind": "ManagedKafkaCluster",
+    "service": "managedkafka",
+    "fixture": "managedkafkacluster-basic",
+    "file": "pkg/controller/direct/managedkafka/managedkafkacluster_controller.go"
+  },
+  {
+    "kind": "ManagedKafkaConnectCluster",
+    "service": "managedkafka",
+    "fixture": "managedkafkaconnectcluster-minimal",
+    "file": "pkg/controller/direct/managedkafka/managedkafkaconnectcluster_controller.go"
+  },
+  {
+    "kind": "MetastoreBackup",
+    "service": "metastore",
+    "fixture": "metastorebackup-minimal",
+    "file": "pkg/controller/direct/metastore/metastorebackup_controller.go"
+  },
+  {
+    "kind": "MetastoreFederation",
+    "service": "metastore",
+    "fixture": "metastorefederation-minimal",
+    "file": "pkg/controller/direct/metastore/metastorefederation_controller.go"
+  },
+  {
+    "kind": "MetastoreService",
+    "service": "metastore",
+    "fixture": "metastoreservice-minimal",
+    "file": "pkg/controller/direct/metastore/metastoreservice_controller.go"
+  },
+  {
+    "kind": "MigrationCenterGroup",
+    "service": "migrationcenter",
+    "fixture": "migrationcentergroup-minimal",
+    "file": "pkg/controller/direct/migrationcenter/migrationcentergroup_controller.go"
+  },
+  {
+    "kind": "MigrationCenterPreferenceSet",
+    "service": "migrationcenter",
+    "fixture": "migrationcenterpreferenceset-minimal",
+    "file": "pkg/controller/direct/migrationcenter/migrationcenterpreferenceset_controller.go"
+  },
+  {
+    "kind": "MigrationCenterSource",
+    "service": "migrationcenter",
+    "fixture": "migrationcentersource-minimal",
+    "file": "pkg/controller/direct/migrationcenter/migrationcentersource_controller.go"
+  },
+  {
+    "kind": "ModelArmorTemplate",
+    "service": "modelarmor",
+    "fixture": "modelarmortemplate-minimal",
+    "file": "pkg/controller/direct/modelarmor/modelarmortemplate_controller.go"
+  },
+  {
+    "kind": "NetAppActiveDirectory",
+    "service": "netapp",
+    "fixture": "netappactivedirectory-minimal",
+    "file": "pkg/controller/direct/netapp/netappactivedirectory_controller.go"
+  },
+  {
+    "kind": "NetAppBackupPolicy",
+    "service": "netapp",
+    "fixture": "netappbackuppolicy-basic",
+    "file": "pkg/controller/direct/netapp/netappbackuppolicy_controller.go"
+  },
+  {
+    "kind": "NetAppHostGroup",
+    "service": "netapp",
+    "fixture": "netapphostgroup-minimal",
+    "file": "pkg/controller/direct/netapp/netapphostgroup_controller.go"
+  },
+  {
+    "kind": "NetworkManagementVPCFlowLogsConfig",
+    "service": "networkmanagement",
+    "fixture": "networkmanagementvpcflowlogsconfig-minimal",
+    "file": "pkg/controller/direct/networkmanagement/networkmanagementvpcflowlogsconfig_controller.go"
+  },
+  {
+    "kind": "NetworkSecurityInterceptEndpointGroup",
+    "service": "networksecurity",
+    "fixture": "networksecurityinterceptendpointgroup-minimal",
+    "file": "pkg/controller/direct/networksecurity/interceptendpointgroup/networksecurityinterceptendpointgroup_controller.go"
+  },
+  {
+    "kind": "NetworkSecurityAddressGroup",
+    "service": "networksecurity",
+    "fixture": "networksecurityaddressgroup-minimal",
+    "file": "pkg/controller/direct/networksecurity/networksecurityaddressgroup_controller.go"
+  },
+  {
+    "kind": "NetworkSecurityAuthzPolicy",
+    "service": "networksecurity",
+    "fixture": "networksecurityauthzpolicy-minimal",
+    "file": "pkg/controller/direct/networksecurity/networksecurityauthzpolicy_controller.go"
+  },
+  {
+    "kind": "NetworkSecurityInterceptDeployment",
+    "service": "networksecurity",
+    "fixture": "networksecurityinterceptdeployment-minimal",
+    "file": "pkg/controller/direct/networksecurity/networksecurityinterceptdeployment_controller.go"
+  },
+  {
+    "kind": "NetworkSecurityMirroringEndpointGroupAssociation",
+    "service": "networksecurity",
+    "fixture": "networksecuritymirroringendpointgroupassociation-minimal",
+    "file": "pkg/controller/direct/networksecurity/networksecuritymirroringendpointgroupassociation_controller.go"
+  },
+  {
+    "kind": "NetworkSecurityTLSInspectionPolicy",
+    "service": "networksecurity",
+    "fixture": "tlsinspectionpolicy-basic",
+    "file": "pkg/controller/direct/networksecurity/networksecuritytlsinspectionpolicy_controller.go"
+  },
+  {
+    "kind": "NetworkSecurityURLList",
+    "service": "networksecurity",
+    "fixture": "urllist-minimal",
+    "file": "pkg/controller/direct/networksecurity/networksecurityurllist_controller.go"
+  },
+  {
+    "kind": "NetworkServicesAuthzExtension",
+    "service": "networkservices",
+    "fixture": "networkservicesauthzextension-minimal",
+    "file": "pkg/controller/direct/networkservices/networkservicesauthzextension_controller.go"
+  },
+  {
+    "kind": "NetworkServicesLBTrafficExtension",
+    "service": "networkservices",
+    "fixture": "networkserviceslbtrafficextension-minimal",
+    "file": "pkg/controller/direct/networkservices/networkserviceslbtrafficextension_controller.go"
+  },
+  {
+    "kind": "NetworkServicesServiceBinding",
+    "service": "networkservices",
+    "fixture": "networkservicesservicebinding-minimal",
+    "file": "pkg/controller/direct/networkservices/networkservicesservicebinding_controller.go"
+  },
+  {
+    "kind": "NetworkServicesWasmPlugin",
+    "service": "networkservices",
+    "fixture": "wasmplugin-basic",
+    "file": "pkg/controller/direct/networkservices/networkserviceswasmplugin_controller.go"
+  },
+  {
+    "kind": "NotebooksEnvironment",
+    "service": "notebooks",
+    "fixture": "notebooksenvironment-containerimage",
+    "file": "pkg/controller/direct/notebooks/notebooksenvironment_controller.go"
+  },
+  {
+    "kind": "NotebooksExecution",
+    "service": "notebooks",
+    "fixture": "notebooksexecution-minimal",
+    "file": "pkg/controller/direct/notebooks/notebooksexecution_controller.go"
+  },
+  {
+    "kind": "NotebooksSchedule",
+    "service": "notebooks",
+    "fixture": "notebooksschedule-minimal",
+    "file": "pkg/controller/direct/notebooks/notebooksschedule_controller.go"
+  },
+  {
+    "kind": "ParameterManagerParameter",
+    "service": "parametermanager",
+    "fixture": "parametermanagerparameter-basic",
+    "file": "pkg/controller/direct/parametermanager/parametermanagerparameter_controller.go"
+  },
+  {
+    "kind": "ParameterManagerParameterVersion",
+    "service": "parametermanager",
+    "fixture": "parametermanagerparameterversion-basic",
+    "file": "pkg/controller/direct/parametermanager/parametermanagerparameterversion_controller.go"
+  },
+  {
+    "kind": "SaasServiceMgmtRelease",
+    "service": "saasservicemgmt",
+    "fixture": "saasservicemgmtrelease-minimal",
+    "file": "pkg/controller/direct/saasservicemgmt/saasservicemgmtrelease_controller.go"
+  },
+  {
+    "kind": "SaaSServiceMgmtUnit",
+    "service": "saasservicemgmt",
+    "fixture": "saasservicemgmtunit-minimal",
+    "file": "pkg/controller/direct/saasservicemgmt/saasservicemgmtunit_controller.go"
+  },
+  {
+    "kind": "SecretManagerSecret",
+    "service": "secretmanager",
+    "fixture": "basicsecretmanagersecret",
+    "file": "pkg/controller/direct/secretmanager/secretmanagersecret_controller.go"
+  },
+  {
+    "kind": "SecureSourceManagerInstance",
+    "service": "securesourcemanager",
+    "fixture": "securesourcemanagerinstancebasic",
+    "file": "pkg/controller/direct/securesourcemanager/securesourcemanagerinstance_controller.go"
+  },
+  {
+    "kind": "SpannerBackupSchedule",
+    "service": "spanner",
+    "fixture": "spannerbackupschedules-basic",
+    "file": "pkg/controller/direct/spanner/spannerbackupschedule_controller.go"
+  },
+  {
+    "kind": "StorageAnywhereCache",
+    "service": "storage",
+    "fixture": "storageanywherecache-base",
+    "file": "pkg/controller/direct/storage/control/storageanywherecache_controller.go"
+  },
+  {
+    "kind": "StorageInsightsDatasetConfig",
+    "service": "storageinsights",
+    "fixture": "storageinsightsdatasetconfig-minimal",
+    "file": "pkg/controller/direct/storageinsights/storageinsightsdatasetconfig_controller.go"
+  },
+  {
+    "kind": "StorageInsightsReportConfig",
+    "service": "storageinsights",
+    "fixture": "storageinsightsreportconfig-minimal",
+    "file": "pkg/controller/direct/storageinsights/storageinsightsreportconfig_controller.go"
+  },
+  {
+    "kind": "VectorSearchCollection",
+    "service": "vectorsearch",
+    "fixture": "vectorsearchcollection-minimal",
+    "file": "pkg/controller/direct/vectorsearch/vectorsearchcollection_controller.go"
+  },
+  {
+    "kind": "VertexAIFeaturestore",
+    "service": "vertexai",
+    "fixture": "featurestore-basic",
+    "file": "pkg/controller/direct/vertexai/vertexaifeaturestore_controller.go"
+  },
+  {
+    "kind": "VertexAIMetadataStore",
+    "service": "vertexai",
+    "fixture": "metadatastorebasic",
+    "file": "pkg/controller/direct/vertexai/vertexaimetadatastore_controller.go"
+  },
+  {
+    "kind": "VideoStitcherCDNKey",
+    "service": "videostitcher",
+    "fixture": "videostitchercdnkey-minimal",
+    "file": "pkg/controller/direct/videostitcher/videostitchercdnkey_controller.go"
+  },
+  {
+    "kind": "VisionProduct",
+    "service": "vision",
+    "fixture": "visionproduct-minimal",
+    "file": "pkg/controller/direct/vision/visionproduct_controller.go"
+  },
+  {
+    "kind": "VisionAIApplication",
+    "service": "visionai",
+    "fixture": "visionaiapplication-minimal",
+    "file": "pkg/controller/direct/visionai/visionaiapplication_controller.go"
+  },
+  {
+    "kind": "VMMigrationGroup",
+    "service": "vmmigration",
+    "fixture": "vmmigrationgroup-minimal",
+    "file": "pkg/controller/direct/vmmigration/vmmigrationgroup_controller.go"
+  },
+  {
+    "kind": "VMwareEngineExternalAccessRule",
+    "service": "vmwareengine",
+    "fixture": "vmwareengineexternalaccessrule-minimal",
+    "file": "pkg/controller/direct/vmwareengine/vmwareengineexternalaccessrule_controller.go"
+  },
+  {
+    "kind": "VMwareEngineExternalAddress",
+    "service": "vmwareengine",
+    "fixture": "vmwareengineexternaladdress-minimal",
+    "file": "pkg/controller/direct/vmwareengine/vmwareengineexternaladdress_controller.go"
+  },
+  {
+    "kind": "VMwareEngineNetwork",
+    "service": "vmwareengine",
+    "fixture": "vmwareenginenetwork-minimal",
+    "file": "pkg/controller/direct/vmwareengine/vmwareenginenetwork_controller.go"
+  },
+  {
+    "kind": "VMwareEngineNetworkPeering",
+    "service": "vmwareengine",
+    "fixture": "vmwareenginenetworkpeering-minimal",
+    "file": "pkg/controller/direct/vmwareengine/vmwareenginenetworkpeering_controller.go"
+  },
+  {
+    "kind": "VMwareEngineNetworkPolicy",
+    "service": "vmwareengine",
+    "fixture": "vmwareenginenetworkpolicy-minimal",
+    "file": "pkg/controller/direct/vmwareengine/vmwareenginenetworkpolicy_controller.go"
+  },
+  {
+    "kind": "VMwareEnginePrivateConnection",
+    "service": "vmwareengine",
+    "fixture": "vmwareengineprivateconnection-minimal",
+    "file": "pkg/controller/direct/vmwareengine/vmwareengineprivateconnection_controller.go"
+  },
+  {
+    "kind": "WorkflowsWorkflow",
+    "service": "workflows",
+    "fixture": "workflowsworkflow-minimal",
+    "file": "pkg/controller/direct/workflows/workflowsworkflow_controller.go"
+  },
+  {
+    "kind": "WorkloadManagerEvaluation",
+    "service": "workloadmanager",
+    "fixture": "workloadmanagerevaluation-minimal",
+    "file": "pkg/controller/direct/workloadmanager/workloadmanagerevaluation_controller.go"
+  }
+]

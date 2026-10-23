@@ -27,6 +27,7 @@ import (
 	"text/template"
 
 	"github.com/GoogleCloudPlatform/k8s-config-connector/dev/tools/controllerbuilder/pkg/codegen"
+	"github.com/GoogleCloudPlatform/k8s-config-connector/dev/tools/controllerbuilder/pkg/controllerprofile"
 	ccTemplate "github.com/GoogleCloudPlatform/k8s-config-connector/dev/tools/controllerbuilder/template/controller"
 	"github.com/fatih/color"
 	"golang.org/x/tools/go/ast/astutil"
@@ -127,6 +128,32 @@ func RenderController(cArgs *ccTemplate.ControllerArgs) ([]byte, error) {
 }
 
 func (c *ControllerBuilder) GenerateController(cArgs *ccTemplate.ControllerArgs) error {
+	profileFilePath, err := c.getProfilePath()
+	if err == nil {
+		if _, statErr := os.Stat(profileFilePath); statErr == nil {
+			profile, loadErr := controllerprofile.LoadFromYAML(profileFilePath)
+			if loadErr != nil {
+				return fmt.Errorf("loading profile from %s: %w", profileFilePath, loadErr)
+			}
+			rendered, renderErr := controllerprofile.RenderController(profile)
+			if renderErr != nil {
+				return fmt.Errorf("render controller with profile: %w", renderErr)
+			}
+			controllerFilePath, err := c.getControllerPath()
+			if err != nil {
+				return err
+			}
+			if err := WriteToFile(controllerFilePath, rendered); err != nil {
+				return err
+			}
+			if err := FormatImports(controllerFilePath, rendered); err != nil {
+				return err
+			}
+			color.HiGreen("New controller %s has been generated.\n", c.proto)
+			return nil
+		}
+	}
+
 	usePrepopulate := c.prepopulateResource || cArgs.PassesApplied
 	tmplText := ccTemplate.ControllerTemplate
 	if usePrepopulate {
@@ -226,6 +253,17 @@ func hasExistingHandwrittenController(serviceDir, kind string) bool {
 
 func (c *ControllerBuilder) getControllerPath() (string, error) {
 	filename := strings.ToLower(c.proto) + "_controller.go"
+	direct := c.getDirectPath()
+	controllerDir := filepath.Join(direct, c.service)
+	err := os.MkdirAll(controllerDir, os.ModePerm)
+	if err != nil {
+		return "", fmt.Errorf("create controller directory %s: %w", controllerDir, err)
+	}
+	return filepath.Join(controllerDir, filename), nil
+}
+
+func (c *ControllerBuilder) getProfilePath() (string, error) {
+	filename := strings.ToLower(c.proto) + "_controller_profile.yaml"
 	direct := c.getDirectPath()
 	controllerDir := filepath.Join(direct, c.service)
 	err := os.MkdirAll(controllerDir, os.ModePerm)
